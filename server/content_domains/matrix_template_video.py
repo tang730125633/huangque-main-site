@@ -76,6 +76,10 @@ MAX_VOICEOVER_TEXT_LENGTH = 120
 DEFAULT_VOICEOVER_BGM_VOLUME = 0.2
 VOICEOVER_CACHE_RETENTION_SECONDS = 24 * 60 * 60
 VOICEOVER_MUX_TIMEOUT = 180
+MATERIAL_POLICY_SHARED = "shared"
+MATERIAL_POLICY_OWNED_PUBLIC = "owned_public"
+_USER_MATERIAL_TYPES = {"image", "video"}
+_USER_MATERIAL_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _CACHE = {
     "at": 0.0,
     "templates": [],
@@ -667,9 +671,129 @@ def _normalize_bgm_volume(value):
     return round(normalized, 3)
 
 
+def shared_materials_allowed(user):
+    """Only staff or an explicit opaque account grant may use Yuelei materials."""
+    if not isinstance(user, dict):
+        return False
+    if str(user.get("role") or "").strip().lower() == "admin":
+        return True
+    grants = {
+        value.strip() for value in os.environ.get(
+            "MATRIX_SHARED_MATERIAL_ACCOUNT_IDS", ""
+        ).split(",") if value.strip()
+    }
+    return str(user.get("account_id") or "").strip() in grants
+
+
+def _normalize_user_materials(value, *, trusted_frozen=False):
+    if value in (None, "", []):
+        return None
+    if not isinstance(value, list) or not 1 <= len(value) <= 20:
+        raise ValueError("本人素材需要包含 1-20 个图片或视频")
+    result = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("本人素材条目格式不正确")
+        allowed = (
+            {"sha256", "media_type", "clip_start_seconds"}
+            if trusted_frozen else
+            {"upload_id", "media_type", "clip_start_seconds"}
+        )
+        if set(item) - allowed:
+            raise ValueError("本人素材包含无效字段")
+        media_type = str(item.get("media_type") or "").strip().lower()
+        if media_type not in _USER_MATERIAL_TYPES:
+            raise ValueError("本人素材只支持图片或视频")
+        record = {"media_type": media_type}
+        if trusted_frozen:
+            sha256 = str(item.get("sha256") or "").strip().lower()
+            if not _USER_MATERIAL_SHA_RE.fullmatch(sha256):
+                raise ValueError("本人素材校验值无效")
+            record["sha256"] = sha256
+        else:
+            upload_id = str(item.get("upload_id") or "").strip().lower()
+            if not upload_id:
+                raise ValueError("请先从 Agent 或我的资产上传图片或视频")
+            record["upload_id"] = upload_id
+        start = item.get("clip_start_seconds")
+        if start is not None:
+            if (
+                media_type != "video" or isinstance(start, bool)
+                or not isinstance(start, (int, float))
+                or not math.isfinite(float(start)) or not 0 <= float(start) <= 3600
+            ):
+                raise ValueError("视频素材起始时间无效")
+            record["clip_start_seconds"] = round(float(start), 3)
+        result.append(record)
+    return result
+
+
+def _read_user_upload(item, username):
+    from . import cli_uploads
+    if item["media_type"] == "image":
+        data, meta = cli_uploads.read_image_bytes(item["upload_id"], username)
+    else:
+        data, meta = cli_uploads._load_video_bytes(
+            item["upload_id"], username, int(time.time())
+        )
+    mime = str((meta or {}).get("mime") or "").strip().lower()
+    if mime not in {
+        "image/png", "image/jpeg", "image/webp",
+        "video/mp4", "video/quicktime",
+    }:
+        raise ValueError("本人素材文件格式不支持")
+    if (
+        (item["media_type"] == "image" and not mime.startswith("image/"))
+        or (item["media_type"] == "video" and not mime.startswith("video/"))
+    ):
+        raise ValueError("本人素材类型与文件 MIME 不一致")
+    return data, mime
+
+
+def _upload_user_asset(data, sha256, content_type, timeout=120):
+    request = urllib.request.Request(
+        API_URL + "/v1/user-assets", data=data,
+        headers={
+            "Authorization": "Bearer " + API_TOKEN,
+            "Content-Type": content_type,
+            "X-HQ-Asset-Sha256": sha256,
+            "Content-Length": str(len(data)),
+        },
+        method="POST",
+    )
+    try:
+        with _NO_PROXY.open(request, timeout=timeout):
+            return True
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError("本人素材暂时无法用于模板成片") from exc
+
+
+def _resolve_user_materials(value, username, *, trusted_frozen=False):
+    materials = _normalize_user_materials(
+        value, trusted_frozen=trusted_frozen,
+    )
+    if not materials or trusted_frozen:
+        return materials
+    resolved = []
+    for item in materials:
+        try:
+            data, content_type = _read_user_upload(item, username)
+        except Exception as exc:
+            raise ValueError("本人素材不存在、已过期或不属于当前账号，请重新上传") from exc
+        if not data:
+            raise ValueError("本人素材内容为空，请重新上传")
+        sha256 = hashlib.sha256(data).hexdigest()
+        _upload_user_asset(data, sha256, content_type)
+        record = {"sha256": sha256, "media_type": item["media_type"]}
+        if "clip_start_seconds" in item:
+            record["clip_start_seconds"] = item["clip_start_seconds"]
+        resolved.append(record)
+    return resolved
+
+
 def validate_payload(
         raw, username="", *, trusted_semantic_layout=None,
-        trusted_frozen_execution=False):
+        trusted_frozen_execution=False, allow_shared_materials=None):
     if isinstance(raw, dict) and raw.get("mode") == "timeline":
         from . import timeline_compose
         return timeline_compose.validate_payload(raw, username)
@@ -748,10 +872,25 @@ def validate_payload(
         duration = None
     if fixed_duration is not None:
         duration = fixed_duration
+    user_materials = _resolve_user_materials(
+        body.get("user_materials"), username,
+        trusted_frozen=trusted_frozen_execution,
+    )
+    material_policy = (
+        MATERIAL_POLICY_SHARED if allow_shared_materials is not False
+        else MATERIAL_POLICY_OWNED_PUBLIC
+    )
+    if material_policy == MATERIAL_POLICY_OWNED_PUBLIC and template.get("bgm_mode") != "bound":
+        bgm = False
+        bgm_volume = None
     candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
+    if allow_shared_materials is not None:
+        candidate["material_policy"] = material_policy
+    if user_materials:
+        candidate["user_materials"] = user_materials
     if font_family and font_selectable:
         candidate["font_family"] = font_family
     semantic_contract = template.get("semantic_layout")
@@ -1465,6 +1604,10 @@ def _generate(payload):
                 validation_input, str(raw.get("_username") or ""),
                 trusted_semantic_layout=stored_payload.get("semantic_layout"),
                 trusted_frozen_execution=trusted_frozen_execution,
+                allow_shared_materials=(
+                    None if "material_policy" not in stored_payload else
+                    stored_payload.get("material_policy") == MATERIAL_POLICY_SHARED
+                ),
             )
     voiceover = payload.get("voiceover")
     voiceover_audio = _prepare_voiceover_audio(

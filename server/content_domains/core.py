@@ -4291,7 +4291,10 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "matrix_template_video":
                     from . import matrix_template_video as matrix_template_domain
                     body = matrix_template_domain.validate_payload(
-                        body, user["username"]
+                        body, user["username"],
+                        allow_shared_materials=(
+                            matrix_template_domain.shared_materials_allowed(user)
+                        ),
                     )
                 elif kind == "breakdown":
                     from . import breakdown as breakdown_domain

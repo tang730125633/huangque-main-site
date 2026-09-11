@@ -2091,6 +2091,27 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual({
             "kind": "matrix_template_video", "payload": batch["batch_item"],
         }, batch["quote_body"])
+        owned = self.auth.hq_cli_api.action_plan(
+            "matrix-template-generate", dict(value, user_materials=[{
+                "upload_id": "img_" + "a" * 32,
+                "media_type": "image",
+            }])
+        )
+        self.assertEqual([{
+            "upload_id": "img_" + "a" * 32,
+            "media_type": "image",
+        }], owned["payload"]["user_materials"])
+        owned_batch = self.auth.hq_cli_api.action_plan(
+            "matrix-template-batch-generate", dict(
+                value, count=2, user_materials=[{
+                    "upload_id": "vid_" + "b" * 32,
+                    "media_type": "video", "clip_start_seconds": 1.25,
+                }],
+            )
+        )
+        self.assertEqual(
+            1, len(owned_batch["batch_item"]["user_materials"]),
+        )
         for action, path in (
             ("matrix-template-capability", "/api/gen/matrix-template/capability"),
             ("matrix-template-templates", "/api/gen/matrix-template/templates"),
@@ -2104,6 +2125,9 @@ class HQCLIAPITests(unittest.TestCase):
         for invalid in (
             dict(value, duration=8), dict(value, bgm=False),
             dict(value, template_id="../bad"), dict(value, top_text="A"),
+            dict(value, user_materials=[{
+                "sha256": "a" * 64, "media_type": "image",
+            }]),
         ):
             with self.subTest(invalid=invalid), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
                 self.auth.hq_cli_api.action_plan("matrix-template-generate", invalid)
