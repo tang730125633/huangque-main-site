@@ -838,6 +838,30 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         upload.assert_called_once()
         request.assert_called_once_with("POST", "/v1/preflight", expected, timeout=10)
 
+    def test_fixed_skill_image_is_rejected_before_upload_and_preflight(self):
+        template = next(
+            item for item in self.templates_with_fixed_skill()
+            if item["id"] == self.module.YELLOW_BANNER_TEMPLATE_ID
+        )
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=[template]), \
+             mock.patch.object(self.module, "_read_user_upload") as read, \
+             mock.patch.object(self.module, "_upload_user_asset") as upload, \
+             mock.patch.object(self.module, "_request") as request, \
+             self.assertRaisesRegex(ValueError, "只支持视频素材"):
+            self.module.validate_payload({
+                "top_text": "用户素材真的接通了",
+                "bottom_text": "缺少画面自动补齐",
+                "template_id": template["id"],
+                "user_materials": [{
+                    "upload_id": "img_" + "a" * 32,
+                    "media_type": "image",
+                }],
+            }, "alice", allow_shared_materials=False)
+        read.assert_not_called()
+        upload.assert_not_called()
+        request.assert_not_called()
+
     def test_shared_material_access_is_staff_or_explicit_account_only(self):
         self.assertTrue(self.module.shared_materials_allowed({"role": "admin"}))
         self.assertFalse(self.module.shared_materials_allowed({
