@@ -50,6 +50,7 @@ class AssetRegistryTests(unittest.TestCase):
         for name in (
             "homepage.css",
             "homepage-agent-wave.js",
+            "homepage-liquid-glass.js",
             "homepage-particles.js",
             "assets/home/orbit-gallery.js",
             "assets/home/orbit-gallery/gallery.json",
