@@ -170,8 +170,9 @@ _SEMANTIC_CONTRACTS = {
         "top3": (60, 900, 996, 2), "bottom2": (76, 900, 924, 2),
     },
     "v07": {
-        "top1": (104, 900, 996, 2), "top2": (68, 900, 996, 2),
-        "top3": (62, 900, 996, 2), "bottom2": (84, 900, 996, 2),
+        "top1": (118, 900, 996, 2), "top2": (82, 900, 996, 2),
+        "top3": (51, 900, 996, 2), "bottom1": (57, 900, 996, 2),
+        "bottom2": (86, 900, 996, 2),
     },
     "v08": {
         "top1": (92, 900, 996, 2), "top2": (62, 900, 996, 2),
@@ -226,6 +227,12 @@ _SEMANTIC_CONTRACTS = {
         "top3": (38, 900, 900, 2), "bottom2": (32, 750, 787, 4),
     },
 }
+_SEMANTIC_CONTRACT_TRANSITIONS = {
+    "v07": ({
+        "top1": (104, 900, 996, 2), "top2": (68, 900, 996, 2),
+        "top3": (62, 900, 996, 2), "bottom2": (84, 900, 996, 2),
+    }, _SEMANTIC_CONTRACTS["v07"]),
+}
 _ALL_REFERENCE_VARIANTS = {
     f"v{index:02d}" for index in range(1, 18)
 }
@@ -275,16 +282,25 @@ def _semantic_contract(value, variant):
         TRIPLE_STRIP_VARIANT: 738,
         YELLOW_BANNER_VARIANT: 900,
     }.get(variant, 996)
+    expected_contracts = _SEMANTIC_CONTRACT_TRANSITIONS.get(
+        str(variant or ""), (expected_layers,),
+    )
+    matching_contract = next((
+        contract for contract in expected_contracts
+        if isinstance(contract, dict)
+        and isinstance(layers, dict)
+        and set(layers) == set(contract)
+    ), None)
     if (
         value.get("version") != 1
         or value.get("max_width_px") != expected_max_width
         or not isinstance(layers, dict)
         or expected_layers is None
-        or set(layers) != set(expected_layers)
+        or matching_contract is None
     ):
         raise RuntimeError("HyperFrames 语义排版能力无效")
     normalized = {}
-    for layer, expected in expected_layers.items():
+    for layer, expected in matching_contract.items():
         item = layers.get(layer)
         if not isinstance(item, dict) or set(item) != {
             "font_size_px", "font_weight", "max_width_px", "max_lines",
