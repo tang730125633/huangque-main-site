@@ -67,11 +67,17 @@ def validate_payload(cfg, payload):
     if cfg['adapter'] == 'lechuang_image':
         if payload.get('video') or payload.get('reference_videos'):
             raise ValueError('乐创生图不支持视频参考')
+        if payload.get('mask'):
+            # 乐创协议的 input 只有 text_to_image / image_to_image，没有蒙版字段：
+            # 静默忽略会让用户以为做了局部修改，实际是整图重画。
+            raise ValueError('乐创生图协议不支持蒙版局部修改，请改用支持图片编辑（/images/edits）的渠道')
         if len(refs) > 9:
             raise ValueError('乐创生图参考图最多 9 张')
         if payload.get('background') not in (None,'','auto','opaque','transparent'):
             raise ValueError('乐创生图背景仅支持 auto/opaque/transparent')
     if cfg['adapter'] == 'lechuang_video':
+        if payload.get('mask'):
+            raise ValueError('乐创视频协议不支持蒙版')
         ref_max = 1 if cfg['model'] == 'grok-video-1.5' else 7
         if payload.get('video') or payload.get('reference_videos'):
             raise ValueError('乐创视频适配器暂不支持视频参考')
