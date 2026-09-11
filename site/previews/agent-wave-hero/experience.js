@@ -8,7 +8,7 @@
   const indexes = [...document.querySelectorAll('[data-index]')];
   const result = document.querySelector('.result-card');
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-  const anchors = [[0, 0], [.32, 3.2], [.67, 7.6], [1, 11.9]];
+  const anchors = [[0, 0], [.32, 3.5], [.67, 7.8], [1, 12.1]];
   const status = { ready: false, mode: 'scroll-scrub', progress: 0, videoTime: 0, chapter: 0 };
   window.__agentWaveStatus = status;
   window.__agentWaveCheck = () => status.ready && video.readyState >= 1 && !video.autoplay;
