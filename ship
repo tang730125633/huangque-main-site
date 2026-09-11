@@ -326,6 +326,12 @@ for f in "$@"; do
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
+    # 渲染中转器：它是模板成片的单点，此前不在映射表里，只能手工 scp + 重启 ——
+    # 2026-09-11 就出现过「仓库里改了 relay.py，服务器上还是旧版」：中转器 /health
+    # 的模板数白名单和主站不一致，差点造成假性故障而没人发现。
+    # 注意：同目录的 node_poller.py 跑在渲染节点上（不在本机），由节点同步器发布，
+    # 不归 ship 管；误加进来会把文件发到错误的主机。
+    deploy/render-relay/relay.py) dest=/home/ubuntu/render-relay/; svc=huangque-render-relay ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
     deploy/nginx-huangquechuanmei.conf) NGINX_RELOAD=1; add_deployed "$f"; echo "  ✓ $f → 已纳入 nginx 发布闭包（第 3.6 步安装/校验/reload）"; continue ;;
     scripts/smoke_cli_bridge.sh) dest=/home/ubuntu/; svc="" ;;
