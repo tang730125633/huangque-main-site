@@ -3,17 +3,29 @@
   window.initChannelManager=function(env){
     const {api,esc,el,toast}=env;
     let data={items:[],mappings:[],runs:[],adapters:{}}, editing=null, loading=false, runFilter=null, secretTimer=null;
-    const secretField=()=>'<label>API 密钥（留空保留旧值）<span class="cm-secret-row" style="display:flex;gap:8px;align-items:center"><input class="field" name="secret" type="password" autocomplete="new-password" placeholder="不填则保留已保存密钥" style="flex:1"><button type="button" class="mini" data-cm-secret="view">显示</button><button type="button" class="mini" data-cm-secret="copy">复制</button></span></label><p id="cmSecretReveal" class="muted" hidden style="margin:0;word-break:break-all;font-family:ui-monospace,monospace"></p>';
+    const secretField=()=>'<div class="cm-secret-field" style="display:grid;gap:6px"><label>API 密钥（留空保留旧值）<input class="field" name="secret" type="password" autocomplete="new-password" placeholder="不填则保留已保存密钥"></label><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button type="button" class="mini" data-cm-secret="view">显示 5 秒</button><button type="button" class="mini" data-cm-secret="copy">复制</button><span class="muted" style="font-size:11.5px">查看明文会留审计记录</span></div><p id="cmSecretReveal" class="muted" hidden style="margin:0;word-break:break-all;font-family:ui-monospace,monospace;user-select:all"></p></div>';
+    function selectReveal(node){
+      try{const range=document.createRange();range.selectNodeContents(node);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);return true}catch(e){return false}
+    }
+    function copyToClipboard(text){
+      const legacy=()=>{const node=document.createElement('textarea');node.value=text;node.setAttribute('readonly','readonly');node.style.position='fixed';node.style.top='-1000px';document.body.appendChild(node);node.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){ok=false}node.remove();return ok};
+      const modern=navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(text):Promise.reject(new Error('剪贴板不可用'));
+      return modern.then(()=>true,()=>legacy());
+    }
     function revealSecret(mode){
       if(!editing||!editing.id){toast('请先保存渠道，才能查看已保存的密钥');return}
       if(!confirm('查看密钥明文会留下审计记录（操作人 / 渠道 / 时间），确认查看？'))return;
       api('/api/admin/channel-manager/secret-reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:editing.id})}).then(d=>{
         const box=el('cmSecretReveal');if(!box)return;
-        box.hidden=false;box.textContent=d.secret||'（该渠道未配置密钥）';
-        const seconds=Number(d.expires_in)||5;
-        if(mode==='copy'){navigator.clipboard&&navigator.clipboard.writeText(d.secret||'').then(()=>toast('密钥已复制，'+seconds+' 秒后隐藏'),()=>toast('复制失败，请手动选中复制'))}
-        else toast('已显示，'+seconds+' 秒后隐藏');
+        const secret=String(d.secret||''),seconds=Number(d.expires_in)||5;
+        box.hidden=false;box.textContent=secret||'（该渠道未配置密钥）';
         clearTimeout(secretTimer);secretTimer=setTimeout(()=>{box.hidden=true;box.textContent=''},seconds*1000);
+        if(mode!=='copy'){toast('已显示，'+seconds+' 秒后隐藏');return}
+        if(!secret){toast('该渠道未配置密钥');return}
+        selectReveal(box);
+        copyToClipboard(secret).then(ok=>{
+          toast(ok?'密钥已复制，'+seconds+' 秒后隐藏':'未能自动复制；明文已选中，请按 Ctrl+C');
+        });
       }).catch(e=>toast(e.message));
     }
     const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle});
