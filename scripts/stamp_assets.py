@@ -146,6 +146,11 @@ SITE_ASSETS = (
         ("index.html",),
     ),
     SiteAsset(
+        "homepage-liquid-glass.js",
+        "/homepage-liquid-glass.js",
+        ("index.html",),
+    ),
+    SiteAsset(
         "homepage-particles.js",
         "/homepage-particles.js",
         ("index.html",),
