@@ -3,9 +3,11 @@ from __future__ import annotations
 import concurrent.futures
 import array
 import http.server
+import hashlib
 import importlib
 import json
 import math
+import os
 import re
 import shutil
 import sqlite3
@@ -773,6 +775,136 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             )
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
+
+    def test_customer_material_policy_allows_public_only_and_owned_first(self):
+        template = self.templates()[0]
+        base = {
+            "top_text": "客户自己的素材",
+            "bottom_text": "上传以后直接制作",
+            "template_id": template["id"],
+        }
+        public_only = {
+            **base,
+            "bgm": False,
+            "duration": None,
+            "material_policy": self.module.MATERIAL_POLICY_OWNED_PUBLIC,
+        }
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=[template]), \
+             mock.patch.object(
+                 self.module, "_request",
+                 return_value={"payload": {**public_only, "duration": 8.0}},
+             ) as request:
+            result = self.module.validate_payload(
+                base, "alice", allow_shared_materials=False,
+            )
+        self.assertEqual(self.module.MATERIAL_POLICY_OWNED_PUBLIC, result["material_policy"])
+        self.assertNotIn("user_materials", result)
+        request.assert_called_once_with(
+            "POST", "/v1/preflight", public_only, timeout=10,
+        )
+
+        expected = {
+            **base,
+            "bgm": False,
+            "duration": None,
+            "material_policy": self.module.MATERIAL_POLICY_OWNED_PUBLIC,
+            "user_materials": [{
+                "sha256": hashlib.sha256(b"owned-image").hexdigest(),
+                "media_type": "image",
+            }],
+        }
+        response = {"payload": {**expected, "duration": 8.0}}
+        with mock.patch.object(self.module, "require_available"), \
+             mock.patch.object(self.module, "public_templates", return_value=[template]), \
+             mock.patch.object(
+                 self.module, "_read_user_upload",
+                 return_value=(b"owned-image", "image/png"),
+             ), mock.patch.object(
+                 self.module, "_upload_user_asset", return_value=True,
+             ) as upload, mock.patch.object(
+                 self.module, "_request", return_value=response,
+             ) as request:
+            result = self.module.validate_payload({
+                **base,
+                "user_materials": [{
+                    "upload_id": "img_" + "a" * 32,
+                    "media_type": "image",
+                }],
+            }, "alice", allow_shared_materials=False)
+
+        self.assertEqual(self.module.MATERIAL_POLICY_OWNED_PUBLIC, result["material_policy"])
+        self.assertFalse(result["bgm"])
+        upload.assert_called_once()
+        request.assert_called_once_with("POST", "/v1/preflight", expected, timeout=10)
+
+    def test_shared_material_access_is_staff_or_explicit_account_only(self):
+        self.assertTrue(self.module.shared_materials_allowed({"role": "admin"}))
+        self.assertFalse(self.module.shared_materials_allowed({
+            "role": "member", "account_id": "acct-customer",
+        }))
+        with mock.patch.dict(
+            os.environ,
+            {"MATRIX_SHARED_MATERIAL_ACCOUNT_IDS": "acct-qa,acct-dev"},
+        ):
+            self.assertTrue(self.module.shared_materials_allowed({
+                "role": "member", "account_id": "acct-qa",
+            }))
+
+    def test_untrusted_customer_cannot_submit_frozen_material_digest(self):
+        with self.assertRaisesRegex(ValueError, "无效字段"):
+            self.module._normalize_user_materials([{
+                "sha256": "a" * 64, "media_type": "image",
+            }])
+        with self.assertRaisesRegex(ValueError, "图片素材不能|起始时间无效"):
+            self.module._normalize_user_materials([{
+                "upload_id": "img_" + "a" * 32,
+                "media_type": "image", "clip_start_seconds": 1,
+            }])
+
+    def test_user_upload_ownership_expiry_and_mime_fail_before_preflight(self):
+        value = [{
+            "upload_id": "img_" + "a" * 32,
+            "media_type": "image",
+        }]
+        for error in (
+            ValueError("图片 upload_id 不存在或已失效"),
+            ValueError("图片 upload_id 已过期，请重新上传"),
+        ):
+            with self.subTest(error=str(error)), mock.patch.object(
+                self.module, "_read_user_upload", side_effect=error,
+            ), mock.patch.object(self.module, "_upload_user_asset") as upload:
+                with self.assertRaisesRegex(ValueError, "不属于当前账号|已过期"):
+                    self.module._resolve_user_materials(value, "alice")
+                upload.assert_not_called()
+        with mock.patch(
+            "content_domains.cli_uploads.read_image_bytes",
+            return_value=(b"video", {"mime": "video/mp4"}),
+        ), mock.patch.object(self.module, "_upload_user_asset") as upload:
+            with self.assertRaisesRegex(ValueError, "MIME 不一致"):
+                self.module._read_user_upload(value[0], "alice")
+            upload.assert_not_called()
+
+    def test_frozen_user_material_replay_does_not_read_or_upload_again(self):
+        frozen = [{
+            "sha256": "a" * 64, "media_type": "video",
+            "clip_start_seconds": 1.25,
+        }]
+        with mock.patch.object(self.module, "_read_user_upload") as read, \
+             mock.patch.object(self.module, "_upload_user_asset") as upload:
+            self.assertEqual(frozen, self.module._resolve_user_materials(
+                frozen, "alice", trusted_frozen=True,
+            ))
+        read.assert_not_called()
+        upload.assert_not_called()
+
+    def test_http_and_cli_quote_paths_apply_server_owned_material_access(self):
+        for relative in (
+            "server/content_domains/core.py",
+            "server/content_domains/cli_gateway.py",
+        ):
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("shared_materials_allowed(user)", source, relative)
 
     def test_nine_grid_preflight_fixes_duration_and_allows_bgm_off(self):
         template = self.templates_with_nine_grid()[-1]
@@ -3312,6 +3444,9 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn(".mt-action:disabled{opacity:.55;cursor:not-allowed}", page)
         self.assertNotIn(".mt-action:disabled{opacity:.55;cursor:wait}", page)
         self.assertIn("button.disabled=!busy&&!activeTemplate", page)
+        self.assertIn("在 Agent 里面上传", page)
+        self.assertIn("在“我的资产”里面上传", page)
+        self.assertIn("继续使用公网素材成片", page)
         self.assertIn("if(!checking&&warnCopy())return", page)
         self.assertIn("busy||hasPending?'重新确认结果'", page)
         self.assertIn("if(!pending){busy=false;sync();return}", page)
@@ -3371,6 +3506,15 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual((0, 1, 0.2), (
             bgm_volume["minimum"], bgm_volume["maximum"], bgm_volume["default"],
         ))
+        user_materials = schema["properties"]["user_materials"]
+        self.assertEqual((1, 20), (
+            user_materials["minItems"], user_materials["maxItems"],
+        ))
+        self.assertEqual(
+            ["upload_id", "media_type"],
+            user_materials["items"]["required"],
+        )
+        self.assertIn("团队共享素材库仅对开发测试授权账号开放", operation["description"])
         page = (ROOT / "site/workbench/matrix-template.html").read_text(
             encoding="utf-8"
         )

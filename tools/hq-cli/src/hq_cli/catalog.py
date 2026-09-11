@@ -1230,6 +1230,15 @@ MATRIX_TEMPLATE_FIELDS = {
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
     "font_family": {"type": "string", "maxLength": 80},
     "voiceover": MATRIX_TEMPLATE_VOICEOVER,
+    "user_materials": {
+        "type": "array", "minItems": 1, "maxItems": 20,
+        "items": _schema({
+            "upload_id": {"type": "string", "minLength": 1, "maxLength": 180},
+            "media_type": {"type": "string", "enum": ["image", "video"]},
+            "clip_start_seconds": {"type": "number", "minimum": 0, "maximum": 3600},
+        }, ["upload_id", "media_type"]),
+        "description": "本人素材；先通过 image-upload 或 video-upload 取得 upload_id",
+    },
 }
 MATRIX_TEMPLATE_BATCH_FIELDS = {
     **MATRIX_TEMPLATE_FIELDS,
@@ -1407,6 +1416,8 @@ CAPABILITIES["matrix-template-generate"]["constraints"] = [
     "with voiceover, final duration always follows narration; without voiceover BGM remains enabled",
     "duration is calculated automatically",
     "the first call only quotes the fixed template-video cost",
+    "ordinary accounts use owner-scoped user_materials first; remaining or all visual slots use public internet materials only",
+    "shared Huangque materials are restricted to authorized staff/test accounts",
 ]
 CAPABILITIES["matrix-template-generate"]["next_actions"] = [
     "核对报价后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
@@ -1419,6 +1430,8 @@ CAPABILITIES["matrix-template-batch-generate"]["constraints"] = [
     "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and accepts 0-1",
     "with voiceover, final duration always follows narration; without voiceover BGM remains enabled",
     "duration is calculated automatically",
+    "ordinary accounts use owner-scoped user_materials first; remaining or all visual slots use public internet materials only",
+    "shared Huangque materials are restricted to authorized staff/test accounts",
 ]
 CAPABILITIES["matrix-template-batch-generate"]["next_actions"] = [
     "核对总价与 count 后，用完全相同的输入、quote_token 与 --confirm 提交；只轮询返回的 job_ids。",
