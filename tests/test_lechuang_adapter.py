@@ -111,6 +111,16 @@ class LechuangAdapterTests(unittest.TestCase):
         self.assertEqual(body['input']['size'], '720x720')
         self.assertEqual(body['input']['reference_images'], [{'type': 'data_url', 'value': 'data:image/png;base64,AAAA'}])
 
+    def test_mask_is_rejected_instead_of_silently_ignored(self):
+        cfg = cm.version(self.image_channel()['id'])
+        with self.assertRaisesRegex(ValueError, '蒙版'):
+            runtime.validate_payload(cfg, {'prompt': 'x', 'mask': 'data:image/png;base64,AAAA',
+                                            'reference_images': ['data:image/png;base64,AAAA']})
+        video_cfg = cm.version(self.video_channel()['id'])
+        with self.assertRaisesRegex(ValueError, '蒙版'):
+            runtime.validate_payload(video_cfg, {'prompt': 'x', 'mask': 'data:image/png;base64,AAAA',
+                                                 'ratio': '9:16', 'resolution': '720p', 'duration': 5})
+
     def test_validation_rejects_video_refs_and_bad_values(self):
         ch = self.video_channel()
         cfg = cm.version(ch['id'])
