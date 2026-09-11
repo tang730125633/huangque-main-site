@@ -148,6 +148,25 @@ def _lechuang_image_resolution(size):
     return '1k' if edge <= 1280 else ('2k' if edge <= 2304 else '4k')
 
 
+def _lechuang_media_target(cfg, value):
+    """乐创产物地址归一化：相对路径与同源绝对地址需要密钥，第三方 CDN 不带密钥。"""
+    value = str(value or '').strip()
+    base = urllib.parse.urlsplit(cfg['base_url'])
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme in ('http', 'https'):
+        return value, bool(parsed.netloc) and parsed.netloc == base.netloc
+    if value.startswith('/'):
+        # 平台返回根相对路径（自带 /api/v1 前缀），须接在源站 origin 上。
+        return base.scheme + '://' + base.netloc + value, True
+    return cfg['base_url'].rstrip('/') + '/' + value.lstrip('/'), True
+
+
+def _download_lechuang(cfg, value):
+    url, needs_auth = _lechuang_media_target(cfg, value)
+    headers = {'Authorization': 'Bearer ' + cfg['secret']} if needs_auth else None
+    return _download(cfg, url, headers=headers)
+
+
 def _decode_data_url(value, field):
     value = str(value or '').strip()
     if not value.startswith('data:') or ',' not in value:
@@ -285,7 +304,7 @@ def generate(cfg, payload, rid, job_id):
             if not images or not images[0].get('url'):
                 raise RuntimeError('乐创返回空图片产物')
             store.finish(rid,'running','下载生成图片',provider_id)
-            raw = trace.call(job_id,'download',lambda:_download(cfg,images[0]['url']),**metadata)
+            raw = trace.call(job_id,'download',lambda:_download_lechuang(cfg,images[0]['url']),**metadata)
         else:
             videos = out.get('videos') or []
             if not videos:
@@ -294,17 +313,7 @@ def generate(cfg, payload, rid, job_id):
             if not content:
                 raise RuntimeError('乐创视频缺少下载地址')
             store.finish(rid,'running','下载生成视频',provider_id)
-            if str(content).startswith(('http://', 'https://')):
-                raw = trace.call(job_id,'download',lambda:_download(cfg,str(content)),**metadata)
-            else:
-                auth = {'Authorization': 'Bearer ' + cfg['secret']}
-                if str(content).startswith('/'):
-                    # 平台返回根相对路径（自带 /api/v1 前缀），须接在源站 origin 上。
-                    parts = urllib.parse.urlsplit(cfg['base_url'])
-                    url = parts.scheme + '://' + parts.netloc + str(content)
-                else:
-                    url = cfg['base_url'].rstrip('/') + '/' + str(content).lstrip('/')
-                raw = trace.call(job_id,'download',lambda:_download(cfg,url,headers=auth),**metadata)
+            raw = trace.call(job_id,'download',lambda:_download_lechuang(cfg,content),**metadata)
     elif adapter != 'openai_image':
         if not provider_id:
             raise OutcomeUnknown('供应商未返回工单号，禁止自动重发')
@@ -432,7 +441,9 @@ def execute(rid, payload=None):
         # Raw provider errors/payloads and secrets never enter public diagnostics.
         with closing(store.db()) as c:
             phase = c.execute('SELECT detail FROM runs WHERE id=?',(rid,)).fetchone()[0]
-        detail = phase+'：'+str(exc)[:200] if isinstance(exc,(ValueError,OutcomeUnknown,ProviderError)) else phase+'：'+type(exc).__name__
+        detail = phase+'：'+str(exc)[:200] if isinstance(exc,(ValueError,OutcomeUnknown,ProviderError)) else (
+            phase+'：SafeHttpError HTTP '+str(exc.status) if isinstance(exc, safe_http.SafeHttpError)
+            else phase+'：'+type(exc).__name__)
         if cfg.get('secret'):
             detail = detail.replace(cfg['secret'],'[隐藏]')
         store.finish(rid,state,detail)
