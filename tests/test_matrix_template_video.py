@@ -869,7 +869,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         ):
             values = self.module.public_templates(force=True)
 
-        self.assertEqual(22, len(values))
+        self.assertEqual(20, len(values))
         self.assertEqual(
             {"top1", "top2", "top3", "bottom1", "bottom2"},
             set(next(
@@ -911,7 +911,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         }
 
         with mock.patch.object(self.module, "_request", return_value=response):
-            self.assertEqual(20, len(self.module.public_templates(force=True)))
+            self.assertEqual(18, len(self.module.public_templates(force=True)))
 
         mixed = json.loads(json.dumps(legacy))
         mixed["layers"]["top1"]["font_size_px"] = 118
