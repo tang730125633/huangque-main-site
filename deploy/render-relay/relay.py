@@ -52,6 +52,11 @@ PRIORITY_NODES = {
 }
 PRIORITY_WINDOW = max(1, int(os.environ.get("RELAY_PRIORITY_WINDOW", "20")))
 _LAST_CLAIM = {}          # node -> 最近一次来领活的时间（内存态，重启后重新学习）
+# 节点心跳：轮询器空闲时每 POLL_IDLE(默认 5) 秒来问一次，所以「90 秒没来过」= 掉线。
+# 以前中转器只能靠 PRIORITY_WINDOW(20 秒) 猜「它还有没有空位」，**看不出节点死活** ——
+# 节点挂了，任务就静静躺在队列里，没有任何信号。现在 /health 直接报每台节点的
+# 在线状态和正在跑几条。
+NODE_ONLINE_SECONDS = max(30, int(os.environ.get("RELAY_NODE_ONLINE_SECONDS", "90")))
 
 
 # ---- 节点失败熔断（2026-09-11：fang 磁盘满，坏节点被继续派活，70 条全废）----
@@ -296,10 +301,17 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0]
                 running = conn.execute(
                     "SELECT COUNT(*) FROM jobs WHERE status='running'").fetchone()[0]
-            # templates 必须如实反映上游：黄雀的 availability() 要求
-            # int(health["templates"]) 落在 TRANSITION_TEMPLATE_COUNTS = {2,15,19,20}，
-            # 缺这个字段会被算成 0 而判定整条渠道「未就绪」——正是它导致 Agent
-            # 一直收到「生成渠道正在繁忙或维护」。
+                # 心跳的第二半：光知道「它最近来过」不够，还要看得出它在干活还是空转
+                per_node = {
+                    str(row[0]): int(row[1])
+                    for row in conn.execute(
+                        "SELECT node, COUNT(*) FROM jobs WHERE status='running'"
+                        " AND node IS NOT NULL AND node != '' GROUP BY node")
+                }
+            # templates 必须如实反映上游：黄雀的 availability() 读这个字段判渠道就绪。
+            # 但中转器**不拿模板数当判据** —— 原来写死 `templates in (2,15,19,20,22)`，
+            # 模板一增减就会把整条渠道误判成不可用（2026-09-11 模板数 22→20 就差点踩到）。
+            # 上游健不健康由上游自己在 ok 里说；这里只要求「上游 ok 且确实有模板」。
             templates = 0
             upstream_ok = False
             try:
@@ -309,9 +321,25 @@ class Handler(BaseHTTPRequestHandler):
                 upstream_ok = up.get("ok") is True
             except Exception as exc:
                 print("[render-relay] health upstream failed: %s" % exc, flush=True)
-            ok = upstream_ok and templates in (2, 15, 19, 20, 22)
+            ok = upstream_ok and templates > 0
+            # 节点心跳：在线 = 最近 NODE_ONLINE_SECONDS 内来领过活；running = 正在跑几条。
+            # **只报告、不参与 ok 判定** —— 节点掉线时把整条渠道判成「未就绪」，
+            # 用户会直接收到「渠道繁忙」，而让任务排队等节点回来往往才是对的。
+            now = _now()
+            nodes = {}
+            for name in set(per_node) | set(_LAST_CLAIM):
+                seen = _LAST_CLAIM.get(name)
+                age = None if seen is None else max(0, int(now - seen))
+                nodes[name] = {
+                    "online": age is not None and age <= NODE_ONLINE_SECONDS,
+                    "last_seen_seconds": age,
+                    "running": per_node.get(name, 0),
+                }
             return self._send(200 if ok else 503, {
                 "ok": ok, "templates": templates,
+                "nodes": nodes,
+                "nodes_online": sum(1 for v in nodes.values() if v["online"]),
+                "nodes_total": len(nodes),
                 "worker_alive": True, "worker_count": 1,
                 "cleanup_worker_alive": True, "worker_degraded": False,
                 "degraded_jobs": 0, "pending_jobs": pending, "running_jobs": running,
