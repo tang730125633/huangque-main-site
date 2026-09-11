@@ -13,40 +13,41 @@ class HomeVideoBannerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.html = (ROOT / "site/index.html").read_text(encoding="utf-8")
         cls.css = (ROOT / "site/homepage.css").read_text(encoding="utf-8")
+        cls.agent_wave = (ROOT / "site/homepage-agent-wave.js").read_text(encoding="utf-8")
         cls.liquid_glass = (ROOT / "site/homepage-liquid-glass.js").read_text(encoding="utf-8")
         cls.particles = (ROOT / "site/homepage-particles.js").read_text(encoding="utf-8")
         cls.bird_points = ROOT / "site/assets/home/bird-points.bin"
         cls.three_core = ROOT / "site/vendor/three.core.min.js"
         cls.three_module = ROOT / "site/vendor/three.module.min.js"
-        cls.videos = [
-            ROOT / "site/assets/home/hero-banner-monochrome-eye.mp4",
-            ROOT / "site/assets/home/hero-banner-ancient-courtyard.mp4",
-        ]
+        cls.video = ROOT / "site/assets/home/agent-wave-h3-2k.mp4"
+        cls.poster = ROOT / "site/assets/home/agent-wave-h3-2k-poster.jpg"
 
     def test_video_replaces_moon(self):
-        self.assertIn('<div class="hero-media" aria-hidden="true">', self.html)
-        self.assertIn("hero-banner-monochrome-eye.mp4", self.html)
-        self.assertIn("hero-banner-ancient-courtyard.mp4", self.html)
-        self.assertEqual(self.html.count("<video class="), 2)
-        self.assertIn("autoplay muted playsinline", self.html)
+        self.assertIn('<div class="hero-media agent-wave-media" aria-hidden="true">', self.html)
+        self.assertIn("agent-wave-h3-2k.mp4", self.html)
+        self.assertIn("data-hero-scrub", self.html)
+        self.assertEqual(self.html.count("<video"), 2)
         self.assertNotIn("hero-moon", self.html)
         self.assertNotIn("moon3d.js", self.html)
 
     def test_video_assets_are_small_mp4_files(self):
-        for video in self.videos:
-            self.assertTrue(video.is_file())
-            self.assertLess(video.stat().st_size, 5 * 1024 * 1024)
-            self.assertIn(b"ftyp", video.read_bytes()[:32])
+        self.assertTrue(self.video.is_file())
+        self.assertLess(self.video.stat().st_size, 24 * 1024 * 1024)
+        self.assertIn(b"ftyp", self.video.read_bytes()[:32])
+        self.assertTrue(self.poster.is_file())
+        self.assertLess(self.poster.stat().st_size, 1024 * 1024)
 
     def test_video_fills_hero_and_respects_reduced_motion(self):
         self.assertIn(".hero-media video{position:absolute;z-index:0;inset:0;width:100%;height:100%;object-fit:cover", self.css)
-        self.assertIn("transition:opacity 1s ease", self.css)
-        self.assertIn("video.addEventListener('ended', showNextHeroVideo)", self.html)
-        self.assertIn("if (reducedMotion.matches)", self.html)
-        self.assertIn("heroVideos.forEach(video => video.pause())", self.html)
+        self.assertIn(".hero.agent-wave-story", self.css)
+        self.assertIn("video.currentTime = targetTime", self.agent_wave)
+        self.assertIn("!video.seeking", self.agent_wave)
+        self.assertIn("video.pause()", self.agent_wave)
+        self.assertIn("prefers-reduced-motion: reduce", self.agent_wave)
 
     def test_liquid_glass_uses_pointer_driven_highlight(self):
-        self.assertIn("Huang Que AI Hub", self.html)
+        self.assertIn("让 AI", self.html)
+        self.assertIn("看见成片", self.html)
         self.assertGreaterEqual(self.html.count("data-liquid-glass"), 5)
         self.assertIn("addEventListener('pointermove'", self.html)
         self.assertIn("at var(--glass-x) var(--glass-y)", self.css)

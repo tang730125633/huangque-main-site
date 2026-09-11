@@ -49,6 +49,7 @@ class AssetRegistryTests(unittest.TestCase):
         html = (ROOT / "site" / "index.html").read_bytes()
         for name in (
             "homepage.css",
+            "homepage-agent-wave.js",
             "homepage-particles.js",
             "assets/home/orbit-gallery.js",
             "assets/home/orbit-gallery/gallery.json",
