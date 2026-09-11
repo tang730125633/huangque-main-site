@@ -13,6 +13,9 @@ ADAPTERS = {
     'openai_image': {'name': 'OpenAI 兼容文生图', 'kind': 'image', 'references': False},
     'minimax_h3': {'name': 'MiniMax H3 视频协议', 'kind': 'xiaole_video', 'references': True},
     'xai_video': {'name': 'Grok 视频协议', 'kind': 'xiaole_video', 'references': True},
+    # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
+    'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True},
+    'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True},
 }
 
 
@@ -182,8 +185,8 @@ def version(cid, rev=None, with_secret=False):
 def save_mapping(actor, body):
     kind, front = str(body.get('kind') or ''), str(body.get('front') or '').strip()
     cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
-    if kind == 'xiaole_video' and front not in {'grok','minimax','omni','micro'}:
-        raise ValueError('请选择现有视频请求标识 grok、minimax、omni 或 micro；新增前台入口需另行接入价格与权限')
+    if kind == 'xiaole_video' and front not in {'grok','grok15','minimax','omni','micro'}:
+        raise ValueError('请选择现有视频请求标识 grok、grok15、minimax、omni 或 micro；新增前台入口需另行接入价格与权限')
     cfg = version(cid)
     if kind != ADAPTERS[cfg['adapter']]['kind'] or not front or len(front) > 100:
         raise ValueError('功能类型与渠道能力不兼容，或前台标识未填写')
