@@ -141,6 +141,11 @@ SITE_ASSETS = (
         ("index.html",),
     ),
     SiteAsset(
+        "homepage-agent-wave.js",
+        "/homepage-agent-wave.js",
+        ("index.html",),
+    ),
+    SiteAsset(
         "homepage-particles.js",
         "/homepage-particles.js",
         ("index.html",),

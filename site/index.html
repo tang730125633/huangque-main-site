@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="agent-wave-home">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=b4dadc16">
+  <link rel="stylesheet" href="/homepage.css?v=16c69fa4">
   <script src="/assets/home/orbit-gallery.js?v=53db89b7" defer></script>
 </head>
 <body>
@@ -109,21 +109,62 @@
   </header>
 
   <main id="main">
-    <section class="hero" id="top">
-      <div class="hero-media" aria-hidden="true">
-        <video class="hero-video-eye is-active" autoplay muted playsinline preload="metadata">
-          <source src="/assets/home/hero-banner-monochrome-eye.mp4" type="video/mp4">
-        </video>
-        <video class="hero-video-courtyard" muted playsinline preload="metadata">
-          <source src="/assets/home/hero-banner-ancient-courtyard.mp4" type="video/mp4">
-        </video>
-        <canvas class="hero-liquid-glass" data-hero-liquid-glass></canvas>
-      </div>
-      <div class="hero-inner" data-reveal>
-        <h1><span class="line">Huang Que AI Hub</span></h1>
-        <div class="hero-actions">
-          <a class="button button-primary" data-liquid-glass href="/workbench/inspiration">ENTER HUANGQUE <span aria-hidden="true">↗</span></a>
+    <section class="hero agent-wave-story" id="top" data-agent-wave-story>
+      <span class="agent-wave-anchor" id="agent-wave-result" aria-hidden="true"></span>
+      <div class="agent-wave-stage">
+        <div class="hero-media agent-wave-media" aria-hidden="true">
+          <video class="hero-video-agent-wave is-active" data-hero-scrub muted playsinline preload="auto" poster="/assets/home/agent-wave-h3-2k-poster.jpg">
+            <source src="/assets/home/agent-wave-h3-2k.mp4" type="video/mp4">
+          </video>
+          <canvas class="hero-liquid-glass" data-hero-liquid-glass></canvas>
         </div>
+        <canvas class="agent-wave-overlay" data-agent-wave-overlay aria-hidden="true"></canvas>
+
+        <div class="agent-wave-copy-stack">
+          <article class="agent-wave-beat is-active" data-agent-beat="0">
+            <p class="kicker"><span></span>HUANGQUE AGENT · 01</p>
+            <h1>让 AI<br>不只会聊天。</h1>
+            <p>黄雀把你的素材、目标与工具组织成一条真正会向前推进的生产链路。</p>
+            <div class="hero-actions">
+              <a class="button button-primary" data-liquid-glass href="#agent-wave-result">观看执行过程</a>
+              <a class="button button-secondary" href="/workbench/inspiration">进入工作台 ↗</a>
+            </div>
+          </article>
+          <article class="agent-wave-beat" data-agent-beat="1">
+            <p class="kicker"><span></span>VISIBLE EXECUTION · 02</p>
+            <h2>调用工具。<br>推进任务。</h2>
+            <p>每一步都有状态，每一次失败都有回写。你看到的不是一句承诺，而是正在发生的执行。</p>
+          </article>
+          <article class="agent-wave-beat" data-agent-beat="2">
+            <p class="kicker"><span></span>DELIVERABLE · 03</p>
+            <h2>最后，<br><em>看见成片。</em></h2>
+            <p>从输入素材到可播放结果，黄雀把 Agent 的价值落在一份可以查看、交付和验收的作品上。</p>
+          </article>
+        </div>
+
+        <aside class="agent-wave-execution" aria-label="Agent 执行状态">
+          <header><span><i></i>AGENT RUNNING</span><code>HQ · 001</code></header>
+          <div class="agent-wave-steps">
+            <div class="agent-wave-step is-active" data-agent-step="0"><b>01</b><span>读取素材</span><small>INPUT READY</small></div>
+            <div class="agent-wave-step" data-agent-step="1"><b>02</b><span>规划镜头</span><small>STRUCTURING</small></div>
+            <div class="agent-wave-step" data-agent-step="2"><b>03</b><span>调用工具</span><small>EXECUTING</small></div>
+            <div class="agent-wave-step" data-agent-step="3"><b>04</b><span>交付成片</span><small>DELIVERED</small></div>
+          </div>
+          <figure class="agent-wave-result-card">
+            <video autoplay muted loop playsinline preload="metadata" aria-label="黄雀成片展示">
+              <source src="/assets/home/hero-banner-monochrome-eye.mp4" type="video/mp4">
+            </video>
+            <figcaption><span>OUTPUT / VIDEO</span><strong>成片已生成</strong><small>00:08 · 1920 × 1080</small></figcaption>
+          </figure>
+          <div class="agent-wave-progress"><span></span></div>
+        </aside>
+
+        <ol class="agent-wave-index" aria-label="当前叙事章节">
+          <li class="is-active" data-agent-index="0"><span>01</span>理解</li>
+          <li data-agent-index="1"><span>02</span>执行</li>
+          <li data-agent-index="2"><span>03</span>交付</li>
+        </ol>
+        <p class="agent-wave-scroll">SCROLL TO RUN <span></span></p>
       </div>
     </section>
 
@@ -494,7 +535,8 @@
       && capabilityBranches.length === 6
       && productChannels.length === 13
       && Boolean(document.querySelector('.story-stage') && document.querySelector('.story-chapters'))
-      && Boolean(document.querySelector('[data-hero-liquid-glass]'));
+      && Boolean(document.querySelector('[data-hero-liquid-glass]'))
+      && Boolean(document.querySelector('[data-hero-scrub]'));
     console.assert(window.__homepageCheck(), 'Homepage story mapping is incomplete');
 
     function activateStory(id) {
@@ -526,6 +568,7 @@
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
     const heroVideos = [...document.querySelectorAll('.hero-media video')];
+    const scrubHeroVideo = heroVideos.find(video => video.hasAttribute('data-hero-scrub'));
     let activeHeroVideo = 0;
     const showNextHeroVideo = () => {
       if (reducedMotion.matches || heroVideos.length < 2) return;
@@ -544,6 +587,11 @@
     const syncHeroVideoMotion = () => {
       if (!heroVideos.length) return;
       heroVideos.forEach(video => video.pause());
+      if (scrubHeroVideo) {
+        heroVideos.forEach(video => video.classList.toggle('is-active', video === scrubHeroVideo));
+        activeHeroVideo = heroVideos.indexOf(scrubHeroVideo);
+        return;
+      }
       if (reducedMotion.matches) {
         heroVideos.forEach((video, index) => {
           video.currentTime = 0;
@@ -743,6 +791,7 @@
 
   })();
   </script>
+  <script src="/homepage-agent-wave.js?v=b1f3ffbb" defer></script>
   <script src="/homepage-liquid-glass.js?v=20260810-edge1" defer></script>
   <script type="module" src="/homepage-particles.js?v=61695574"></script>
 </body>
