@@ -137,6 +137,7 @@
 
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">引擎</div>
       <div id="engineRow" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px;">
+        <div data-engine="lechuang" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">乐创 · Image 2</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">透明底·局部修图 · <span data-engine-cost="lechuang">—</span></div></div>
         <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 2</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">写实·局部修改·透明底 · <span data-engine-cost="gpt">30点</span> ✦推荐</div></div>
         <div data-engine="banana" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">纳米香蕉</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">快·中文好 · <span data-engine-cost="banana">25点</span></div></div>
         <div data-engine="seedream" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 1</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">中文字·商用设计 · <span data-engine-cost="seedream">12点</span></div></div>
@@ -155,6 +156,7 @@
         <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">黄雀引擎 1 Pro</div><div style="font-size:11px; margin-top:2px;">画质更强 · 约 1.5 分钟 · 标15/高20</div></div>
       </div>
 
+      <div id="legacyParamRows">
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">比例</div>
       <div id="ratioRow" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;">
         <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:9px; height:13px; border:1.4px solid #e7b24c; border-radius:2px;"></span>9:16</div>
@@ -179,6 +181,14 @@
             <button id="countPlus" type="button" aria-label="增加生成数量" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">+</button>
           </div>
         </div>
+      </div>
+      </div>
+
+      <!-- 乐创托管线路：选中「乐创 · Image 2」时显示。参数与点数来自后台已发布的参数契约。 -->
+      <div id="lechuangParamRows" hidden style="margin-top:22px;">
+        <div id="lechuangControls" class="cp-fields"></div>
+        <p id="lechuangHint" style="font-size:11.5px;color:#5c6b82;margin:10px 0 0;line-height:1.6;">乐创线路：每组参数对应固定点数，提交前会再确认；上传参考图自动切换为局部修图；每次出一张。</p>
+        <p id="lechuangUnavailable" hidden style="font-size:11.5px;color:#f4b740;margin:10px 0 0;">乐创线路暂未开放（后台未启用功能映射或未发布参数）。</p>
       </div>
 
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">🔍 提示词反推 <span style="font-size:12px; color:#5c6b82; font-weight:400;">(上传/粘贴一张喜欢的图，AI 反推出提示词)</span></div>
@@ -351,6 +361,65 @@
     zelongCard.style.display=''; zelongCard.setAttribute('aria-hidden','false');
   }
   var COUNT_OPTIONS=[1,2,4];
+  // 乐创托管线路：以一张引擎卡接入老工作台，参数与点数来自后台已发布的参数契约。
+  // 选中的组合编号 + 契约版本号提交给服务端；服务端按契约取值计价，客户端改不了价格。
+  var LECHUANG_FRONT='gpt-image-2';
+  var lechuangItem=null, lechuangControls=null;
+  function hqLechuangPick(items){
+    var list=Array.isArray(items)?items.filter(function(x){return x&&x.kind==='image';}):[];
+    var exact=list.filter(function(x){return x.front===LECHUANG_FRONT;});
+    if(exact.length) return exact[0];
+    var named=list.filter(function(x){return String(x.label||'').indexOf('乐创')>=0;});
+    return named.length?named[0]:null;
+  }
+  function hqLechuangPayload(item,choice,prompt,refs){
+    var payload={prompt:String(prompt||''),count:1,model:item.front,
+                 parameter_selection:{revision:item.revision,combination:choice?choice.id:''}};
+    if(refs&&refs.length) payload.reference_images=refs;
+    return payload;
+  }
+  window.HQBananaLechuang={pickItem:hqLechuangPick,buildPayload:hqLechuangPayload};
+  function lechuangDefaultPoints(){
+    if(!lechuangItem) return 0;
+    var combos=lechuangItem.combinations||[];
+    var def=combos.filter(function(x){return x.id===lechuangItem.default;})[0];
+    return Number((def||combos[0]||{}).points)||0;
+  }
+  function syncLechuangCard(){
+    var node=document.querySelector('[data-engine-cost="lechuang"]');
+    if(!node) return;
+    var points=lechuangControls?Number((lechuangControls.value()||{}).points)||0:lechuangDefaultPoints();
+    node.textContent=points?points+'点':'—';
+  }
+  function mountLechuang(){
+    var host=document.getElementById('lechuangControls');
+    if(!host||!lechuangItem||!window.ChannelParameterControls) return;
+    if(lechuangControls&&host.getAttribute('data-revision')===String(lechuangItem.revision)) return;
+    host.setAttribute('data-revision',String(lechuangItem.revision));
+    lechuangControls=window.ChannelParameterControls.mount(host,lechuangItem,function(){updateCost()},null,{});
+    updateCost();
+  }
+  function loadLechuangLine(){
+    fetch('/api/gen/channel-parameters',{cache:'no-store',credentials:'same-origin'})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(d){
+        lechuangItem=hqLechuangPick(d&&d.items);
+        var ok=!!lechuangItem;
+        var card=document.querySelector('#engineRow [data-engine="lechuang"]');
+        if(card){ card.style.display=ok?'':'none'; card.setAttribute('aria-hidden',ok?'false':'true'); }
+        var hint=document.getElementById('lechuangUnavailable');
+        if(hint) hint.hidden=ok;
+        var hint2=document.getElementById('lechuangHint');
+        if(hint2) hint2.hidden=!ok;
+        if(!ok&&engine==='lechuang') selectEngine('gpt');
+        if(ok){ mountLechuang(); syncLechuangCard(); }
+        else if(lechuangControls){ lechuangControls=null; }
+        updateCost();
+      })
+      .catch(function(){});
+  }
+  loadLechuangLine();
+  setInterval(loadLechuangLine,15000);
   // 引擎卡 → 计价用的 key。Nano Banana 一张卡两个型号，价格跟型号走。
   function costKey(eng){ return eng==='banana' ? bananaVariant : (eng==='seedream' ? 'seedream_'+seedreamVariant : eng); }
   var TEMPLATES=[
@@ -362,11 +431,16 @@
   ];
   var activeTemplate=TEMPLATES[0];
   function engineCost(eng){ var t=COSTBASE[costKey(eng)]||COSTBASE.nb2; return eng==='zelong2' ? t.std : (t[quality]||t.hd)*count; }
-  function costFor(){ return engineCost(engine); }
+  function costFor(){
+    if(engine==='lechuang'){ var chosen=lechuangControls&&lechuangControls.value(); return Number((chosen||{}).points)||lechuangDefaultPoints(); }
+    return engineCost(engine);
+  }
   function updateEngineCosts(){
     document.querySelectorAll('[data-engine-cost]').forEach(function(x){
+      if(x.getAttribute('data-engine-cost')==='lechuang') return;   // 乐创点数来自后台参数契约，由 syncLechuangCard 维护
       x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
     });
+    syncLechuangCard();
   };
   function tok(){ return '__cookie__'; }
   function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
@@ -445,9 +519,16 @@
     if(bv) bv.style.display = (e==='banana') ? 'grid' : 'none';
     var sv=document.getElementById('seedreamVariantRow');
     if(sv) sv.style.display = (e==='seedream') ? 'grid' : 'none';
-    if(refImg) showInp(engine==='gpt');
+    // 乐创线路用自己的参数契约（尺寸/质量/背景），与老的比例/清晰度/数量互斥显示
+    var isLechuang = (e==='lechuang');
+    var legacyRows=document.getElementById('legacyParamRows');
+    if(legacyRows) legacyRows.hidden = isLechuang;
+    var lcRows=document.getElementById('lechuangParamRows');
+    if(lcRows) lcRows.hidden = !isLechuang;
+    if(isLechuang){ count=1; mountLechuang(); }
+    if(refImg) showInp(engine==='gpt'||isLechuang);
     renderRefs();
-    updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算
+    updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算；乐创点数取自参数组合
   }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
 
@@ -772,8 +853,9 @@
     if(window.crypto&&crypto.randomUUID) return 'image-'+crypto.randomUUID();
     return 'image-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12);
   }
-  function submit(payload, label, endpoint){
-    if(window.PublishedChannelParameters?.redirect('image',payload.model||''))return;
+  function submit(payload, label, endpoint, opts){
+    // 乐创引擎卡本身就是托管渠道的入口，直接提交；其他引擎命中托管映射时才引导到平台面板。
+    if(!(opts&&opts.managed)&&window.PublishedChannelParameters?.redirect('image',payload.model||''))return;
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint; lastLabel=label;
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
@@ -883,7 +965,7 @@
     cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
     return shrinkToBudget(cv, maxBytes);
   }
-  function refLimit(){ return REF_LIMITS[engine]||1; }
+  function refLimit(){ if(engine==='lechuang') return lechuangItem?(Number(lechuangItem.reference_max)||0):0; return REF_LIMITS[engine]||1; }
   function insertImageMention(index){
     HQImageMentions.insert(pr,index);
   }
@@ -1127,6 +1209,16 @@
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
+    // 乐创线路：提交参数组合编号，模型/尺寸/质量/背景由服务端按契约取值
+    if(engine==='lechuang'){
+      if(!lechuangItem||!lechuangControls){ setNote('乐创线路暂未开放，请先选择其他引擎','#f4708a'); return; }
+      if(refImages.length>refLimit()){ setNote('乐创线路最多支持 '+refLimit()+' 张参考图，请删减后再生成','#f4708a'); return; }
+      var lechuangChoice=lechuangControls.value();
+      if(!lechuangChoice){ setNote('请先选择乐创的参数组合','#f4708a'); return; }
+      var lechuangPayload=hqLechuangPayload(lechuangItem,lechuangChoice,(pr.value||'').trim(),refImages.map(function(x){return x.data;}));
+      submit(lechuangPayload,'乐创 · Image 2 '+(refImages.length?'局部修图中':'生成中'),'/api/gen/image',{managed:true});
+      return;
+    }
     var usesRef=refImages.length>0&&engine!=='zelong2';
     if(refImages.length>refLimit()){ setNote('当前引擎最多支持 '+refLimit()+' 张参考图，请删减后再生成','#f4708a'); return; }
     if(usesRef) bp.reference_images=refImages.map(function(x){return x.data;});
