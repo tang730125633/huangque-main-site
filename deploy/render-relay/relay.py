@@ -88,6 +88,32 @@ def _node_record(node, ok, now, detail=""):
               % (node, st["n"], FAIL_COOLDOWN, str(detail)[:160]), flush=True)
 
 
+def _should_yield_to_idler(node, now):
+    """负载均衡：本节点在跑的活比别的**在线**节点多，就让给更空的那台。
+
+    「谁空谁先拿」—— 最少的那台永远不让（否则会互相让到没人干活）。
+    只跟**在线**节点比（NODE_ONLINE_SECONDS 内来领过活的）：掉线/摘出池的机器
+    不该被算进分母，否则剩下的节点全都不敢接活。
+    任何异常一律返回 False —— 均衡坏了也不能把派活搞停。
+    """
+    try:
+        with _db() as conn:
+            running = {
+                str(row[0]): int(row[1]) for row in conn.execute(
+                    "SELECT node, COUNT(*) FROM jobs WHERE status='running'"
+                    " AND node IS NOT NULL AND node != '' GROUP BY node")
+            }
+        online = [
+            name for name, ts in list(_LAST_CLAIM.items())
+            if now - ts <= NODE_ONLINE_SECONDS and not _node_blocked(name, now)
+        ]
+        if len(online) < 2:
+            return False          # 只有自己在线，没什么可让的
+        return running.get(node, 0) > min(running.get(name, 0) for name in online)
+    except Exception:
+        return False
+
+
 def _priority_has_room(now):
     """高优先级线路是否还有空位（最近 PRIORITY_WINDOW 秒内来过）。"""
     if not PRIORITY_NODES:
@@ -534,6 +560,11 @@ class Handler(BaseHTTPRequestHandler):
                 # 高优先级线路还有空位：本节点这次不领，让给它。
                 # 返回 200 + job=None（与「暂时没活」同形），轮询器会照常隔几秒再来问。
                 return self._send(200, {"job": None, "deferred": "priority"})
+            if _should_yield_to_idler(node, now):
+                # 负载均衡：本节点手上在跑的活比别的在线节点多，这次就让给更空的那台。
+                # 起因（2026-09-12）：三台 GPU 同时接活时，一台连着吃下 3 条，其中一条渲染
+                # 被挤到 333 秒，而另一台全程闲着 —— 谁空谁先拿，尾延迟才不会被拉长。
+                return self._send(200, {"job": None, "deferred": "load"})
             with _db() as conn:
                 # 回收失联节点的任务
                 conn.execute(
