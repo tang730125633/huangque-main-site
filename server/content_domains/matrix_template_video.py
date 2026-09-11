@@ -59,36 +59,16 @@ COMPLETE_TEMPLATE_COUNTS = frozenset(
 
 
 def _healthy_template_count(count) -> bool:
-    """目录总数是否落在已知的健康形态里。
-
-    过渡期老状态（TRANSITION_TEMPLATE_COUNTS）或「骨架 + 老模板可有可无」的推导区间
-    （COMPLETE_TEMPLATE_COUNTS）都算健康。**加减模板不用改这里。**
-    """
+    """The generation service owns catalog composition and size."""
     try:
         count = int(count or 0)
     except (TypeError, ValueError):
         return False
-    return count in TRANSITION_TEMPLATE_COUNTS or count in COMPLETE_TEMPLATE_COUNTS
+    return 1 <= count <= 1_000
 
 
 def _catalog_is_complete(templates) -> bool:
-    """看**组成**判断目录是否完整（总数会随模板增减而变，组成不会）。
-
-    硬要求只有一条：**ref 模板 >= 17 个**（骨架）。九宫格和 fixed-skill 是后来
-    分期加上去的，老目录没有它们同样算完整 —— 不能因为"少了一类新模板"就把
-    整条渠道判死。过渡期只有老 ffmpeg 模板也算合法（上游还没上新目录）。
-    """
-    items = list(templates or [])
-    if len(items) in TRANSITION_TEMPLATE_COUNTS:
-        return True  # 历史过渡态，保留兼容
-    ids = {str(item.get("id") or "") for item in items}
-    if ids and ids <= set(LEGACY_TEMPLATE_IDS):
-        return True
-    references = [
-        item for item in items
-        if REFERENCE_TEMPLATE_RE.fullmatch(str(item.get("id") or ""))
-    ]
-    return len(references) >= REFERENCE_TEMPLATE_COUNT
+    return bool(list(templates or []))
 
 
 FIXED_SKILL_TEMPLATE_CONTRACTS = {
@@ -369,46 +349,43 @@ def _semantic_contract(value, variant):
     }:
         raise RuntimeError("HyperFrames 语义排版能力无效")
     layers = value.get("layers")
-    expected_layers = _SEMANTIC_CONTRACTS.get(str(variant or ""))
-    expected_max_width = {
-        NINE_GRID_VARIANT: 930,
-        TRIPLE_STRIP_VARIANT: 738,
-        YELLOW_BANNER_VARIANT: 900,
-    }.get(variant, 996)
-    expected_contracts = _SEMANTIC_CONTRACT_TRANSITIONS.get(
-        str(variant or ""), (expected_layers,),
-    )
-    matching_contract = next((
-        contract for contract in expected_contracts
-        if isinstance(contract, dict)
-        and isinstance(layers, dict)
-        and set(layers) == set(contract)
-    ), None)
+    expected_max_width = value.get("max_width_px")
+    allowed_layers = {"top1", "top2", "top3", "bottom1", "bottom2"}
     if (
         value.get("version") != 1
-        or value.get("max_width_px") != expected_max_width
+        or isinstance(expected_max_width, bool)
+        or not isinstance(expected_max_width, int)
+        or not 64 <= expected_max_width <= 4096
         or not isinstance(layers, dict)
-        or expected_layers is None
-        or matching_contract is None
+        or not {"top1", "top2", "bottom2"}.issubset(layers)
+        or not set(layers).issubset(allowed_layers)
     ):
         raise RuntimeError("HyperFrames 语义排版能力无效")
     normalized = {}
-    for layer, expected in matching_contract.items():
-        item = layers.get(layer)
+    for layer, item in layers.items():
         if not isinstance(item, dict) or set(item) != {
             "font_size_px", "font_weight", "max_width_px", "max_lines",
         }:
             raise RuntimeError("HyperFrames 语义排版能力无效")
-        actual = (
-            item.get("font_size_px"), item.get("font_weight"),
-            item.get("max_width_px"), item.get("max_lines"),
-        )
-        allowed = _SEMANTIC_LAYER_TRANSITIONS.get(
-            (str(variant or ""), layer), {expected},
-        )
-        if actual not in allowed:
+        font_size = item.get("font_size_px")
+        font_weight = item.get("font_weight")
+        max_width = item.get("max_width_px")
+        max_lines = item.get("max_lines")
+        if (
+            any(isinstance(item, bool) for item in (
+                font_size, font_weight, max_width, max_lines,
+            ))
+            or not all(isinstance(item, int) for item in (
+                font_size, font_weight, max_width, max_lines,
+            ))
+            or not 8 <= font_size <= 512
+            or not 100 <= font_weight <= 1000
+            or not 16 <= max_width <= 4096
+            or max_width > expected_max_width
+            or not 1 <= max_lines <= 12
+        ):
             raise RuntimeError("HyperFrames 语义排版能力无效")
-        normalized[layer] = {key: int(value) for key, value in item.items()}
+        normalized[layer] = dict(item)
     return {
         "version": 1,
         "max_width_px": expected_max_width,
@@ -444,12 +421,19 @@ def _refresh_catalog(force=False):
             )
         ):
             raise RuntimeError("模板批量能力无效")
+        raw_templates = response.get("templates")
+        if not isinstance(raw_templates, list):
+            raise RuntimeError("模板目录无效")
         templates = []
-        for raw in response.get("templates") or []:
+        seen_template_ids = set()
+        for raw in raw_templates:
             if not isinstance(raw, dict):
                 continue
             template_id = str(raw.get("id") or "")
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
+            if (
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id)
+                or template_id in seen_template_ids
+            ):
                 continue
             engine = str(raw.get("engine") or "ffmpeg")
             font_selectable = raw.get("font_selectable") is not False
@@ -457,23 +441,19 @@ def _refresh_catalog(force=False):
                 "selectable" if font_selectable else "template_locked"
             ))
             variant = str(raw.get("variant") or "")
-            semantic_layout = _semantic_contract(
-                raw.get("semantic_layout"), variant,
-            )
+            try:
+                semantic_layout = _semantic_contract(
+                    raw.get("semantic_layout"), variant,
+                )
+            except RuntimeError:
+                continue
             if engine not in {"ffmpeg", "hyperframes"}:
                 continue
             if font_mode not in {"selectable", "template_locked"}:
                 continue
-            if (
-                engine == "hyperframes"
-                and variant not in {
-                    NINE_GRID_VARIANT,
-                    TRIPLE_STRIP_VARIANT,
-                    YELLOW_BANNER_VARIANT,
-                    FAN_WHIP_VARIANT,
-                    BRUSH_PANEL_VARIANT,
-                }
-                and not re.fullmatch(r"v(?:0[1-9]|1[0-7])", variant)
+            if engine == "hyperframes" and (
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", variant)
+                or semantic_layout is None
             ):
                 continue
             template = {
@@ -495,141 +475,66 @@ def _refresh_catalog(force=False):
             ):
                 if key in raw:
                     template[key] = raw[key]
-            templates.append(template)
-        template_ids = {item["id"] for item in templates}
-        if (
-            not _catalog_is_complete(templates)
-            or len(template_ids) != len(templates)
-        ):
-            raise RuntimeError("模板目录不完整")
-        legacy = {
-            item["id"]: item for item in templates
-            if item["id"] in LEGACY_TEMPLATE_IDS
-        }
-        # 只有「装得下完整骨架」的目录才做严格形状校验（保留过渡期容错）。
-        # 17 ref + 2 老模板 = 19，正好等于原来写死的 {19,20,22,24}，但这里是从常量推导的。
-        if len(templates) >= REFERENCE_TEMPLATE_COUNT + len(LEGACY_TEMPLATE_IDS):
-            references = [
-                item for item in templates
-                if REFERENCE_TEMPLATE_RE.fullmatch(item["id"])
-            ]
-            nine_grid = [
-                item for item in templates
-                if item["id"] == NINE_GRID_TEMPLATE_ID
-            ]
-            fixed_skill = [
-                item for item in templates
-                if item["id"] in FIXED_SKILL_TEMPLATE_IDS
-            ]
-            catalog_shape = (
-                len(legacy), len(nine_grid), len(fixed_skill),
-            )
-            semantic_variants = {
-                item["variant"] for item in references
-                if item.get("semantic_layout")
-            }
-            measured_layer_keys = {
-                "font_size_px", "font_weight", "max_width_px", "max_lines",
-            }
+            duration_mode = template.get("duration_mode")
+            required_visuals = template.get("required_visuals")
+            required_visuals_max = template.get("required_visuals_max")
+            fixed_duration = template.get("fixed_duration_seconds")
             if (
-                len(references) != REFERENCE_TEMPLATE_COUNT
-                or any(
-                    item["engine"] != "hyperframes"
-                    or item["font_selectable"] is not False
-                    or item["font_mode"] != "template_locked"
-                    for item in references
-                )
-                or {item["variant"] for item in references}
-                != {f"v{index:02d}" for index in range(1, 18)}
-                or semantic_variants != _ALL_REFERENCE_VARIANTS
-                or any(
-                    set(layer) != measured_layer_keys
-                    for item in references
-                    for layer in item["semantic_layout"]["layers"].values()
-                )
-                or catalog_shape not in {
-                    (2, 0, 0),
-                    (2, 1, 0),
-                    (2, 1, 2),
-                    (2, 1, 4),
-                    (0, 1, 2),
-                    (0, 1, 4),
+                duration_mode not in {
+                    None, "fixed", "fixed_12", "random_integer_7_15",
                 }
-            ):
-                raise RuntimeError("HyperFrames 模板目录不完整")
-            if nine_grid:
-                item = nine_grid[0]
-                if (
-                    item.get("engine") != "hyperframes"
-                    or item.get("font_selectable") is not False
-                    or item.get("font_mode") != "template_locked"
-                    or item.get("variant") != NINE_GRID_VARIANT
-                    or item.get("duration_mode") != "fixed_12"
-                    or item.get("required_visuals") != 9
-                    or item.get("required_visuals_max") != 9
-                    or item.get("bgm_mode") != "bound"
-                    or item.get("bgm_optional") is not True
-                    or item.get("semantic_layout") is None
-                ):
-                    raise RuntimeError("九宫格模板目录不完整")
-            if fixed_skill:
-                by_id = {item["id"]: item for item in fixed_skill}
-                if set(by_id) not in (
-                    set(FIXED_SKILL_TEMPLATE_IDS[:2]),
-                    set(FIXED_SKILL_TEMPLATE_IDS),
-                ):
-                    raise RuntimeError("新增 Skill 模板目录不完整")
-                for template_id in by_id:
-                    contract = FIXED_SKILL_TEMPLATE_CONTRACTS[template_id]
-                    item = by_id[template_id]
-                    if (
-                        item.get("engine") != "hyperframes"
-                        or item.get("font_selectable") is not False
-                        or item.get("font_mode") != "template_locked"
-                        or item.get("variant") != contract["variant"]
-                        or item.get("duration_mode") != "fixed"
-                        or not isinstance(
-                            item.get("fixed_duration_seconds"), (int, float)
-                        )
-                        or isinstance(item.get("fixed_duration_seconds"), bool)
-                        or abs(
-                            float(item["fixed_duration_seconds"])
-                            - float(contract["duration"])
-                        ) > 1e-9
-                        or item.get("required_visuals")
-                            != contract["required_visuals"]
-                        or item.get("required_visuals_max")
-                            != contract["required_visuals"]
-                        or item.get("bgm_mode") != "bound"
-                        or item.get("bgm_optional") is not True
-                        or item.get("semantic_layout") is None
-                    ):
-                        raise RuntimeError("新增 Skill 模板目录不完整")
-            templates = (
-                [
-                    legacy[template_id] for template_id in LEGACY_TEMPLATE_IDS
-                    if template_id in legacy
-                ]
-                + references + nine_grid
-                + ([
-                    next(
-                        item for item in fixed_skill
-                        if item["id"] == template_id
+                or (
+                    required_visuals is not None
+                    and (
+                        isinstance(required_visuals, bool)
+                        or not isinstance(required_visuals, int)
+                        or not 1 <= required_visuals <= 21
                     )
-                    for template_id in FIXED_SKILL_TEMPLATE_IDS
-                    if template_id in by_id
-                ] if fixed_skill else [])
-            )
-        else:
-            if set(legacy) != set(LEGACY_TEMPLATE_IDS):
-                raise RuntimeError("模板目录不完整")
-            templates = [
-                legacy[template_id] for template_id in LEGACY_TEMPLATE_IDS
-            ]
-        templates = [
-            item for item in templates
-            if item["id"] not in LEGACY_TEMPLATE_IDS
-        ]
+                )
+                or (
+                    required_visuals_max is not None
+                    and (
+                        isinstance(required_visuals_max, bool)
+                        or not isinstance(required_visuals_max, int)
+                        or not 1 <= required_visuals_max <= 21
+                        or (
+                            isinstance(required_visuals, int)
+                            and required_visuals_max < required_visuals
+                        )
+                    )
+                )
+                or (
+                    duration_mode == "fixed"
+                    and (
+                        isinstance(fixed_duration, bool)
+                        or not isinstance(fixed_duration, (int, float))
+                        or not math.isfinite(float(fixed_duration))
+                        or not 1 <= float(fixed_duration) <= 600
+                    )
+                )
+                or (
+                    "bgm_optional" in template
+                    and not isinstance(template["bgm_optional"], bool)
+                )
+            ):
+                continue
+            accepted_media_types = raw.get("accepted_media_types")
+            if accepted_media_types is not None:
+                if (
+                    not isinstance(accepted_media_types, list)
+                    or not accepted_media_types
+                    or len(accepted_media_types) > 2
+                    or any(item not in {"image", "video"}
+                           for item in accepted_media_types)
+                ):
+                    continue
+                template["accepted_media_types"] = list(dict.fromkeys(
+                    accepted_media_types
+                ))
+            templates.append(template)
+            seen_template_ids.add(template_id)
+        if not _catalog_is_complete(templates):
+            raise RuntimeError("模板目录无可用项")
         fonts = [{"value": "", "label": "自动搭配", "source": "automatic"}]
         seen = {""}
         for raw in response.get("fonts") or []:
@@ -963,12 +868,27 @@ def validate_payload(
             f"当前模板最多使用 {maximum_visuals} 份素材，"
             "请减少素材或改用更多画面位的模板"
         )
-    if user_material_count and REFERENCE_TEMPLATE_RE.fullmatch(template_id):
+    if (
+        user_material_count
+        and (
+            template.get("duration_mode") == "random_integer_7_15"
+            or (
+                template.get("duration_mode") is None
+                and REFERENCE_TEMPLATE_RE.fullmatch(template_id)
+            )
+        )
+    ):
         duration = max(float(duration or 8), user_material_count * 3.0)
+    accepted_media_types = template.get("accepted_media_types")
+    video_only = (
+        "image" not in accepted_media_types
+        if isinstance(accepted_media_types, list)
+        else template.get("duration_mode") in {"fixed", "fixed_12"}
+    )
     user_materials = _resolve_user_materials(
         body.get("user_materials"), username,
         trusted_frozen=trusted_frozen_execution,
-        video_only=template_id in FIXED_SKILL_TEMPLATE_IDS,
+        video_only=video_only,
     )
     material_policy = (
         MATERIAL_POLICY_SHARED if allow_shared_materials is not False

@@ -133,7 +133,7 @@ async function scenarioMediaRetry(){
 
 async function scenarioLivePreview(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
-  await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[1].onclick();
+  await flush();runtime.get('topText').value='实时标题';runtime.get('bottomText').value='实时行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('templateGrid').children[3].onclick();
   const style=runtime.get('livePreview').style;return {top:runtime.get('liveTop').textContent,bottom:runtime.get('liveBottom').textContent,template:runtime.get('livePreview').attributes['data-template'],liveBg:style['--live-bg'],liveFg:style['--live-fg'],liveAccent:style['--live-accent'],videoDisplay:runtime.get('video').style.display};
 }
 async function scenarioActionPrerequisites(){
@@ -165,12 +165,12 @@ async function scenarioVoiceoverSubmission(){
 }
 async function scenarioNineGridVoiceoverSubmission(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:'32'})),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/nine-grid-voiceover',duration:12,voiceover:{enabled:true,bgm:false}}}))},new Map());
-  await flush(30);runtime.get('templateGrid').children[3].onclick();runtime.get('topText').value='九宫格配音标题';runtime.get('bottomText').value='评论区获取完整资料';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('voiceoverEnabled').checked=true;runtime.get('voiceoverEnabled').listeners.change[0]();runtime.get('voiceoverText').value='这是一段九宫格口播文案';runtime.get('voiceoverText').listeners.input[0]();runtime.get('generateBtn').onclick();await flush(30);
+  await flush(30);runtime.get('templateGrid').children[5].onclick();runtime.get('topText').value='九宫格配音标题';runtime.get('bottomText').value='评论区获取完整资料';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('voiceoverEnabled').checked=true;runtime.get('voiceoverEnabled').listeners.change[0]();runtime.get('voiceoverText').value='这是一段九宫格口播文案';runtime.get('voiceoverText').listeners.input[0]();runtime.get('generateBtn').onclick();await flush(30);
   return {body:JSON.parse(runtime.requests.post[0].options.body),selected:runtime.get('templateName').textContent};
 }
 async function scenarioFixedSkillTemplateSubmission(){
   async function submit(index){const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:700+index})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());await flush(30);runtime.get('templateGrid').children[index].onclick();runtime.get('topText').value='团队8个人，每天产出100条短视频';runtime.get('bottomText').value='评论区扣888';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('generateBtn').onclick();await flush(30);return {selected:runtime.get('templateName').textContent,body:JSON.parse(runtime.requests.post[0].options.body)}}
-  return {triple:await submit(4),yellow:await submit(5)};
+  return {triple:await submit(6),yellow:await submit(7)};
 }
 async function scenarioVoiceoverBgmSubmission(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:28})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());
@@ -199,7 +199,7 @@ async function scenarioAutomaticFont(){
 }
 async function scenarioLockedTemplateBatch(){
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:12})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());
-  await flush();runtime.get('templateGrid').children[2].onclick();runtime.get('batchCount').value='5';runtime.get('topText').value='固定字体标题';runtime.get('bottomText').value='固定字体行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('generateBtn').onclick();await flush();
+  await flush();runtime.get('templateGrid').children[4].onclick();runtime.get('batchCount').value='5';runtime.get('topText').value='固定字体标题';runtime.get('bottomText').value='固定字体行动文案';runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();runtime.get('generateBtn').onclick();await flush();
   return {body:JSON.parse(runtime.requests.post[0].options.body),bodies:runtime.requests.post.map(x=>JSON.parse(x.options.body)),posts:runtime.requests.post.length,batchDisabled:runtime.get('batchCount').disabled,batchValue:runtime.get('batchCount').value,batchHint:runtime.get('batchHint').textContent};
 }
 async function scenarioBatchFive(){
