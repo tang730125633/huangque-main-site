@@ -1769,7 +1769,7 @@ def run_job(job_id):
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         if payload.get('_channel_binding'):
             from .channel_runtime import run_task
-            result = run_task(payload['_channel_binding'], payload, job_id)
+            result = run_task(payload['_channel_binding'], payload, job_id, jdb)
         else:
             result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
@@ -1877,6 +1877,15 @@ def run_job(job_id):
         except Exception:
             pass
     except Exception as e:
+        # 管理员终止的任务：终止台账已原子写入 error + 待退款，这里直接收工，
+        # 不能走各类型的恢复/回炉分支（否则会把已终止的任务重新排队或重复退款）。
+        try:
+            from . import task_termination
+            with closing(jdb()) as connection:
+                if task_termination.get(connection, job_id):
+                    return
+        except Exception:
+            pass
         if kind in {"sora_video", "xiaole_video", "video"}:
             try:
                 if _domains()[2].recover_paid_video_error(
@@ -1982,7 +1991,7 @@ def run_job(job_id):
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
-            if kind == 'matrix_template_video':
+            if kind == 'matrix_template_video' or payload.get('_channel_binding'):
                 try:
                     from . import task_termination
                     task_termination.acknowledge(jdb, job_id)

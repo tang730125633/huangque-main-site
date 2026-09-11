@@ -285,8 +285,10 @@ def generate(cfg, payload, rid, job_id):
             raise OutcomeUnknown('供应商未返回工单号，禁止自动重发')
         store.finish(rid,'running','乐创已接单',provider_id)
         trace.record(job_id,'provider_accepted','recorded',provider_task_id=provider_id,**metadata)
+        _provider_submitted(provider_id)   # 记入终止台账，终止后仍可对账上游工单
         deadline = time.monotonic()+1800
         while time.monotonic()<deadline:
+            _termination_check()   # 已提交的任务：停止等待并保留工单号；上游可能仍会跑完
             time.sleep(5)
             store.finish(rid,'running','查询乐创生成状态',provider_id)
             try:
@@ -325,8 +327,10 @@ def generate(cfg, payload, rid, job_id):
             raise OutcomeUnknown('供应商未返回工单号，禁止自动重发')
         store.finish(rid,'running','供应商已接单',provider_id)
         trace.record(job_id,'provider_accepted','recorded',provider_task_id=provider_id,**metadata)
+        _provider_submitted(provider_id)
         deadline = time.monotonic()+1800
         while time.monotonic()<deadline:
+            _termination_check()
             time.sleep(5)
             path = ('/v2/query/video_generation/' if adapter=='minimax_h3' else '/videos/')+urllib.parse.quote(provider_id,safe='')
             store.finish(rid,'running','查询供应商生成状态',provider_id)
@@ -383,6 +387,31 @@ def generate(cfg, payload, rid, job_id):
         raise
 
 
+def _termination_check():
+    """管理员终止检查点：无终止作用域时是空操作，只有托管渠道任务会被停手。"""
+    from . import task_termination
+    task_termination.check()
+
+
+def _provider_submitted(provider_id):
+    if not provider_id:
+        return
+    from . import task_termination
+    task_termination.provider_submitted(provider_id)
+
+
+def _mark_terminated(rid, detail='管理员终止任务'):
+    """终止态独立于失败/未知：不参与渠道健康与告警，也不覆盖真实终态。"""
+    with closing(store.db()) as c:
+        cur = c.execute(
+            "UPDATE runs SET state='terminated',detail=?,updated=? "
+            "WHERE id=? AND state NOT IN ('passed','failed','terminated')",
+            (detail, time.time(), rid),
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
 def execute(rid, payload=None):
     with closing(store.db()) as c:
         row = dict(c.execute('SELECT * FROM runs WHERE id=?',(rid,)).fetchone())
@@ -391,6 +420,7 @@ def execute(rid, payload=None):
     try:
         cfg = store.version(row['channel'],row['version'],True)
         while True:
+            _termination_check()   # 排队阶段终止：尚未提交供应商，零费用止损
             with closing(store.db()) as c:
                 c.execute('BEGIN IMMEDIATE')
                 # Stale runs remain unknown; never resubmit after restart.
@@ -410,6 +440,7 @@ def execute(rid, payload=None):
             if time.monotonic()-start>120:
                 raise RuntimeError('渠道并发或限流等待超时，尚未提交供应商')
             time.sleep(1)
+        _termination_check()       # 拿到闸门后再确认一次，避免终止后仍提交付费请求
         if row['kind']=='connection':
             try:
                 safe_http.request_bytes(
@@ -443,6 +474,11 @@ def execute(rid, payload=None):
         _notify(row,'passed')
         return result
     except Exception as exc:
+        from . import task_termination
+        if isinstance(exc, task_termination.TaskTerminated):
+            # 管理员终止：独立终态，不算渠道故障、不触发渠道告警；退款由终止台账按幂等规则处理。
+            _mark_terminated(rid)
+            raise
         state = 'blocked' if isinstance(exc,CheckUnsupported) else 'unknown' if isinstance(exc,OutcomeUnknown) else 'failed'
         # Raw provider errors/payloads and secrets never enter public diagnostics.
         with closing(store.db()) as c:
@@ -475,10 +511,20 @@ def _notify(row,state):
         trace.enqueue(action,row['channel'],occurred)
 
 
-def run_task(binding,payload,job_id):
+def run_task(binding,payload,job_id,job_db=None):
+    """托管渠道任务入口；带上任务库句柄后，管理员终止可以在执行循环里安全停手。"""
     cfg = store.version(binding['id'],binding['version'])
     rid = store.reserve(cfg['id'],'task',str(job_id),cfg)
-    return execute(rid,payload)
+    if job_db is None:
+        return execute(rid,payload)
+    from . import task_termination
+    try:
+        with task_termination.scope(int(job_id), job_db):
+            return execute(rid,payload)
+    except task_termination.TaskTerminated:
+        # 进入执行前就被终止（例如排队期间）：把运行记录收敛为终止态，别让它占着队列额度。
+        _mark_terminated(rid)
+        raise
 
 
 def start_test(actor,body):
