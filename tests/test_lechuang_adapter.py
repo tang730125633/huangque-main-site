@@ -59,7 +59,7 @@ class LechuangAdapterTests(unittest.TestCase):
         ch = self.image_channel()
         cfg = cm.version(ch['id'])
         payload = {'prompt': '画一只猫', 'size': '1024x1280', 'quality': 'high', 'background': 'transparent', 'count': 1}
-        path, body = runtime.build_generation_request(cfg, payload)
+        path, body, files = runtime.build_generation_request(cfg, payload)
         self.assertEqual(path, '/generations')
         self.assertEqual(body['model'], 'gpt-image-2')
         self.assertEqual(body['input']['mode'], 'text_to_image')
@@ -67,13 +67,14 @@ class LechuangAdapterTests(unittest.TestCase):
         self.assertEqual(body['input']['aspect_ratio'], '4:5')
         self.assertEqual(body['input']['background'], 'transparent')
         self.assertNotIn('reference_images', body['input'])
+        self.assertIsNone(files)
 
     def test_image_request_image_to_image_passes_refs_as_data_url(self):
         ch = self.image_channel()
         cfg = cm.version(ch['id'])
         payload = {'prompt': '改背景', 'size': '1024x1024', 'quality': 'medium', 'background': 'auto',
                    'reference_images': ['data:image/png;base64,AAAA'], 'count': 1}
-        path, body = runtime.build_generation_request(cfg, payload)
+        path, body, files = runtime.build_generation_request(cfg, payload)
         self.assertEqual(body['input']['mode'], 'image_to_image')
         self.assertEqual(body['input']['reference_images'], [{'type': 'data_url', 'value': 'data:image/png;base64,AAAA'}])
 
@@ -82,14 +83,14 @@ class LechuangAdapterTests(unittest.TestCase):
         cfg = cm.version(ch['id'])
         payload = {'prompt': 'x', 'size': '1024x1024', 'quality': 'auto', 'background': 'auto',
                    'reference_images': ['https://example.com/a.png']}
-        _, body = runtime.build_generation_request(cfg, payload)
+        _, body, _ = runtime.build_generation_request(cfg, payload)
         self.assertEqual(body['input']['reference_images'][0], {'type': 'url', 'value': 'https://example.com/a.png'})
 
     def test_video_request_maps_size_by_ratio_and_resolution(self):
         ch = self.video_channel()
         cfg = cm.version(ch['id'])
         payload = {'prompt': '海边日出', 'ratio': '9:16', 'resolution': '480p', 'duration': 8}
-        path, body = runtime.build_generation_request(cfg, payload)
+        path, body, files = runtime.build_generation_request(cfg, payload)
         self.assertEqual(path, '/generations')
         self.assertEqual(body['model'], 'Grok Image Video')
         self.assertEqual(body['input']['mode'], 'text_to_video')
@@ -97,7 +98,7 @@ class LechuangAdapterTests(unittest.TestCase):
         self.assertEqual(body['input']['resolution'], '480p')
         self.assertEqual(body['input']['duration_seconds'], 8)
         payload.update(ratio='16:9', resolution='1080p')
-        _, body = runtime.build_generation_request(cfg, payload)
+        _, body, _ = runtime.build_generation_request(cfg, payload)
         self.assertEqual(body['input']['size'], '1920x1080')
 
     def test_video_request_image_to_video(self):
@@ -105,7 +106,7 @@ class LechuangAdapterTests(unittest.TestCase):
         cfg = cm.version(ch['id'])
         payload = {'prompt': '动起来', 'ratio': '1:1', 'resolution': '720p', 'duration': 4,
                    'reference_images': ['data:image/png;base64,AAAA']}
-        _, body = runtime.build_generation_request(cfg, payload)
+        _, body, _ = runtime.build_generation_request(cfg, payload)
         self.assertEqual(body['input']['mode'], 'image_to_video')
         self.assertEqual(body['input']['size'], '720x720')
         self.assertEqual(body['input']['reference_images'], [{'type': 'data_url', 'value': 'data:image/png;base64,AAAA'}])
@@ -151,7 +152,7 @@ class LechuangAdapterTests(unittest.TestCase):
             'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==')
         calls = {'posts': 0, 'idem': None}
 
-        def fake_request(cfg_, method, path, body=None, extra_headers=None):
+        def fake_request(cfg_, method, path, body=None, extra_headers=None, files=None):
             if method == 'POST':
                 calls['posts'] += 1
                 calls['idem'] = (extra_headers or {}).get('Idempotency-Key')
@@ -181,7 +182,7 @@ class LechuangAdapterTests(unittest.TestCase):
         fake_mp4 = b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 64
         downloaded = {}
 
-        def fake_request(cfg_, method, path, body=None, extra_headers=None):
+        def fake_request(cfg_, method, path, body=None, extra_headers=None, files=None):
             if method == 'POST':
                 return {'code': 200, 'message': 'success', 'data': {
                     'request_id': 'REQ2', 'task_id': 'TASK2', 'model': 'Grok Image Video', 'model_type': 'video',
@@ -218,7 +219,7 @@ class LechuangAdapterTests(unittest.TestCase):
         ch = self.image_channel()
         cfg = cm.version(ch['id'])
 
-        def fake_request(cfg_, method, path, body=None, extra_headers=None):
+        def fake_request(cfg_, method, path, body=None, extra_headers=None, files=None):
             return {'code': 200, 'message': 'success', 'data': {
                 'request_id': 'REQ3', 'model': 'gpt-image-2', 'model_type': 'image', 'status': 'failed',
                 'output': {'text': None, 'images': [], 'videos': []},

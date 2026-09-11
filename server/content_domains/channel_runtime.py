@@ -37,16 +37,27 @@ def validate_payload(cfg, payload):
     refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
     if not isinstance(refs, list):
         raise ValueError('参考图必须为数组')
-    if cfg['adapter'] == 'openai_image' and (refs or payload.get('images') or payload.get('mode') in {'img2img','edit'}):
-        raise ValueError('此适配器仅支持文生图，参考图编辑请使用已有专用渠道')
+    if cfg['adapter'] == 'openai_image':
+        spec = cfg.get('parameters') or {}
+        mask_present = bool(payload.get('mask'))
+        if spec.get('reference_max', 0) >= 1:
+            if len(refs) > spec['reference_max']:
+                raise ValueError('参考图数量超出当前模型支持范围')
+        elif refs or payload.get('images') or payload.get('mode') in {'img2img','edit'}:
+            raise ValueError('此适配器仅支持文生图，参考图编辑请使用已有专用渠道')
+        if mask_present:
+            if not spec.get('mask'):
+                raise ValueError('此渠道未启用局部修图（蒙版）')
+            if len(refs) != 1:
+                raise ValueError('局部修图需要恰好 1 张参考图')
     if cfg['adapter'] == 'minimax_h3':
         from .video_minimax_h3 import build_request
         build_request(payload['prompt'], refs, payload.get('ratio') or '9:16', payload.get('duration') or 5, payload.get('resolution') or '2K')
     if cfg['adapter'] == 'xai_video' and (len(refs)>1 or payload.get('video') or payload.get('reference_videos')):
         raise ValueError('此 Grok 适配器支持文生视频或单参考图，暂不支持视频编辑及多图')
     if cfg['adapter'] == 'xai_video':
-        if str(payload.get('resolution') or '720p').lower() != '720p':
-            raise ValueError('此 Grok 适配器仅支持720p，不能将更高分辨率任务降级执行')
+        if str(payload.get('resolution') or '720p').lower() not in ({'720p'} | ({'1080p'} if cfg['model']=='grok-imagine-video-1.5' else set())):
+            raise ValueError('此 Grok 模型不支持该分辨率，不能将更高分辨率任务降级执行')
         if not 1<=int(payload.get('duration') or 5)<=15:
             raise ValueError('Grok 视频时长须为1～15秒')
         if payload.get('ratio','9:16') not in {'9:16','16:9','1:1'}:
@@ -74,13 +85,20 @@ def validate_payload(cfg, payload):
             raise ValueError('乐创视频支持9:16、16:9或1:1比例')
 
 
-def request(cfg, method, path, body=None, extra_headers=None):
+def request(cfg, method, path, body=None, extra_headers=None, files=None):
     headers = {'Authorization': 'Bearer ' + cfg['secret']}
     if extra_headers:
         headers.update(extra_headers)
     try:
+        url = cfg['base_url']+'/'+path.lstrip('/')
+        if files is not None:
+            return safe_http.request_multipart_json(
+                method, url, fields=body or {}, files=files,
+                headers=headers,
+                timeout=cfg['timeout'], proxy=cfg.get('proxy') or '',
+            )
         return safe_http.request_json(
-            method, cfg['base_url']+'/'+path.lstrip('/'), body=body,
+            method, url, body=body,
             headers=headers,
             timeout=cfg['timeout'], proxy=cfg.get('proxy') or '',
         )
@@ -130,19 +148,59 @@ def _lechuang_image_resolution(size):
     return '1k' if edge <= 1280 else ('2k' if edge <= 2304 else '4k')
 
 
-def build_generation_request(cfg, payload):
+def _decode_data_url(value, field):
+    value = str(value or '').strip()
+    if not value.startswith('data:') or ',' not in value:
+        raise ValueError(field + ' 必须为 data URL')
+    meta, b64 = value.split(',', 1)
+    if ';base64' not in meta:
+        raise ValueError(field + ' 必须为 base64 编码')
+    cleaned = ''.join(b64.split())
+    cleaned += '=' * ((4 - len(cleaned) % 4) % 4)
+    try:
+        raw = base64.b64decode(cleaned, validate=True)
+    except Exception:
+        raise ValueError(field + ' 必须是合法 base64') from None
+    if not raw:
+        raise ValueError(field + ' 内容为空')
+    if len(raw) > 10 * 1024 * 1024:
+        raise ValueError(field + ' 超过 10MB，请先压缩图片再上传')
+    return raw
+
+
+def _edits_parts(cfg, payload, refs, placeholder=False):
+    spec = cfg.get('parameters') or {}
+    fields = {'prompt': str(payload.get('prompt') or ''), 'size': str(payload.get('size') or '1024x1024'), 'n': '1'}
+    for key, default in (('output_format', 'png'), ('background', 'opaque')):
+        if spec and key in {f['key'] for f in spec.get('fields', [])}:
+            fields[key] = str(payload.get(key) or default)
+    files = []
+    if placeholder:
+        files.append(('image', 'reference.png', b''))
+        if payload.get('mask'):
+            files.append(('mask', 'mask.png', b''))
+    else:
+        files.append(('image', 'image.png', _decode_data_url(refs[0], '参考图')))
+        if payload.get('mask'):
+            files.append(('mask', 'mask.png', _decode_data_url(payload['mask'], '蒙版')))
+    return fields, files
+
+
+def build_generation_request(cfg, payload, preview=False):
     from .channel_parameters import image_request
     validate_payload(cfg,payload)
     refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
     adapter=cfg['adapter']
     if adapter == 'openai_image':
-        body = image_request(cfg,payload)
-        path = '/images/generations'
-    elif adapter == 'minimax_h3':
+        if refs:
+            body, files = _edits_parts(cfg, payload, refs, placeholder=preview)
+            return '/images/edits', body, files
+        return '/images/generations', image_request(cfg,payload), None
+    if adapter == 'minimax_h3':
         from .video_minimax_h3 import build_request
         body = build_request(payload['prompt'], refs, payload.get('ratio') or '9:16',payload.get('duration') or 5,payload.get('resolution') or '2K')
-        path = '/v2/video_generation'
-    elif adapter == 'lechuang_image':
+        return '/v2/video_generation', body, None
+    if adapter == 'lechuang_image':
         from .channel_parameters import SIZES
         size = str(payload.get('size') or '1024x1024')
         image_input = {
@@ -156,9 +214,8 @@ def build_generation_request(cfg, payload):
         }
         if refs:
             image_input['reference_images'] = _lechuang_refs(refs)
-        body = {'model': cfg['model'], 'input': image_input}
-        path = '/generations'
-    elif adapter == 'lechuang_video':
+        return '/generations', {'model': cfg['model'], 'input': image_input}, None
+    if adapter == 'lechuang_video':
         ratio = str(payload.get('ratio') or '9:16')
         resolution = str(payload.get('resolution') or '720p').lower()
         video_input = {
@@ -170,14 +227,11 @@ def build_generation_request(cfg, payload):
         }
         if refs:
             video_input['reference_images'] = _lechuang_refs(refs)
-        body = {'model': cfg['model'], 'input': video_input}
-        path = '/generations'
-    else:
-        body = {'model':cfg['model'],'prompt':payload['prompt'],'duration':int(payload.get('duration') or 5),'aspect_ratio':payload.get('ratio') or '9:16','resolution':'720p'}
-        if refs:
-            body['image'] = {'url':refs[0]}
-        path = '/videos/generations'
-    return path,body
+        return '/generations', {'model': cfg['model'], 'input': video_input}, None
+    body = {'model':cfg['model'],'prompt':payload['prompt'],'duration':int(payload.get('duration') or 5),'aspect_ratio':payload.get('ratio') or '9:16','resolution':str(payload.get('resolution') or '720p')}
+    if refs:
+        body['image'] = {'url':refs[0]}
+    return '/videos/generations', body, None
 
 
 def generate(cfg, payload, rid, job_id):
@@ -189,12 +243,12 @@ def generate(cfg, payload, rid, job_id):
     is_lechuang = adapter in ('lechuang_image', 'lechuang_video')
     metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
                     transport='proxy' if cfg.get('proxy') else 'direct')
-    path,body=build_generation_request(cfg,payload)
+    path,body,files=build_generation_request(cfg,payload)
     trace.record(job_id,'route','recorded',**metadata)
     store.finish(rid,'running','提交供应商')
     # 乐创付费创建请求要求 8-128 字符幂等键；run id 为 32 位 hex，天然幂等。
     extra_headers = {'Idempotency-Key': str(rid)} if is_lechuang else None
-    result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body,extra_headers=extra_headers),**metadata)
+    result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body,extra_headers=extra_headers,files=files),**metadata)
     provider_id = str(result.get('task_id') or result.get('request_id') or '')
     if is_lechuang:
         envelope = (result or {}).get('data') if isinstance(result, dict) else {}

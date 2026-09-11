@@ -1231,13 +1231,22 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertIn('class="function-tab hidden" type="button" data-function="omni"', html)
         self.assertIn('class="function-tab hidden" type="button" data-function="micro"', html)
         self.assertIn('class="function-tab hidden" type="button" data-function="minimax"', html)
+        self.assertIn('class="function-tab hidden" type="button" data-function="sora"', html)
+        self.assertLess(
+            html.index('data-function="grok"'),
+            html.index('data-function="talking"'),
+        )
+        self.assertLess(
+            html.index('data-function="minimax"'),
+            html.index('data-function="micro"'),
+        )
+        self.assertLess(
+            html.index('data-function="micro"'),
+            html.index('data-function="sora"'),
+        )
         self.assertLess(
             html.index('data-function="sora"'),
             html.index('data-function="omni"'),
-        )
-        self.assertLess(
-            html.index('data-function="omni"'),
-            html.index('data-function="micro"'),
         )
         self.assertIn("omniAvailable=d.omni_video_enabled===true", html)
         self.assertIn("seedanceAvailable=d.seedance_video_enabled===true", html)

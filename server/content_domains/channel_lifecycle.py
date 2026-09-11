@@ -29,7 +29,7 @@ def legacy_provider(kind,payload):
         provider=str(payload.get('provider') or 'openai').strip().lower()
         return {'banana':'gemini','openai':'openai','seedream':'seedance','xiaole':None,'zelong2':None}.get(provider,'openai')
     if kind=='xiaole_video':
-        return {'grok':'xai','minimax':'minimax','omni':'gemini','micro':'seedance'}.get(str(payload.get('channel') or 'grok').strip().lower())
+        return {'grok':'xai','grok15':'xai','minimax':'minimax','omni':'gemini','micro':'seedance'}.get(str(payload.get('channel') or 'grok').strip().lower())
     if kind=='sora_video':
         return 'openai'
     return None

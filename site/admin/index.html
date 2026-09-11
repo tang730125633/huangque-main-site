@@ -333,7 +333,7 @@
 /* Unified channel catalog: stable names, wrapped evidence, responsive detail panel. */
 .cm-categories{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}.cm-categories button.active,[data-cm-tab].active,[data-edit-pane].active{border-color:var(--gold);color:var(--gold);background:rgba(224,180,62,.08)}.cm-categories small{margin-left:7px;color:var(--muted)}
 .cm-row-actions{display:flex;gap:6px;flex-wrap:wrap;min-width:210px}.cm-row-actions button{padding:6px 10px}.cm-row-actions details{padding:6px}.cm-row-actions summary{cursor:pointer;color:var(--muted)}.cm-row-actions details button{margin-top:8px}.cm-lifecycle-dialog{width:min(520px,90vw);background:var(--panel,#151c18);color:var(--text,#e4e9e3);border:1px solid #465148;border-radius:12px;padding:24px}.cm-lifecycle-dialog::backdrop{background:#0009}.cm-lifecycle-dialog textarea{width:100%;box-sizing:border-box;min-height:80px}.cm-lifecycle-dialog p{white-space:pre-line;line-height:1.7}.cm-table-scroll{overflow-x:auto;max-width:100%}.cm-table-scroll table{width:100%;min-width:650px}.cm-table-scroll td{vertical-align:top;white-space:normal;overflow-wrap:anywhere;max-width:350px}.cm-table-scroll td>b{display:block;font-size:14px}.cm-table-scroll small{display:block;color:var(--muted);font-size:11px;margin-top:6px}.cm-evidence{display:inline-block;white-space:normal;line-height:1.6}.cm-evidence.warn{color:#e6c77b}#cmSearch{min-width:200px;flex:1}
-.cm-drawer-open{overflow:hidden}.cm-drawer-layer{position:fixed;inset:0;background:#0008;z-index:1100;display:flex;justify-content:flex-end}.cm-drawer-layer[hidden]{display:none}.cm-drawer{width:min(900px,95vw);height:100%;overflow:auto;background:var(--panel,#121b15);border-left:1px solid var(--line);padding:24px;box-sizing:border-box;box-shadow:-16px 0 60px #0005}.cm-drawer-head{display:flex;justify-content:space-between;align-items:center;gap:20px;position:sticky;top:-24px;background:var(--panel,#121b15);padding:18px 0;z-index:2}.cm-drawer-head h2{overflow-wrap:anywhere}.cm-flow{padding:14px;border:1px solid var(--line);border-radius:8px;line-height:1.8;overflow-wrap:anywhere}.cm-drawer h3{margin-top:24px}.cm-drawer .cm-form{margin-top:0}.cm-drawer .actions{flex-wrap:wrap}.cm-drawer .channel-title{min-width:170px}
+.cm-drawer-open{overflow:hidden}.cm-drawer-layer{position:fixed;inset:0;background:#0008;z-index:1100;display:flex;justify-content:flex-end}.cm-drawer-layer[hidden]{display:none}.cm-drawer{width:min(900px,95vw);height:100%;overflow:auto;background:var(--panel,#121b15);border-left:1px solid var(--line);padding:24px;box-sizing:border-box;box-shadow:-16px 0 60px #0005}.cm-drawer-head{display:flex;justify-content:space-between;align-items:center;gap:20px;position:sticky;top:-24px;background:var(--panel,#121b15);padding:18px 0;z-index:2}.cm-drawer-head h2{overflow-wrap:anywhere}.cm-flow{padding:14px;border:1px solid var(--line);border-radius:8px;line-height:1.8;overflow-wrap:anywhere}.cm-drawer h3{margin-top:24px}.cm-drawer .cm-form{margin-top:0}.cm-drawer .actions{flex-wrap:wrap}.cm-drawer .channel-title{min-width:170px}.cm-layout-page{margin:18px 0;padding:16px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.02)}.cm-layout-page h4{margin:0 0 8px}.cm-layout-list{display:flex;flex-direction:column;gap:8px;margin-top:10px;max-width:560px}.cm-layout-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(255,255,255,.03)}.cm-layout-row>span{flex:1;font-weight:600}.cm-layout-row label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}#cmLayoutStatus{color:var(--gold);font-size:12px;margin-top:10px}
 </style>
 </head>
 <body class="admin-locked">
@@ -567,7 +567,7 @@
       </section>
       <section class="card span12 module-card" data-module="managedChannels" hidden>
         <div class="section-head"><div><h2>渠道管理</h2><p class="muted">按功能找渠道，在详情中配置、测试和排查问题。</p></div><div class="actions"><button id="cmReload">刷新</button><button class="primary" id="cmNew">新增渠道</button></div></div>
-        <nav class="module-subnav" aria-label="渠道管理页面"><button data-cm-tab="catalog" class="active">渠道列表</button><button data-cm-tab="mapping">功能映射</button><button data-cm-tab="health">测试与健康</button><button data-cm-tab="audit">操作记录</button></nav>
+        <nav class="module-subnav" aria-label="渠道管理页面"><button data-cm-tab="catalog" class="active">渠道列表</button><button data-cm-tab="mapping">功能映射</button><button data-cm-tab="health">测试与健康</button><button data-cm-tab="audit">操作记录</button><button data-cm-tab="layout">前台布局</button></nav>
         <div id="cmStatus" role="status"></div>
         <div data-cm-panel="catalog">
           <nav id="cmCategories" class="cm-categories" aria-label="功能分类"></nav>
@@ -577,6 +577,7 @@
         <div data-cm-panel="mapping" hidden><div class="section-head"><h3>功能映射</h3><button id="cmMapNew">新增映射</button></div><p class="muted">前台功能 → 请求标识 → 实际渠道与模型。只改变后续任务路由，不改前台展示名称。备用渠道手动切换。</p><div id="cmMappings"></div><p class="muted">现有供应商的固定功能关系在“渠道列表 → 详情”查看；尚未接入托管协议的功能不支持通用映射。</p></div>
         <div data-cm-panel="health" hidden><h3>测试与健康</h3><p class="muted">连接、鉴权和生成结果分别记录。证据有效期 24 小时；未验证、过期或缺少证据不会显示为通过。统计取最近 24 小时，定时任务使用北京时间。</p><div id="cmHealth"></div><h3>通知设置与发送状态</h3><div id="cmNotifications"></div><h3>最近测试与任务</h3><div id="cmRuns"></div></div>
         <div data-cm-panel="audit" hidden><h3>配置操作记录</h3><p class="muted">托管渠道版本与映射变更。号池密钥操作沿用现有管理员审计。</p><div id="cmAudit"></div></div>
+        <div data-cm-panel="layout" hidden><div id="cmLayout"></div></div>
         <div id="cmDrawer" class="cm-drawer-layer" hidden><aside class="cm-drawer" role="dialog" aria-modal="true" aria-labelledby="cmDrawerTitle"><div class="cm-drawer-head"><h2 id="cmDrawerTitle">渠道详情</h2><button id="cmDrawerClose" aria-label="关闭渠道详情">关闭</button></div><div id="cmDetail"></div><div id="cmEditor" hidden></div><div id="cmMappingEditor" hidden></div></aside></div>
       </section>
       <section class="card span12 module-card" data-module="channels" hidden>
@@ -814,12 +815,12 @@
 </div>
 <div class="toast" id="toast"></div>
 <script src="/workbench/hq-icons-duotone.js"></script>
-<link rel="stylesheet" href="/workbench/channel-parameters.css?v=2ce0ce8b">
+<link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
 <link rel="stylesheet" href="/admin/channel-parameters.css?v=2e6d738e">
 <script src="/workbench/channel-parameter-controls.js?v=8e29d198"></script>
-<script src="/admin/channel-parameters.js?v=38835b48"></script>
+<script src="/admin/channel-parameters.js?v=a2c62bdb"></script>
 <script src="/admin/channel-catalog.js?v=c527a54c"></script>
-<script src="/admin/channel-workspace.js?v=36caf9a6"></script>
+<script src="/admin/channel-workspace.js?v=95b02725"></script>
 <script src="/admin/channel-manager.js?v=31e030b5"></script>
 <script>
 (function(){

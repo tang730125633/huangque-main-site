@@ -98,7 +98,7 @@ def cost_of(kind, body):
             raise ValueError("果肉视频编辑维护中")
         duration = min(15, max(1, int(body.get("duration") or 10)))
         channel = str(body.get("channel") or "grok").lower()
-        if channel != "grok":
+        if channel not in ("grok", "grok15"):
             key = {
                 "omni": "video.omni",
                 "minimax": "video.minimax_h3.768p",

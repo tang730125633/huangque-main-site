@@ -77,7 +77,7 @@ VIDEO_FUNCTIONS = [
         "key": "one_click",
         "name": "一键成片",
         "desc": "从已有视频资产开始，分析、确认粗剪并输出成片",
-        "order": 10,
+        "order": 50,
         "frontend_selector": 'a[href="one-click-video.html"]',
         "service": "content",
         "modes": [{
@@ -291,7 +291,7 @@ VIDEO_FUNCTIONS = [
         "key": "grok",
         "name": "果肉视频生成",
         "desc": "输入提示词，选择是否提供参考图后生成视频",
-        "order": 50,
+        "order": 10,
         "frontend_selector": '[data-function="grok"]',
         "service": "content",
         "flag_keys": ["grok_video"],
@@ -336,8 +336,8 @@ VIDEO_FUNCTIONS = [
     {
         "key": "sora",
         "name": "Sora 2",
-        "desc": "非真人通用视频生成；页签常显，接单能力单独判断",
-        "order": 60,
+        "desc": "非真人通用视频生成；页签默认隐藏，后台开启且通道可用时显示",
+        "order": 80,
         "frontend_selector": '[data-function="sora"]',
         "service": "content",
         "flag_keys": ["sora_video"],
@@ -386,7 +386,7 @@ VIDEO_FUNCTIONS = [
         "key": "minimax",
         "name": "麦克视频",
         "desc": "使用文本或人物参考图生成 2K 剧情短片",
-        "order": 70,
+        "order": 60,
         "frontend_selector": '[data-function="minimax"]',
         "service": "content",
         "flag_keys": ["minimax_h3_video"],
@@ -416,7 +416,7 @@ VIDEO_FUNCTIONS = [
         "key": "omni",
         "name": "Omni 视频",
         "desc": "支持文生、图生与多参考图生成",
-        "order": 80,
+        "order": 90,
         "frontend_selector": '[data-function="omni"]',
         "service": "content",
         "flag_keys": ["omni_video"],
@@ -459,7 +459,7 @@ VIDEO_FUNCTIONS = [
         "key": "seedance",
         "name": "Seedance 视频",
         "desc": "支持文生、图生；选择 AI 超清时增加一段超清链路",
-        "order": 90,
+        "order": 70,
         "frontend_selector": '[data-function="micro"]',
         "service": "content",
         "flag_keys": ["seedance_video"],
@@ -1532,7 +1532,7 @@ FUNCTION_REGISTRY = [
         "order": order,
         "inventory_status": "verified",
         "functions": (
-            VIDEO_FUNCTIONS if key == "video"
+            sorted(VIDEO_FUNCTIONS, key=lambda item: int(item.get("order") or 0)) if key == "video"
             else IMAGE_FUNCTIONS if key == "banana"
             else AUDIO_FUNCTIONS if key == "audio"
             else COLLECT_FUNCTIONS if key == "collect"

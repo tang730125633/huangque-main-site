@@ -1287,10 +1287,12 @@
   if(bDl) bDl.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); downloadResultImage(); };
   if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('先生成一张','#f4708a'); return; } setNote('✅ 生成即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>','#2bd576'); };
   if(bFeishu) bFeishu.onclick=function(){ setNote('飞书推送即将上线（bot 接入阶段）','#f4cd72'); };
+  // 后台「前台布局」配置通过 channel-parameters.js 应用：暴露引擎切换函数供其调用
+  window.HQBananaWorkbench={selectEngine:selectEngine};
 })();
 </script>
-<link rel="stylesheet" href="/workbench/channel-parameters.css?v=2ce0ce8b">
+<link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
 <script src="/workbench/channel-parameter-controls.js?v=8e29d198"></script>
-<script src="/workbench/channel-parameters.js?v=90b11c98"></script>
+<script src="/workbench/channel-parameters.js?v=2f5158cd"></script>
 </body>
 </html>
