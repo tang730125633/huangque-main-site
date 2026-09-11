@@ -39,7 +39,7 @@
     host.hidden=false;
     const prompt=host.querySelector('#cpPrompt')?.value||'',oldChoice=controls?.value();
     if(legacy)legacy.hidden=!showLegacy;
-    host.innerHTML='<div class="cp-actions"><h2>模型与生成参数</h2><button id="cpLegacyToggle">'+(showLegacy?'返回平台配置模型':'其他模型与工具')+'</button></div><div id="cpManagedBody" '+(showLegacy?'hidden':'')+'><p class="cp-note">选择模型和参数，确认本次点数后生成。参数由平台统一维护。</p><div class="cp-fields"><label>模型<select id="cpModel">'+items.map(i=>'<option value="'+esc(i.front)+'" '+(i.front===current?.front?'selected':'')+'>'+esc(i.label)+'</option>').join('')+'</select></label></div><div id="cpUserControls"></div><textarea id="cpPrompt" maxlength="7000" placeholder="描述你希望生成的内容" aria-label="生成提示词">'+esc(prompt)+'</textarea><label id="cpUploadLabel">参考图片<input id="cpUpload" type="file" accept="image/png,image/jpeg" multiple></label><p id="cpRefHint" class="cp-note"></p>'+(current&&current.mask_enabled&&current.reference_max>=1?'<label id="cpMaskLabel" class="cp-mask-label">蒙版图片（可选 · 局部修图）<input id="cpMaskUpload" type="file" accept="image/png,image/jpeg"><small>上传与参考图同尺寸的蒙版，白色区域将被重绘；需要 1 张参考图</small></label>':'')+'<div class="cp-actions"><button class="primary" id="cpGenerate">确认点数并生成</button><button id="cpRetry" hidden>使用原编号重试提交</button><a href="assets.html">查看我的作品与任务</a></div><p id="cpUserNote" role="status"></p><div id="cpUserResult"></div></div>';
+    host.innerHTML='<div class="cp-actions"><h2>模型与生成参数</h2>'+(kind==='image'?'<button id="cpInpaintEntry">涂抹局部修图（黄雀引擎 2）</button>':'')+'<button id="cpLegacyToggle">'+(showLegacy?'返回平台配置模型':'其他模型与工具')+'</button></div><div id="cpManagedBody" '+(showLegacy?'hidden':'')+'><p class="cp-note">选择模型和参数，确认本次点数后生成。参数由平台统一维护。</p><div class="cp-fields"><label>模型<select id="cpModel">'+items.map(i=>'<option value="'+esc(i.front)+'" '+(i.front===current?.front?'selected':'')+'>'+esc(i.label)+'</option>').join('')+'</select></label></div><div id="cpUserControls"></div><textarea id="cpPrompt" maxlength="7000" placeholder="描述你希望生成的内容" aria-label="生成提示词">'+esc(prompt)+'</textarea><label id="cpUploadLabel">参考图片<input id="cpUpload" type="file" accept="image/png,image/jpeg" multiple></label><p id="cpRefHint" class="cp-note"></p>'+(current&&current.mask_enabled&&current.reference_max>=1?'<label id="cpMaskLabel" class="cp-mask-label">蒙版图片（可选 · 局部修图）<input id="cpMaskUpload" type="file" accept="image/png,image/jpeg"><small>上传与参考图同尺寸的蒙版，白色区域将被重绘；需要 1 张参考图</small></label>':'')+'<div class="cp-actions"><button class="primary" id="cpGenerate">确认点数并生成</button><button id="cpRetry" hidden>使用原编号重试提交</button><a href="assets.html">查看我的作品与任务</a></div><p id="cpUserNote" role="status"></p><div id="cpUserResult"></div></div>';
     if(current){
       const preserved=current.combinations.find(c=>JSON.stringify(c.values)===JSON.stringify(oldChoice?.values));
       controls=mount(host.querySelector('#cpUserControls'),current,null,preserved?.id,{billingEnabled});
@@ -48,6 +48,14 @@
       if(previous&&previous.revision!==current.revision)note('模型参数或点数已更新，请核对后提交。提示词已保留；如需参考图，请重新选择。');
     }
     host.querySelector('#cpLegacyToggle').onclick=()=>{showLegacy=!showLegacy;host.querySelector('#cpManagedBody').hidden=showLegacy;if(legacy)legacy.hidden=!showLegacy;host.querySelector('#cpLegacyToggle').textContent=showLegacy?'返回平台配置模型':'其他模型与工具'};
+    const inpaint=host.querySelector('#cpInpaintEntry');
+    if(inpaint)inpaint.onclick=()=>{
+      showLegacy=true;host.querySelector('#cpManagedBody').hidden=true;if(legacy)legacy.hidden=false;
+      host.querySelector('#cpLegacyToggle').textContent='返回平台配置模型';
+      window.HQBananaWorkbench?.selectEngine?.('gpt');
+      note('已切到黄雀引擎 2 的涂抹局部修图：先上传 1 张参考图，再涂抹要修改的区域。');
+      legacy?.scrollIntoView?.({behavior:'smooth',block:'start'});
+    };
     host.querySelector('#cpModel').onchange=e=>{current=items.find(i=>i.front===e.target.value);controls=null;render()};
     host.querySelector('#cpGenerate').onclick=submit;
     host.querySelector('#cpRetry').onclick=()=>send();

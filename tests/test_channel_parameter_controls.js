@@ -41,3 +41,8 @@ test('video workbench stays visible until a managed channel actually takes over'
   // 待确认的提交需要重新展示面板
   assert.match(source,/if\(pending\)\{managedActive=true;render\(\)/);
 });
+test('image panel exposes a direct entry to the mask inpainting engine',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/workbench/channel-parameters.js'),'utf8');
+  assert.match(source,/kind==='image'\?'<button id="cpInpaintEntry">涂抹局部修图（黄雀引擎 2）<\/button>':''/);
+  assert.match(source,/window\.HQBananaWorkbench\?\.selectEngine\?\.\('gpt'\)/);
+});
