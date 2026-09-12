@@ -10,7 +10,7 @@ const end = source.indexOf('function lechuangDefaultPoints(', start);
 assert.ok(start > 0 && end > start, '未找到乐创线路纯逻辑块');
 
 function helpers() {
-  const context = { window: {}, Array, String, Number };
+  const context = { window: {}, Array, String, Number, Object };
   vm.createContext(context);
   vm.runInContext(source.slice(start, end), context);
   return context.window.HQBananaLechuang;
@@ -26,6 +26,26 @@ const catalog = {
       combinations: [{ id: 'c1', values: { size: '1024x1024', quality: 'medium', background: 'auto' }, points: 12 }] },
   ],
 };
+
+// 线上 GPT Image 2 的真实契约（11 个组合）——用它当夹具，禁用规则就是线上规则
+const IMAGE2 = {
+  front: 'gpt-image-2', revision: 'xlw-image-2:8', default: 'c1', reference_max: 9,
+  combinations: [
+    { id: 'c1', values: { size: '1024x1024', quality: 'medium', background: 'opaque' }, points: 12 },
+    { id: 'c2', values: { size: '1024x1024', quality: 'high', background: 'opaque' }, points: 15 },
+    { id: 'c3', values: { size: '1024x1024', quality: 'low', background: 'opaque' }, points: 10 },
+    { id: 'c4', values: { size: '1024x1024', quality: 'medium', background: 'transparent' }, points: 16 },
+    { id: 'c5', values: { size: '1280x720', quality: 'medium', background: 'opaque' }, points: 12 },
+    { id: 'c6', values: { size: '720x1280', quality: 'medium', background: 'opaque' }, points: 12 },
+    { id: 'c7', values: { size: '1024x1536', quality: 'medium', background: 'opaque' }, points: 12 },
+    { id: 'c8', values: { size: '1536x1024', quality: 'medium', background: 'opaque' }, points: 12 },
+    { id: 't-high', values: { size: '1024x1024', quality: 'high', background: 'transparent' }, points: 20 },
+    { id: 't-portrait', values: { size: '720x1280', quality: 'medium', background: 'transparent' }, points: 16 },
+    { id: 't-low', values: { size: '1024x1024', quality: 'low', background: 'transparent' }, points: 14 },
+  ],
+};
+const keyOf = (c) => [c.values.size, c.values.quality, c.values.background].join('|');
+const ids = new Set(IMAGE2.combinations.map(keyOf));
 
 test('pickItem 只选生图类且优先精确匹配前台标识', () => {
   const h = helpers();
@@ -104,27 +124,85 @@ test('契约推导：比例分主次、清晰度与背景分组、尺寸反查�
   assert.equal(h.facets(null).primary.length, 0, '没有契约时不产生选项');
 });
 
-test('无透明底的模型不会渲染出透明底选项（2.5 的参数区）', () => {
+test('allowed：按「比例 > 清晰度 > 背景」逐级收窄，后台没发布的搭配不可选', () => {
   const h = helpers();
+  // 用户举的例子：9:16 只有「标准」清晰度，但两种背景都有组合
+  const at916 = h.allowed(IMAGE2, { size: '720x1280', quality: 'medium', background: 'opaque' });
+  assert.deepEqual([...at916.quality], ['medium'], '9:16 只有标准清晰度可选');
+  assert.deepEqual([...at916.background], ['opaque', 'transparent'], '9:16 下不透明与透明底都可用');
+  assert.ok(at916.size.indexOf('720x1280') >= 0, '当前比例本身可用');
+
+  // 16:9 只有不透明
+  const at169 = h.allowed(IMAGE2, { size: '1280x720', quality: 'medium', background: 'opaque' });
+  assert.deepEqual([...at169.quality], ['medium']);
+  assert.deepEqual([...at169.background], ['opaque'], '16:9 没有透明底 → 透明底必须不可选');
+
+  // 1:1 三档质量都能选，两档背景都能选
+  const at11 = h.allowed(IMAGE2, { size: '1024x1024', quality: 'medium', background: 'opaque' });
+  assert.deepEqual([...at11.quality].sort(), ['high', 'low', 'medium'], '1:1 三档质量都能选（allowed 是集合，展示顺序交给 facets）');
+  assert.deepEqual([...at11.background].sort(), ['opaque', 'transparent']);
+  const at11h = h.allowed(IMAGE2, { size: '1024x1024', quality: 'high', background: 'opaque' });
+  assert.deepEqual([...at11h.background], ['opaque', 'transparent'], '高品质下两档背景都有组合');
+
+  // 2:3 只有标准 + 不透明
+  const at23 = h.allowed(IMAGE2, { size: '1024x1536', quality: 'medium', background: 'opaque' });
+  assert.deepEqual([...at23.quality], ['medium'], '2:3 只有标准清晰度');
+  assert.deepEqual([...at23.background], ['opaque']);
+
+  // 2.5：背景只有 auto，参考图上限 1
   const flare = h.pickItem(catalog.items, 'gpt-image-2.5-flare');
-  const f = h.facets(flare);
-  assert.equal(JSON.stringify(f.backgrounds), JSON.stringify(['auto']), '2.5 只有 auto 背景，界面不会出现透明底卡片');
-  assert.equal(flare.reference_max, 1, '参考图上限跟随所选模型的契约（由 refLimit 读取）');
+  const f25 = h.allowed(flare, { size: '1024x1024', quality: 'medium', background: 'auto' });
+  assert.deepEqual([...f25.background], ['auto']);
+  assert.equal(flare.reference_max, 1);
 });
 
-test('choose 解析最近的合法组合（含无解回退）', () => {
+test('resolve：点哪一维就保住哪一维，只有更低优先级让位，结果必是已发布组合', () => {
   const h = helpers();
-  const item = { combinations: [
-    { id: 'c1', values: { size: '1024x1024', quality: 'medium', background: 'opaque' }, points: 12 },
-    { id: 'c4', values: { size: '1024x1024', quality: 'medium', background: 'transparent' }, points: 16 },
-    { id: 'c6', values: { size: '720x1280', quality: 'medium', background: 'opaque' }, points: 12 },
-  ] };
-  assert.equal(h.choose(item, { size: '1024x1024', quality: 'medium', background: 'transparent' }).id, 'c4', '完全匹配优先');
-  const fallback = h.choose(item, { size: '720x1280', quality: 'medium', background: 'transparent' });
-  assert.equal(fallback.id, 'c4', '透明底 9:16 无组合时回退到命中项最多的组合');
-  assert.equal(JSON.stringify(h.wantedFromChoice(fallback)),
-    JSON.stringify({ size: '1024x1024', quality: 'medium', background: 'transparent' }), '回退后选择项要跟着收敛');
-  assert.equal(h.choose({ combinations: [] }, {}), null);
+  const keepRatio = h.resolve(IMAGE2, { size: '1024x1024', quality: 'high', background: 'opaque' }, 'size', '720x1280');
+  assert.equal(keepRatio.values.size, '720x1280', '点的比例一定生效');
+  assert.equal(keepRatio.id, 'c6', '清晰度让位到标准，背景保持不透明');
+  assert.ok(ids.has(keyOf(keepRatio)), '结果必须是已发布组合');
+
+  const keepQuality = h.resolve(IMAGE2, { size: '1024x1024', quality: 'medium', background: 'transparent' }, 'quality', 'high');
+  assert.equal(keepQuality.values.quality, 'high');
+  assert.equal(keepQuality.id, 't-high', '背景保持透明底（t-high 存在）');
+
+  const keepBg = h.resolve(IMAGE2, { size: '720x1280', quality: 'medium', background: 'opaque' }, 'background', 'transparent');
+  assert.equal(keepBg.values.background, 'transparent');
+  assert.equal(keepBg.id, 't-portrait');
+
+  const blocked = h.resolve(IMAGE2, { size: '1280x720', quality: 'medium', background: 'opaque' }, 'background', 'transparent');
+  assert.equal(blocked, null, '16:9 没有透明底：直接调用也只会拒绝，不会换个比例交差');
+  assert.equal(h.resolve({ combinations: [] }, {}, 'size', '1024x1024'), null);
+  assert.equal(h.resolve(IMAGE2, {}, 'unknown-field', 'x'), null, '未知维度不猜');
+});
+
+test('不变量：三行依次点一遍，任何一步都不许偷换刚点的维度', () => {
+  const h = helpers();
+  const ratioSize = { '9:16': '720x1280', '1:1': '1024x1024', '16:9': '1280x720', '2:3': '1024x1536', '3:2': '1536x1024' };
+  let clicked = 0, blocked = 0;
+  Object.keys(ratioSize).forEach((r) => ['low', 'medium', 'high'].forEach((q) => ['opaque', 'transparent'].forEach((b) => {
+    let state = h.wantedFromChoice(IMAGE2.combinations[0]);
+    [['size', ratioSize[r]], ['quality', q], ['background', b]].forEach(([key, value]) => {
+      const allowed = h.allowed(IMAGE2, state);
+      if (allowed[key].indexOf(value) < 0) { blocked += 1; return; }   // 灰掉的卡片 = 用户点不动
+      clicked += 1;
+      const next = h.resolve(IMAGE2, state, key, value);
+      assert.ok(next, '可选项必须能解析出组合：' + key + '=' + value);
+      assert.ok(ids.has(keyOf(next)), '结果必须是已发布组合：' + JSON.stringify(next.values));
+      assert.equal(String(next.values[key]), String(value), '点了 ' + key + '=' + value + ' 就必须是它，实际 ' + JSON.stringify(next.values));
+      state = h.wantedFromChoice(next);
+    });
+  })));
+  assert.equal(clicked + blocked, 5 * 3 * 2 * 3, '30 种组合 × 3 步都要有结论（可点或灰掉）');
+  assert.ok(clicked > 0 && blocked > 0, '既要有可点的也要有灰掉的：clicked=' + clicked + ' blocked=' + blocked);
+});
+
+test('灰掉的卡片能给出人话原因', () => {
+  const h = helpers();
+  assert.match(h.reason('quality', 'high', { size: '720x1280', quality: 'medium', background: 'opaque' }), /9:16 暂不支持「高品质」/);
+  assert.match(h.reason('background', 'transparent', { size: '1280x720', quality: 'medium', background: 'opaque' }), /16:9 \+ 标准 暂不支持「透明底」/);
+  assert.equal(h.reason('size', '1024x1024', {}).length > 0, true);
 });
 
 test('生图页承载乐创卡片：默认隐藏、参数区互斥、点数来自契约', () => {
@@ -161,6 +239,16 @@ test('模型卡片行：多模型可选、只有一个模型时整行隐藏', ()
     '换模型后不沿用上一个模型的参数，按新契约默认组合重来');
   assert.ok(source.includes('lechuangItems=hqLechuangCandidates(d&&d.items)'), '候选模型随目录刷新');
   assert.ok(source.includes("var keep=lechuangItem?lechuangItem.front:''"), '15 秒轮询时不重置用户选中的模型');
+});
+
+test('界面按矩阵灰掉不可用选项，而不是让后端兜底', () => {
+  assert.ok(source.includes("if(node.hasAttribute('data-lc-disabled')) return;"), '灰掉的卡片不响应点击');
+  assert.ok(source.includes('data-lc-disabled="1"'), '禁用卡片带可识别标记');
+  assert.ok(source.includes('aria-disabled="true"'), '禁用卡片对读屏也有交代');
+  assert.ok(source.includes('var LECHUANG_OFF_STYLE='), '禁用卡片有独立样式（灰掉但可见）');
+  assert.ok(source.includes('var allowed=hqLechuangAllowed(lechuangItem,wanted)'), '渲染前先算可用矩阵');
+  assert.ok(source.includes('if((allowed[field]||[]).indexOf(target)<0)'), '点击时二次校验，防陈旧 DOM');
+  assert.ok(source.includes('hqLechuangAdjustNote(field,before,lechuangWanted)'), '自动调整要写进提示里');
 });
 
 test('提交走托管渠道且不被平台面板重定向', () => {

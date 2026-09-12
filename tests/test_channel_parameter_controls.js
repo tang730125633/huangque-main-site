@@ -1,4 +1,4 @@
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+﻿const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const c={};vm.createContext(c);vm.runInContext(fs.readFileSync(path.join(__dirname,'../site/workbench/channel-parameter-controls.js'),'utf8'),c);
 const C=c.ChannelParameterControls;
 const spec={default:'a',fields:[{key:'size',label:'尺寸',visible:true},{key:'quality',label:'质量',visible:true},{key:'output_format',label:'格式',visible:false}],combinations:[
@@ -11,6 +11,38 @@ test('dependent options always select a real combination and its exact price',()
 });
 test('changing size preserves other valid choices',()=>{
   assert.equal(C.choose(spec,spec.combinations[0],'size','1536x1024').id,'b');
+});
+test('unreachable options are disabled instead of silently snapping',()=>{
+  const a=spec.combinations[0];               // 1024x1024 / low / png
+  assert.deepEqual(Array.from(C.options(spec,a,'quality'),o=>o.value+':'+o.enabled),['low:true','high:false'],
+    '高品质只在 1536x1024 有组合 → 1024x1024 下必须不可选');
+  assert.deepEqual(Array.from(C.options(spec,a,'size'),o=>o.value+':'+o.enabled),['1024x1024:true','1536x1024:true'],
+    '尺寸是最高优先级，契约里有的就都该可选');
+  const c=spec.combinations[2];               // 1536x1024 / high / png
+  assert.deepEqual(Array.from(C.options(spec,c,'quality'),o=>o.value+':'+o.enabled),['low:true','high:true'],
+    '在 1536x1024 下两档都可达');
+});
+test('render marks disabled options and explains why',()=>{
+  const host={innerHTML:''};
+  C.mount(host,spec);
+  assert.match(host.innerHTML,/<option value="high" disabled title="[^"]+">/,'不可达选项要置灰且带原因');
+  assert.match(host.innerHTML,/高品质 · 当前不适用/,'灰掉的选项在文案里也要说清楚');
+  assert.doesNotMatch(host.innerHTML,/<option value="low"[^>]*disabled/,'可达的选项不能被误伤');
+});
+test('every enabled option resolves to a combination that keeps it',()=>{
+  let checked=0,disabled=0;
+  for(const combo of spec.combinations){
+    for(const key of C.fields(spec)){
+      for(const o of C.options(spec,combo,key)){
+        if(!o.enabled){disabled+=1;continue}
+        const next=C.choose(spec,combo,key,o.value);
+        assert.ok(next,'可选值必须能解析出组合：'+key+'='+o.value);
+        assert.equal(String(next.values[key]),String(o.value),'点了 '+key+'='+o.value+' 就必须是它');
+        checked+=1;
+      }
+    }
+  }
+  assert.ok(checked>0&&disabled>0,'既要有可选的也要有灰掉的：checked='+checked+' disabled='+disabled);
 });
 test('render omits fixed fields and reflects current combination in price',()=>{
   const host={innerHTML:''},changes=[];const control=C.mount(host,spec,v=>changes.push(v));
