@@ -891,7 +891,7 @@
     return fetch(path,opt).then(function(r){return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status));e.status=r.status;throw e}return d})})
   }
   function lockAdmin(){
-    state.adminAuthenticated=false;clearInterval(state.refreshTimer);clearInterval(state.serverTimer);state.refreshTimer=null;state.serverTimer=null;state.data=null;
+    state.adminAuthenticated=false;clearInterval(state.refreshTimer);clearTimeout(pollTimer);state.refreshTimer=null;state.serverTimer=null;state.data=null;
     document.body.classList.add('admin-locked');el('app').style.display='none';el('gate').style.display='block';
     el('adminAuthChecking').hidden=true;el('adminLoginForm').hidden=true;el('adminAccessDenied').hidden=true;
   }
@@ -1303,12 +1303,13 @@
     el('reqUpdatedAt').textContent='正在刷新…';
     state.reqPromise=api('/api/admin/activity'+q).then(function(d){
       if(sequence!==state.reqSequence)return;
-      state.reqLoading=false;
+      state.reqLoading=false;state.reqData=d;pollNote(true);
       var pages=Math.max(1,Math.ceil(Number(d.total||0)/state.reqPageSize));
       if(state.reqPage>pages){state.reqPage=pages;return loadReqLogs(false)}
       renderActivity(d);
     }).catch(function(e){
       if(sequence!==state.reqSequence)return;
+      pollNote(false);
       el('reqUpdatedAt').textContent='刷新失败 · 当前显示旧数据';toast('实时任务刷新失败：'+e.message);
     }).finally(function(){if(sequence===state.reqSequence){state.reqLoading=false;state.reqPromise=null}});
     return state.reqPromise;
@@ -2385,7 +2386,7 @@
     clearInterval(state.serverTimer);state.serverTimer=null;
     if(name==='managedChannels'){if(!state.data)load(false);loadManagedChannels()}
     if(name==='dashboard'){loadDashboard(false)}
-    if(name==='servers'){loadServers(false);state.serverTimer=setInterval(function(){if(!document.hidden)loadServers(true)},5000)}
+    if(name==='servers'){loadServers(false)}
     if(name==='logs'){loadReqLogs()}
     if(name==='users'){loadUsers()}
     if(name==='points'){loadPoints()}
@@ -2394,6 +2395,7 @@
     if(name==='announcements'){loadAnnouncements()}
     if(name==='inspirations'){loadInspirations()}
     if(name==='operations'&&state.data){renderOperations(state.data);probeSelectedOperation(false)}
+    if(moduleMeta[name]&&state.adminAuthenticated)restartPolling();   // 切模块：重置退避并按新模块节奏重排
     if(['operations','channels','features','pricing'].indexOf(name)>=0&&!state.data)load(false)
   }
   function renderDashboard(d){
@@ -2431,7 +2433,7 @@
     if(!state.adminAuthenticated)return Promise.resolve();
     if(state.dashboardLoading)return state.dashboardPromise||Promise.resolve();
     state.dashboardLoading=true;if(!silent)el('dashboardRefresh').disabled=true;
-    state.dashboardPromise=api('/api/admin/dashboard?days='+state.days).then(function(d){state.overviewUpdatedAt=Date.now();renderDashboard(d)}).catch(function(e){if(e.status===401||e.status===403)return;if(silent){el('dashboardUpdatedAt').textContent='自动刷新失败 · 数据可能已过期';toast('自动刷新失败：'+e.message);return}showAdminLogin('后台数据暂时不可用，请重新验证后再试。',true)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
+    state.dashboardPromise=api('/api/admin/dashboard?days='+state.days).then(function(d){state.overviewUpdatedAt=Date.now();state.dashData=d;pollNote(true);renderDashboard(d)}).catch(function(e){if(e.status===401||e.status===403)return;pollNote(false);if(silent){el('dashboardUpdatedAt').textContent='自动刷新失败 · 数据可能已过期';toast('自动刷新失败：'+e.message);return}showAdminLogin('后台数据暂时不可用，请重新验证后再试。',true)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
     return state.dashboardPromise;
   }
   function serverState(item){var label=item.status==='warning'?'告警':(item.online?'在线':'离线');return '<span class="server-state" data-state="'+esc(item.status||'offline')+'">'+esc(label)+'</span>'}
@@ -2439,7 +2441,7 @@
   function serverResource(icon,label,value,detail){var high=Number(value)>=90;return '<div class="server-resource"><span class="server-resource-label">'+serverIcon(icon)+esc(label)+'</span><div class="server-meter" title="'+esc(detail)+'"><i class="'+(high?'high':'')+'" style="width:'+Math.max(0,Math.min(100,Number(value)||0))+'%"></i></div><b>'+Number(value||0).toFixed(1)+'%</b></div>'}
   function serverCard(item){var alerts=(item.alerts||[]).join('、');return '<article class="server-card" data-state="'+esc(item.status)+'"><div class="server-card-head"><span class="server-detail-icon">'+serverIcon('server')+'</span><div class="server-card-title"><h3>'+esc(item.name)+'</h3><p>'+esc(item.group+' · '+item.description)+'</p></div><div><div class="server-region">'+esc(item.region)+'</div>'+serverState(item)+'</div></div><div class="server-resources">'+serverResource('cpu','CPU',item.cpu,esc(item.cpu_name||'')+' · '+Number(item.cpu_cores||0)+' 核')+serverResource('memory','内存',item.memory,fmtBytes(item.memory_used)+' / '+fmtBytes(item.memory_total))+serverResource('disk','磁盘',item.disk,fmtBytes(item.disk_used)+' / '+fmtBytes(item.disk_total))+'</div><div class="server-facts"><div class="server-fact"><span>'+serverIcon('network')+'实时网络</span><b>↑ '+fmtBytes(item.network_up)+'/s · ↓ '+fmtBytes(item.network_down)+'/s</b></div><div class="server-fact"><span>'+serverIcon('trend')+'累计流量</span><b>↑ '+fmtBytes(item.total_up)+' · ↓ '+fmtBytes(item.total_down)+'</b></div><div class="server-fact"><span>'+serverIcon('uptime')+'运行时间</span><b>'+fmtWait(item.uptime)+'</b></div></div><div class="server-os">'+serverIcon('os')+esc(item.os+(item.arch?' · '+item.arch:''))+'</div>'+(alerts?'<div class="server-alert">'+esc(alerts)+'</div>':'')+'</article>'}
   function renderServers(data){state.serverData=data;var items=data.items||[],summary=data.summary||{},attention=Number(summary.warning||0)+Number(summary.offline||0),primary=items.find(function(item){return item.role==='primary_network'}),backup=items.find(function(item){return item.role==='backup_network'});el('serverTotal').textContent=Number(summary.total||items.length);el('serverOnline').textContent=Number(summary.online||0);el('serverAttention').textContent=attention;el('serverInterval').textContent=Number(data.refresh_interval_seconds||5)+'s';el('serverLiveState').textContent=attention?attention+' 个节点需要处理':'全部节点在线';el('serverUpdatedAt').textContent=new Date(Number(data.checked_at||0)*1000).toLocaleTimeString()+' · 自动刷新';el('serverPrimaryNetwork').innerHTML=serverNetwork(primary,'主线路');el('serverBackupNetwork').innerHTML=serverNetwork(backup,'备用线路');el('serverGrid').innerHTML=items.length?items.map(serverCard).join(''):'<div class="empty server-empty">暂无纳管服务器</div>'}
-  function loadServers(silent){if(!state.adminAuthenticated)return Promise.resolve();if(state.serverLoading)return Promise.resolve();state.serverLoading=true;if(!silent)el('serverRefresh').disabled=true;return api('/api/admin/server-monitor').then(renderServers).catch(function(e){if(e.status===401||e.status===403)return;el('serverUpdatedAt').textContent=state.serverData?'刷新失败 · 保留上次数据':'监控数据暂不可用';if(!state.serverData)el('serverGrid').innerHTML='<div class="error server-empty">'+esc(e.message)+'</div>';if(!silent)toast('服务器监控刷新失败：'+e.message)}).finally(function(){state.serverLoading=false;el('serverRefresh').disabled=false})}
+  function loadServers(silent){if(!state.adminAuthenticated)return Promise.resolve();if(state.serverLoading)return Promise.resolve();state.serverLoading=true;if(!silent)el('serverRefresh').disabled=true;return api('/api/admin/server-monitor').then(function(d){pollNote(true);renderServers(d)}).catch(function(e){if(e.status===401||e.status===403)return;pollNote(false);el('serverUpdatedAt').textContent=state.serverData?'刷新失败 · 保留上次数据':'监控数据暂不可用';if(!state.serverData)el('serverGrid').innerHTML='<div class="error server-empty">'+esc(e.message)+'</div>';if(!silent)toast('服务器监控刷新失败：'+e.message)}).finally(function(){state.serverLoading=false;el('serverRefresh').disabled=false})}
   function load(silent){
     if(!state.adminAuthenticated)return Promise.resolve();
     if(state.overviewLoading)return state.overviewPromise||Promise.resolve();
@@ -2447,10 +2449,11 @@
     if(!silent)el('operationsRefresh').disabled=true;
     state.overviewPromise=api('/api/admin/overview?days='+state.days).then(function(d){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
-      state.overviewUpdatedAt=Date.now();render(d);
+      state.overviewUpdatedAt=Date.now();pollNote(true);render(d);
     }).catch(function(e){
       if(state.poolActions||requestPoolEpoch!==state.poolEpoch){state.refreshPending=true;return}
       if(e.status===401||e.status===403)return;
+      pollNote(false);
       if(silent){toast('自动刷新失败：'+e.message);return}
       showAdminLogin('后台数据暂时不可用，请重新验证后再试。',true);
     }).finally(function(){
@@ -2459,9 +2462,91 @@
     });
     return state.overviewPromise;
   }
+  // ===== 后台刷新节奏（P0）：按模块分级 + 有活在飞时提速 + 空闲降频 + 失败退避 =====
+  // 依据实测：实时任务 activity 0.9s、运营 overview 1.6s、今日行动 dashboard 0.44s、服务器 4ms。
+  // 重的模块靠"轻量指纹探测"提速：5~8 秒探一次指纹，只有真变了才拉重接口。
+  var POLL_POLICY={
+    logs:{active:8000,idle:30000,probe:true},      // 实时任务
+    dashboard:{active:10000,idle:30000},           // 今日行动
+    operations:{active:30000,idle:60000},          // 运营看板
+    servers:{active:5000,idle:10000}               // 服务器状态
+  };
+  var POLL_MAX_DELAY=60000, POLL_PROBE_MAX_AGE=60000;
+  var hqAdminPoll={
+    // 纯决策逻辑（可单测）：基准间隔 → 失败退避（2^n，封顶 60 秒）
+    delay:function(module,active,failures){
+      var policy=POLL_POLICY[module]||{active:15000,idle:30000};
+      var base=active?policy.active:policy.idle;
+      var n=Math.max(0,Math.min(Number(failures)||0,3));
+      return Math.min(POLL_MAX_DELAY,base*Math.pow(2,n));
+    },
+    // 有活在飞的信号：任务运行中/待退款，或时间线里出现运行中的任务
+    isActive:function(module,data){
+      var d=data||{};
+      if(module==='servers')return true;
+      if(module==='logs'){
+        return (d.items||[]).some(function(x){return x&&(x.cat==='running'||x.status==='running'||x.status==='pending')});
+      }
+      var live=(d.stats||{}).live||{};
+      return Number(live.running||0)>0||Number(live.refund_pending||0)>0;
+    },
+    // 指纹探测后是否需要拉整条时间线
+    shouldFullFetch:function(now,lastFullAt,previous,current){
+      if(!previous)return true;
+      if(previous!==current)return true;
+      return now-(Number(lastFullAt)||0)>=POLL_PROBE_MAX_AGE;
+    },
+    policy:POLL_POLICY
+  };
+  window.HqAdminPoll=hqAdminPoll;
+  var pollTimer=null,pollFailures=0,pollFingerprint='',pollLastFullAt=0;
+  function pollModuleData(){
+    if(state.module==='logs')return state.reqData;
+    if(state.module==='dashboard')return state.dashData;
+    if(state.module==='operations')return state.data;
+    return state.serverData;
+  }
+  function pollNote(ok){pollFailures=ok?0:Math.min(pollFailures+1,3)}
+  function pollCurrentModule(silent){
+    if(state.module==='dashboard')return loadDashboard(silent);
+    if(state.module==='operations')return load(silent);
+    if(state.module==='logs')return loadReqLogs(silent);
+    if(state.module==='servers')return loadServers(silent);
+    return Promise.resolve();
+  }
+  function scheduleNextPoll(){
+    clearTimeout(pollTimer);
+    var active=hqAdminPoll.isActive(state.module,pollModuleData());
+    pollTimer=setTimeout(function(){
+      if(document.hidden||state.poolActions){scheduleNextPoll();return}
+      // 重的实时任务时间线：先探指纹，没变就不拉（省掉 0.9 秒的重查询）
+      var policy=POLL_POLICY[state.module];
+      if(policy&&policy.probe&&active){
+        api('/api/admin/activity?probe=1&days='+state.days).then(function(d){
+          var now=Date.now(),fingerprint=d&&d.fingerprint;
+          if(hqAdminPoll.shouldFullFetch(now,pollLastFullAt,pollFingerprint,fingerprint)){
+            pollFingerprint=fingerprint;pollLastFullAt=now;pollCurrentModule(true);
+          }
+        }).catch(function(){pollCurrentModule(true)}).finally(scheduleNextPoll);
+        return;
+      }
+      var result=pollCurrentModule(true);
+      Promise.resolve(result).then(function(){pollNote(true)},function(){pollNote(false)}).finally(scheduleNextPoll);
+    },hqAdminPoll.delay(state.module,active,pollFailures));
+  }
+  function restartPolling(){pollFailures=0;scheduleNextPoll()}
   function startAutoRefresh(){
-    clearInterval(state.refreshTimer);
-    state.refreshTimer=setInterval(function(){if(document.hidden||state.poolActions)return;if(state.module==='dashboard')loadDashboard(true);else if(state.module==='operations')load(true);else if(state.module==='logs')loadReqLogs(true)},15000);
+    clearTimeout(pollTimer);
+    scheduleNextPoll();
+    if(!window.__hqVisibilityBound){
+      window.__hqVisibilityBound=true;
+      document.addEventListener('visibilitychange',function(){
+        if(document.hidden)return;
+        // 切回标签页：立刻拉一次最新数据，不等下一期
+        if(state.adminAuthenticated&&!state.poolActions)pollCurrentModule(true);
+        restartPolling();
+      });
+    }
   }
   el('operationsPage').onchange=function(){state.operationsPage=el('operationsPage').value;state.operationsMode='';if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
   el('operationsAttentionOnly').onchange=function(){state.operationsAttentionOnly=el('operationsAttentionOnly').checked;if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
