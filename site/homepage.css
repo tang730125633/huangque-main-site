@@ -280,6 +280,8 @@ h1 em,h2 em{color:#dbe4eb;font-weight:inherit;font-style:normal}
 footer{padding:34px 0;border-top:1px solid var(--line);color:#677487}
 main{position:relative}
 footer{position:relative;z-index:1}
+main#main>section:not(:first-of-type),footer{position:relative;border-top:0}
+main#main>section:not(:first-of-type)::before,footer::before{content:"";position:absolute;z-index:0;top:-96px;right:0;left:0;height:192px;pointer-events:none;background:radial-gradient(ellipse 72% 82% at 50% 50%,rgba(188,204,217,.05),transparent 74%),linear-gradient(180deg,transparent,rgba(3,3,4,.48) 28%,rgba(3,3,4,.88) 50%,rgba(3,3,4,.48) 72%,transparent)}
 .footer-inner{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:28px}.footer-inner>p{font-size:12px}.footer-inner>div{display:flex;justify-content:flex-end;gap:22px;font:500 11px/1 var(--mono)}.footer-inner a:hover{color:var(--gold-soft)}
 
 @keyframes twinkle{from{opacity:.55}to{opacity:1}}
