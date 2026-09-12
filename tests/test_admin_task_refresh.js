@@ -4,13 +4,14 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../site/admin/index.html'), 'utf8');
 test('termination dialog requires reason, blocks double submit and preserves failed input',async()=>{
-  const ids=['terminateTaskDialog','terminateTaskInfo','terminateTaskReason','terminateTaskError','terminateTaskSubmit','terminateTaskForm','terminateTaskCancel'];
+  const ids=['terminateTaskDialog','terminateTaskTitle','terminateTaskInfo','terminateTaskReason','terminateTaskError','terminateTaskSubmit','terminateTaskForm','terminateTaskCancel'];
   const nodes=Object.fromEntries(ids.map(id=>[id,{value:'',textContent:'',disabled:false,focus(){},showModal(){this.open=true},close(){this.open=false}}]));
   let resolveRequest,rejectRequest,requests=[],reloads=0;
   const c={el:id=>nodes[id],fmtDuration:String,toast:()=>{},loadReqLogs:()=>reloads++,api:(path,options)=>{requests.push({path,body:JSON.parse(options.body)});return new Promise((resolve,reject)=>{resolveRequest=resolve;rejectRequest=reject})}};
   vm.createContext(c);
-  vm.runInContext(source.slice(source.indexOf('  function openTaskTermination('),source.indexOf('  function renderTaskCard(')),c);
+  vm.runInContext(source.slice(source.indexOf('  function openTaskTermination('),source.indexOf('  function taskTimingMetric(')),c);
   c.openTaskTermination({task_id:99,user:'demo',func:'模板成片',cost:5});
+  assert.equal(nodes.terminateTaskTitle.textContent,'终止此任务？','普通任务保持原话术');
   const submit=()=>nodes.terminateTaskForm.onsubmit({preventDefault(){}});
   submit();assert.equal(requests.length,0);
   nodes.terminateTaskReason.value='用户要求取消';submit();submit();assert.equal(requests.length,1);
@@ -22,9 +23,9 @@ test('termination dialog requires reason, blocks double submit and preserves fai
   assert.equal(nodes.terminateTaskDialog.open,false);assert.equal(reloads,1);
 });
 test('termination action follows backend capability and preserves unknown remote status',()=>{
-  const c={esc:s=>String(s??'').replace(/</g,'&lt;'),fmtDuration:s=>s+'秒',fmtTime:String,taskStageClass:s=>s,taskRawField:()=>''};
+  const c={esc:s=>String(s??'').replace(/</g,'&lt;'),fmtDuration:s=>s+'秒',fmtWait:s=>s+'秒等待',fmtTime:String,taskStageClass:s=>s,taskRawField:()=>''};
   vm.createContext(c);
-  vm.runInContext(source.slice(source.indexOf('  function renderTaskCard('),source.indexOf('  function renderActivity(')),c);
+  vm.runInContext(source.slice(source.indexOf('  function taskTimingMetric('),source.indexOf('  function renderActivity(')),c);
   const base={source:'job',task_id:9,cat:'running',stages:[]};
   assert.match(c.renderTaskCard({...base,can_terminate:true}),/data-terminate-task="9"/);
   assert.doesNotMatch(c.renderTaskCard(base),/data-terminate-task=/);
@@ -33,6 +34,41 @@ test('termination action follows backend capability and preserves unknown remote
   assert.match(html,/退款待确认/);assert.match(html,/&lt;script>/);
   assert.doesNotMatch(html,/data-terminate-task=/);
 });
+test('running tasks show waited time and unconfirmed submissions ask for reconciliation',()=>{
+  const c={esc:s=>String(s??'').replace(/</g,'&lt;'),fmtDuration:s=>s+'秒',fmtWait:s=>s+'秒等待',fmtTime:String,taskStageClass:s=>s,taskRawField:()=>''};
+  vm.createContext(c);
+  vm.runInContext(source.slice(source.indexOf('  function taskTimingMetric('),source.indexOf('  function renderActivity(')),c);
+  const base={source:'job',task_id:9,cat:'running',stages:[]};
+  // 运行中：显示「已等待」（now − created_at），不再显示冻结的耗时
+  const running=c.renderTaskCard({...base,duration_sec:0,waited_sec:6720,can_terminate:true});
+  assert.match(running,/已等待/);assert.match(running,/6720秒等待/);
+  assert.doesNotMatch(running,/处理耗时/);
+  // 提交未确认：状态如实、动作变成「对账 / 退款」
+  const unconfirmed=c.renderTaskCard({...base,duration_sec:0,waited_sec:6720,can_terminate:true,
+    unconfirmed:true,evidence_tone:'warn',evidence_label:'提交未确认 · 待对账'});
+  assert.match(unconfirmed,/提交未确认 · 待对账/);assert.match(unconfirmed,/class="pill warn"/);
+  assert.match(unconfirmed,/对账 \/ 退款/);assert.match(unconfirmed,/提交结果未确认/);
+  // 已完成任务仍是「处理耗时」
+  const done=c.renderTaskCard({source:'job',task_id:9,cat:'ok',duration_sec:58,stages:[]});
+  assert.match(done,/处理耗时/);assert.match(done,/58秒/);assert.doesNotMatch(done,/已等待/);
+});
+
+test('reconciliation dialog states the unconfirmed risk and relabels the action',()=>{
+  const ids=['terminateTaskDialog','terminateTaskTitle','terminateTaskInfo','terminateTaskReason','terminateTaskError','terminateTaskSubmit','terminateTaskForm','terminateTaskCancel'];
+  const nodes=Object.fromEntries(ids.map(id=>[id,{value:'',textContent:'',disabled:false,focus(){},showModal(){this.open=true},close(){this.open=false}}]));
+  const c={el:id=>nodes[id],fmtDuration:String,fmtWait:s=>s+'秒等待',toast:()=>{},loadReqLogs:()=>{},api:()=>new Promise(()=>{})};
+  vm.createContext(c);
+  vm.runInContext(source.slice(source.indexOf('  function openTaskTermination('),source.indexOf('  function taskTimingMetric(')),c);
+  c.openTaskTermination({task_id:8447,user:'tang1',func:'作图',cost:20,cat:'running',waited_sec:6720,
+    evidence_label:'提交未确认 · 待对账',unconfirmed:true});
+  assert.equal(nodes.terminateTaskTitle.textContent,'提交未确认 · 对账 / 退款');
+  assert.equal(nodes.terminateTaskSubmit.textContent,'确认终止并退款');
+  assert.match(nodes.terminateTaskInfo.textContent,/提交未确认/);
+  assert.match(nodes.terminateTaskInfo.textContent,/已等待：6720秒等待/);
+  assert.match(nodes.terminateTaskInfo.textContent,/按未交付退款/);
+  assert.doesNotMatch(nodes.terminateTaskInfo.textContent,/耗时：/);
+});
+
 function setup() {
   const elements = Object.fromEntries(['reqSource','reqStatus','reqUser','reqSearch','reqAttributed','reqNoise','reqUpdatedAt'].map(id => [id, {value:'',checked:false,textContent:''}]));
   const pending=[], rendered=[];
@@ -86,9 +122,9 @@ test('journey summary states missing evidence and blocked E2E rather than succes
   assert.match(html,/素材未准备/);assert.match(html,/没有八段全部通过/);
 });
 test('horizontal task cards keep five evidence nodes without inventing success',()=>{
-  const c={esc:s=>String(s??'').replace(/</g,'&lt;'),fmtDuration:s=>s+'秒',fmtTime:String,taskStageClass:s=>s,taskRawField:()=>''};
+  const c={esc:s=>String(s??'').replace(/</g,'&lt;'),fmtDuration:s=>s+'秒',fmtWait:s=>s+'秒等待',fmtTime:String,taskStageClass:s=>s,taskRawField:()=>''};
   vm.createContext(c);
-  vm.runInContext(source.slice(source.indexOf('  function renderTaskCard('),source.indexOf('  function renderActivity(')),c);
+  vm.runInContext(source.slice(source.indexOf('  function taskTimingMetric('),source.indexOf('  function renderActivity(')),c);
   const html=c.renderTaskCard({source:'job',task_id:1,cat:'running',func:'<test>',stages:[]});
   assert.match(html,/task-row-main/);assert.match(html,/task-stages/);assert.match(html,/task-metrics/);
   assert.match(html,/业务受理/);assert.match(html,/成品交付/);assert.match(html,/&lt;test>/);
@@ -97,9 +133,9 @@ test('horizontal task cards keep five evidence nodes without inventing success',
 });
 
 test('task evidence distinguishes unknown submission from failure and folds raw records',()=>{
-  const c={esc:String,fmtDuration:s=>s+'秒',taskStageClass:s=>s,taskRawField:()=>''};
+  const c={esc:String,fmtDuration:s=>s+'秒',fmtWait:s=>s+'秒等待',taskStageClass:s=>s,taskRawField:()=>''};
   vm.createContext(c);
-  vm.runInContext(source.slice(source.indexOf('  function renderTaskCard('),source.indexOf('  function renderActivity(')),c);
+  vm.runInContext(source.slice(source.indexOf('  function taskTimingMetric('),source.indexOf('  function renderActivity(')),c);
   const item={source:'job',task_id:1,stages:[],runtime_trace:[{stage:'provider_submit',state:'unknown',error_type:'TimeoutError',duration_sec:3}]};
   const html=c.renderTaskCard(item);
   assert.match(html,/提交供应商超时；供应商是否接单尚未确认/);
@@ -145,6 +181,9 @@ test('refresh policy only speeds up when work is actually in flight',()=>{
   assert.equal(poll.isActive('logs',{items:[{cat:'done'},{cat:'failed'}]}),false);
   assert.equal(poll.isActive('logs',{items:[{cat:'running'}]}),true);
   assert.equal(poll.isActive('logs',{items:[{status:'pending'}]}),true);
+  // 提交未确认的任务不会自己推进（等人工对账）→ 不该让页面保持高频刷新
+  assert.equal(poll.isActive('logs',{items:[{cat:'running',unconfirmed:true}]}),false);
+  assert.equal(poll.isActive('logs',{items:[{cat:'running',unconfirmed:true},{cat:'running'}]}),true);
   assert.equal(poll.isActive('logs',{items:[]}),false);
   assert.equal(poll.isActive('logs',{}),false);
   // 运营/看板：跑批或待退款都算

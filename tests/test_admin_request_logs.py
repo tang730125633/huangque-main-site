@@ -311,6 +311,98 @@ class RequestLogUserTests(unittest.TestCase):
         )
         self.assertTrue(all(item["cat"] == "running" for item in activity))
 
+    def test_waited_seconds_uses_created_at_for_running_jobs(self):
+        now = 1_700_000_000
+        # 运行中任务用 now − created_at：卡住的单子 updated_at 冻结，耗时会永远显示 0 秒
+        self.assertEqual(admin_api._waited_seconds("running", now - 6720, now), 6720)
+        self.assertIsNone(admin_api._waited_seconds("done", now - 6720, now))
+        self.assertIsNone(admin_api._waited_seconds("failed", now - 6720, now))
+        self.assertIsNone(admin_api._waited_seconds("running", 0, now))
+        self.assertIsNone(admin_api._waited_seconds("running", None, now))
+        # 时钟回拨不产生负数
+        self.assertEqual(admin_api._waited_seconds("running", now + 60, now), 0)
+
+    def test_submit_unconfirmed_needs_running_stage_unknown_and_no_provider_id(self):
+        trace = [
+            {"stage": "route", "state": "recorded"},
+            {"stage": "provider_submit", "state": "unknown", "error_type": "OutcomeUnknown"},
+        ]
+        self.assertTrue(admin_api._submit_unconfirmed("running", "", trace))
+        self.assertFalse(admin_api._submit_unconfirmed("running", "REQ-1", trace), "有供应商单号就不算未确认")
+        self.assertFalse(admin_api._submit_unconfirmed("done", "", trace))
+        self.assertFalse(admin_api._submit_unconfirmed("failed", "", trace))
+        self.assertFalse(admin_api._submit_unconfirmed("running", "", [{"stage": "provider_submit", "state": "passed"}]))
+        self.assertFalse(admin_api._submit_unconfirmed("running", "", []))
+        self.assertFalse(admin_api._submit_unconfirmed("running", "", None))
+
+    def test_activity_marks_unconfirmed_submit_and_reports_waited_time(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at,result,refunded) "
+                "VALUES(8447,'tang1','image',20,'running',?,?,?,NULL,0)",
+                (
+                    json.dumps({"provider": "lechuang", "model": "gpt-image-2", "channel": "lechuang"}),
+                    now - 6720,
+                    now - 6716,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        trace = [
+            {"stage": "route", "state": "recorded"},
+            {"stage": "provider_submit", "state": "unknown", "error_type": "OutcomeUnknown", "duration_sec": 3.4},
+        ]
+        with mock.patch.object(admin_api.runtime_observability, "traces", return_value=trace):
+            items = admin_api.activity_logs(source="job")["items"]
+
+        row = next(x for x in items if str(x["task_id"]) == "8447")
+        self.assertTrue(row["unconfirmed"])
+        self.assertEqual(row["evidence_tone"], "warn")
+        self.assertEqual(row["evidence_label"], "提交未确认 · 待对账")
+        # 耗时仍是冻结的 updated_at − created_at，但「已等待」是真实的 now − created_at
+        self.assertEqual(row["duration_sec"], 4)
+        self.assertGreaterEqual(row["waited_sec"], 6700)
+        self.assertIn("同键重试", row["unconfirmed_reason"])
+
+    def test_normal_running_job_keeps_executing_label(self):
+        import sqlite3
+        import time as _time
+
+        now = int(_time.time())
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at,result,refunded) "
+                "VALUES(8450,'qilin','image',12,'running',?,?,?,NULL,0)",
+                (
+                    json.dumps({"provider": "lechuang", "model": "gpt-image-2", "channel": "lechuang"}),
+                    now - 30,
+                    now - 10,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        trace = [
+            {"stage": "route", "state": "recorded"},
+            {"stage": "provider_submit", "state": "passed"},
+        ]
+        with mock.patch.object(admin_api.runtime_observability, "traces", return_value=trace):
+            items = admin_api.activity_logs(source="job")["items"]
+
+        row = next(x for x in items if str(x["task_id"]) == "8450")
+        self.assertNotIn("unconfirmed", row)
+        self.assertEqual(row["evidence_label"], "执行中")
+        self.assertGreaterEqual(row["waited_sec"], 25)
+
     def test_task_runtime_record_distinguishes_refund_states(self):
         pending = admin_api._task_runtime_record({
             "id": 1306, "status": "failed", "refunded": 2,

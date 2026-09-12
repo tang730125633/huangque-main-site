@@ -3196,6 +3196,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                         "cat": cat,
                         "status_text": j["status"],
                         "duration_sec": j["duration_sec"],
+                        "waited_sec": j.get("waited_sec"),
                         "cost": j["cost"],
                         "path": j.get("path_label") or "任务 #%s" % j["id"],
                         "method": "",
@@ -3287,6 +3288,16 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         detail.update(_task_runtime_record(detail))
         for field in ("route", "result_reference", "delivery_verified", "artifact_check", "evidence_tone", "evidence_label", "stages"):
             item[field] = detail.get(field)
+        # 有提交轨迹但没有供应商单号 → 提交结果未确认：如实标注，并给人工对账/退款入口（前端据此显按钮）
+        if _submit_unconfirmed(detail.get("status") or item.get("status_text"),
+                               item.get("provider_task_id"), trace):
+            item["unconfirmed"] = True
+            item["unconfirmed_reason"] = (
+                "提交供应商结果未确认：供应商是否接单未知，系统已禁止自动重发，"
+                "需人工对账（同键重试）或按未交付退款。"
+            )
+            item["evidence_tone"] = "warn"
+            item["evidence_label"] = "提交未确认 · 待对账"
     if any(item.get('source') == 'job' for item in items):
         try:
             with closing(sqlite3.connect('file:' + JOB_DB.as_posix() + '?mode=ro', uri=True, timeout=5)) as connection:
@@ -7699,6 +7710,40 @@ def _matrix_template_label(template_id):
     return (_MATRIX_TEMPLATE_NAMES.get(tid) or tid)[:24]
 
 
+def _waited_seconds(status, created_at, now=None):
+    """运行中任务的「已等待」秒数。
+
+    用 now - created_at，而不是 updated_at - created_at：提交阶段就没拿到确认的任务
+    不会再有任何写入，updated_at 停在提交那一刻，耗时会永远显示 0 秒，看不出已经挂了多久。
+    """
+    try:
+        created = int(created_at or 0)
+    except (TypeError, ValueError):
+        return None
+    if created <= 0 or str(status or "").lower() not in _TASK_RUNNING_STATES:
+        return None
+    current = int(now if now is not None else time.time())
+    return max(0, current - created)
+
+
+def _submit_unconfirmed(status, provider_task_id, trace):
+    """提交供应商结果未确认：任务还在跑、没有供应商单号、最后一次提交轨迹是 unknown。
+
+    这类任务不会自己恢复（提交结果未知 → 禁止自动重发；没有单号 → 无法查询上游），
+    只能人工对账或退款，所以后台要如实显示成「提交未确认 · 待对账」，不能伪装成「执行中」。
+    """
+    if str(status or "").lower() not in _TASK_RUNNING_STATES:
+        return False
+    if str(provider_task_id or "").strip():
+        return False
+    submit = next(
+        (stage for stage in reversed(list(trace or []))
+         if str(stage.get("stage") or "") == "provider_submit"),
+        None,
+    )
+    return bool(submit) and str(submit.get("state") or "") == "unknown"
+
+
 def _task_runtime_record(item):
     """Return the single task-observability interface used by admin list views.
 
@@ -8135,6 +8180,8 @@ def call_logs(days=7, limit=200, user="", defer_evidence=False):
                 "created_at": created_at,
                 "updated_at": updated_at,
                 "duration_sec": duration,
+                # 运行中任务的「已等待」：卡住的任务 updated_at 不再前进，必须另算
+                "waited_sec": _waited_seconds(row["status"], created_at),
                 "path_label": path_label,
                 "channel": str(row["channel"] or ""),
                 "provider": str(row["provider"] or ""),
