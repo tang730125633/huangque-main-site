@@ -36,7 +36,7 @@ test('termination action follows backend capability and preserves unknown remote
 function setup() {
   const elements = Object.fromEntries(['reqSource','reqStatus','reqUser','reqSearch','reqAttributed','reqNoise','reqUpdatedAt'].map(id => [id, {value:'',checked:false,textContent:''}]));
   const pending=[], rendered=[];
-  const context={state:{reqPage:1,reqPageSize:20,days:7},el:id=>elements[id],encodeURIComponent,Promise,toast:()=>{},renderActivity:d=>rendered.push(d),api:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject}))};
+  const context={state:{reqPage:1,reqPageSize:20,days:7},el:id=>elements[id],encodeURIComponent,Promise,toast:()=>{},renderActivity:d=>rendered.push(d),api:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject})),pollNote:()=>{}};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('  function loadReqLogs('),source.indexOf('  function ',source.indexOf('  function loadReqLogs(')+12)),context);
   return {context,elements,pending,rendered};
@@ -109,4 +109,94 @@ test('task evidence distinguishes unknown submission from failure and folds raw 
   assert.match(html,/时间未采集/);
   item.runtime_trace[0].state='failed';
   assert.match(c.renderTaskCard(item),/该步骤已记录失败/);
+});
+
+// ===== P0 刷新节奏：纯决策逻辑 =====
+function pollContext(){
+  const c={window:{}};
+  vm.createContext(c);
+  vm.runInContext(source.slice(source.indexOf('  var POLL_POLICY='),source.indexOf('  var pollTimer=null')),c);
+  return c.window.HqAdminPoll;
+}
+
+test('refresh policy grades modules and backs off on failures',()=>{
+  const poll=pollContext();
+  // 分模块基准：实时任务 8s 探活、服务器 5s、运营看板空闲 60s
+  assert.equal(poll.delay('logs',true,0),8000);
+  assert.equal(poll.delay('logs',false,0),30000);
+  assert.equal(poll.delay('servers',true,0),5000);
+  assert.equal(poll.delay('servers',false,0),10000);
+  assert.equal(poll.delay('operations',true,0),30000);
+  assert.equal(poll.delay('operations',false,0),60000);
+  assert.equal(poll.delay('dashboard',true,0),10000);
+  assert.equal(poll.delay('dashboard',false,0),30000);
+  // 未知模块回落通用档，不返回 undefined
+  assert.equal(poll.delay('whatever',true,0),15000);
+  // 失败退避 2^n，封顶 60 秒
+  assert.deepEqual([1,2,3,4,9].map(n=>poll.delay('servers',true,n)),[10000,20000,40000,40000,40000]);
+  assert.equal(poll.delay('operations',true,3),60000);
+  assert.equal(poll.delay('logs',true,-5),8000);
+});
+
+test('refresh policy only speeds up when work is actually in flight',()=>{
+  const poll=pollContext();
+  assert.equal(poll.isActive('servers',{}),true);
+  // 实时任务：有 running/pending 才算有活在飞
+  assert.equal(poll.isActive('logs',{items:[{cat:'done'},{cat:'failed'}]}),false);
+  assert.equal(poll.isActive('logs',{items:[{cat:'running'}]}),true);
+  assert.equal(poll.isActive('logs',{items:[{status:'pending'}]}),true);
+  assert.equal(poll.isActive('logs',{items:[]}),false);
+  assert.equal(poll.isActive('logs',{}),false);
+  // 运营/看板：跑批或待退款都算
+  assert.equal(poll.isActive('operations',{stats:{live:{running:0,refund_pending:0}}}),false);
+  assert.equal(poll.isActive('operations',{stats:{live:{running:2}}}),true);
+  assert.equal(poll.isActive('dashboard',{stats:{live:{refund_pending:1}}}),true);
+  assert.equal(poll.isActive('dashboard',{}),false);
+});
+
+test('fingerprint probe only refetches the heavy timeline when it changed',()=>{
+  const poll=pollContext();
+  // 首次没有基线 → 必须拉
+  assert.equal(poll.shouldFullFetch(1000,0,'','sig-a'),true);
+  // 指纹变了 → 拉
+  assert.equal(poll.shouldFullFetch(1000,900,'sig-a','sig-b'),true);
+  // 指纹没变且刚拉过 → 省掉重接口
+  assert.equal(poll.shouldFullFetch(1000,900,'sig-a','sig-a'),false);
+  // 指纹没变但超过 60s 没全量拉 → 兜底拉一次
+  assert.equal(poll.shouldFullFetch(200000,1000,'sig-a','sig-a'),true);
+  assert.equal(poll.shouldFullFetch(90000,0,'sig-a','sig-a'),true);
+  assert.equal(poll.shouldFullFetch(59999,0,'sig-a','sig-a'),false);
+});
+
+test('admin refresh runs one scheduler instead of per-module timers',()=>{
+  // 只能有一处统一定时器
+  assert.match(source,/function scheduleNextPoll\(/);
+  assert.match(source,/pollTimer=setTimeout\(function\(\)/);
+  assert.match(source,/\},hqAdminPoll\.delay\(state\.module,active,pollFailures\)\)/);
+  // 活跃/空闲判定接到指纹探测与整点兜底
+  assert.match(source,/function pollNote\(ok\)\{pollFailures=ok\?0:Math\.min\(pollFailures\+1,3\)\}/);
+  assert.match(source,/shouldFullFetch\(now,pollLastFullAt,pollFingerprint,fingerprint\)/);
+  // 轻量探测走 activity probe=1，且只在有活在飞时启用
+  assert.match(source,/policy\.probe&&active/);
+  assert.match(source,/\/api\/admin\/activity\?probe=1&days=/);
+  // 回到前台立刻刷一次，不干等定时器
+  assert.match(source,/document\.addEventListener\('visibilitychange'/);
+  assert.match(source,/function restartPolling\(\)\{pollFailures=0;scheduleNextPoll\(\)\}/);
+  // 页面隐藏或正在做敏感操作时不打接口，只顺延
+  assert.match(source,/if\(document\.hidden\|\|state\.poolActions\)\{scheduleNextPoll\(\);return\}/);
+  // 旧的每模块定时轮询必须删干净
+  assert.doesNotMatch(source,/setInterval\(loadServers,5000\)/);
+  assert.doesNotMatch(source,/setInterval\(loadRealtimeTasks,5000\)/);
+  assert.doesNotMatch(source,/refreshTimer\s*=\s*setInterval\(/);
+  assert.doesNotMatch(source,/serverTimer\s*=\s*setInterval\(/);
+});
+
+test('locking the admin console stops the scheduler and switching modules restarts it',()=>{
+  const lock=source.slice(source.indexOf('  function lockAdmin('),source.indexOf('  function switchModule('));
+  assert.match(lock,/clearTimeout\(pollTimer\)/);
+  const switcher=source.slice(source.indexOf('  function switchModule('));
+  assert.match(switcher.slice(0,4000),/restartPolling\(\)/);
+  // 刷新按钮仍可手动拉最新（用户不必等下一期）
+  assert.match(source,/el\('operationsRefresh'\)\.onclick=function\(\)\{load\(false\)/);
+  assert.match(source,/el\('reqRefresh'\)\.onclick=function\(\)\{loadReqLogs\(false\)\}/);
 });

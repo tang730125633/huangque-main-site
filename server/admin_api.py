@@ -3088,6 +3088,32 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
     return entries, message
 
 
+def activity_probe(days=7):
+    """实时任务的轻量变化指纹：任务库计数/最新更新时间 + nginx 日志大小与修改时间。
+
+    前端用它在「有任务在飞」时做 5 秒级变化探测，只有指纹变了才去拉 0.9 秒的重时间线；
+    这条查询只做聚合与 stat，不解析日志、不做逐条证据回查。
+    """
+    parts = []
+    try:
+        since = int(time.time()) - max(1, int(days or 7)) * 86400
+        with closing(sqlite3.connect('file:' + JOB_DB.as_posix() + '?mode=ro', uri=True, timeout=5)) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(updated_at),0) FROM jobs WHERE created_at>=?",
+                (since,),
+            ).fetchone()
+            parts.append("j:%s-%s" % (row[0], row[1]))
+    except sqlite3.Error:
+        parts.append("j:unavailable")
+    for path in NGINX_ACCESS_LOGS:
+        try:
+            stat = path.stat()
+            parts.append("n:%s-%s" % (stat.st_size, int(stat.st_mtime)))
+        except OSError:
+            continue
+    return {"fingerprint": "|".join(parts), "checked_at": int(time.time())}
+
+
 def request_logs(limit=200, status="", q="", include_noise=False):
     """聚合各 nginx access log 尾部的后端 /api/ 请求日志（最新在前）。"""
     limit = max(1, min(int(limit or 200), 500))
@@ -8510,6 +8536,9 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/activity":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
+                if (q.get("probe") or ["0"])[0] in ("1", "true"):
+                    # 轻量探测：只看变化指纹，不拉整条时间线（前端快刷用）
+                    return self._send(200, activity_probe((q.get("days") or ["7"])[0]))
                 return self._send(
                     200,
                     activity_logs(
