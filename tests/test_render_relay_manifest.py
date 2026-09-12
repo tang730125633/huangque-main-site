@@ -142,6 +142,75 @@ class RenderRelayManifestTests(unittest.TestCase):
         self.assertEqual(converted, upload.call_args.kwargs["headers"]["X-HQ-Asset-Sha256"])
 
 
+    def _health_body(self, upstream_result, name="render_relay_health_up"):
+        """起一个真实的中转器 HTTP 服务，mock 掉上游，返回 /health 的响应体。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RELAY_DB"] = os.path.join(tmp, "relay.db")
+            relay = load(name, "deploy/render-relay/relay.py")
+            relay.init_db()   # 建表只在 main() 里做，测试要自己来
+            with mock.patch.object(relay, "_upstream", **upstream_result):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), relay.Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    url = "http://127.0.0.1:%d/health" % server.server_port
+                    try:
+                        with urllib.request.urlopen(url, timeout=5) as resp:
+                            return json.loads(resp.read())
+                    except urllib.error.HTTPError as exc:
+                        return json.loads(exc.read())
+                finally:
+                    server.shutdown()
+                    server.server_close()
+
+    def test_health_reports_upstream_material_state_verbatim(self):
+        """2026-09-12：/health 原先把素材库就绪、契约版本、worker 池写死成常量 ——
+        clip 契约写 2（上游实际 3）、worker_count 写 1（上游实际 5）、素材策略串停在 v1。
+        主站不读这些字段，但排查渠道故障第一眼看的就是这几行，假值会把方向带偏。
+        现在必须如实透传上游的值。"""
+        upstream = {
+            "ok": True, "templates": 22,
+            "worker_alive": True, "worker_count": 5,
+            "cleanup_worker_alive": True, "worker_degraded": False,
+            "degraded_jobs": 0,
+            "material_library_ready": True, "pexels_material_ready": True,
+            "material_source_policy": "huangque-bookends-extra-middle-pexels-v2",
+            "material_selection_contract_version": 2,
+            "material_clip_contract_version": 3,
+        }
+        body = self._health_body(
+            {"return_value": (200, json.dumps(upstream).encode())},
+        )
+        # 上游说什么就是什么
+        self.assertEqual(22, body["templates"])
+        self.assertIs(True, body["ok"])
+        self.assertEqual(5, body["worker_count"])
+        self.assertEqual(3, body["material_clip_contract_version"])
+        self.assertEqual(2, body["material_selection_contract_version"])
+        self.assertEqual(
+            "huangque-bookends-extra-middle-pexels-v2",
+            body["material_source_policy"],
+        )
+        # 中转器自己的队列长度仍然是真实值
+        self.assertEqual(0, body["pending_jobs"])
+        self.assertEqual(0, body["running_jobs"])
+
+    def test_health_omits_upstream_fields_when_upstream_is_down(self):
+        """上游挂掉时这些键应当**不出现**，而不是回落到编造的常量 ——
+        这正是以前把「上游挂了」误读成「素材库就绪、契约正常」的原因。"""
+        body = self._health_body(
+            {"side_effect": RuntimeError("upstream down")},
+            name="render_relay_health_down",
+        )
+        self.assertIs(False, body["ok"])
+        for field in (
+            "worker_alive", "worker_count", "material_library_ready",
+            "pexels_material_ready", "material_source_policy",
+            "material_selection_contract_version", "material_clip_contract_version",
+        ):
+            self.assertNotIn(field, body, "%s 不该在上游挂掉时凭空出现" % field)
+
+
 class RelayLoadBalanceTests(unittest.TestCase):
     """负载均衡：谁空谁先拿，避免一台连着吃好几条把某条挤慢。
 

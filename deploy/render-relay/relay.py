@@ -195,6 +195,21 @@ def _merge_completed_result(existing, incoming):
     return result
 
 
+# 上游 /health 里这些字段是**上游的真实状态**（素材库、契约版本、worker 池）。
+# 2026-09-12：以前这里在 health 响应里写死常量，和真相对不上 ——
+# clip 契约写 2（实际 3）、worker_count 写 1（实际 5）、素材策略串还停在 v1。
+# 主站虽然不读它们，但排查渠道故障的人第一眼看的就是这几行，假值会把方向带偏。
+# 现在如实透传：上游给了就报上游的，上游没给就不报（绝不编）。
+_UPSTREAM_HEALTH_FIELDS = (
+    "worker_alive", "worker_count", "cleanup_worker_alive",
+    "worker_degraded", "degraded_jobs",
+    "material_library_ready", "pexels_material_ready", "pexels_material_optional",
+    "material_source_policy",
+    "material_selection_contract_version", "material_clip_contract_version",
+    "concurrency",
+)
+
+
 def _upstream(method, path, body=None, timeout=30):
     """转发只读接口给云端渲染服务。"""
     if not UPSTREAM:
@@ -340,9 +355,11 @@ class Handler(BaseHTTPRequestHandler):
             # 上游健不健康由上游自己在 ok 里说；这里只要求「上游 ok 且确实有模板」。
             templates = 0
             upstream_ok = False
+            up = {}
             try:
                 code, raw = _upstream("GET", "/health", timeout=5)
-                up = json.loads(raw or b"{}")
+                parsed = json.loads(raw or b"{}")
+                up = parsed if isinstance(parsed, dict) else {}
                 templates = int(up.get("templates") or 0)
                 upstream_ok = up.get("ok") is True
             except Exception as exc:
@@ -361,19 +378,19 @@ class Handler(BaseHTTPRequestHandler):
                     "last_seen_seconds": age,
                     "running": per_node.get(name, 0),
                 }
-            return self._send(200 if ok else 503, {
+            body = {
                 "ok": ok, "templates": templates,
                 "nodes": nodes,
                 "nodes_online": sum(1 for v in nodes.values() if v["online"]),
                 "nodes_total": len(nodes),
-                "worker_alive": True, "worker_count": 1,
-                "cleanup_worker_alive": True, "worker_degraded": False,
-                "degraded_jobs": 0, "pending_jobs": pending, "running_jobs": running,
-                "material_library_ready": True, "pexels_material_ready": True,
-                "material_selection_contract_version": 2,
-                "material_clip_contract_version": 2,
-                "material_source_policy": "huangque-bookends-pexels-middle-v1",
-            })
+                # 这两个是中转器**自己**的真实队列长度，不是透传
+                "pending_jobs": pending, "running_jobs": running,
+            }
+            # 上游的真实状态如实透传；上游没给就不出现这个键，不编常量。
+            for field in _UPSTREAM_HEALTH_FIELDS:
+                if field in up:
+                    body[field] = up[field]
+            return self._send(200 if ok else 503, body)
 
         if p.startswith("/v1/jobs/"):
             jid = p[len("/v1/jobs/"):].strip()
