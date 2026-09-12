@@ -1446,6 +1446,74 @@
     el('passwordResetSubmit').onclick=function(){resetUserPassword(u.username)};
     el('detailPoints').onclick=function(){openPoints(u.username)};
     Array.prototype.forEach.call(box.querySelectorAll('[data-related-user-id]'),function(btn){btn.onclick=function(){openUserDetail('',btn.getAttribute('data-related-user-id'))}});
+    if(u.username)userSessionsSection(u.username,box);
+  }
+  // ---- 登录设备（2026-09-12）----
+  // 原先后台完全看不到"某人从哪些设备登录"，出了盗号无从下手。
+  // 这里列出该账号每个有效登录的 IP / 设备 / 时间，可单独踢，也可全部踢。
+  function deviceLabel(ua){
+    var s=String(ua||'');
+    if(!s)return '未知设备';
+    if(/hq-cli|huangque-cli|okhttp|Go-http|python-requests|curl/i.test(s))return '黄雀 CLI / 脚本';
+    var os='其他系统';
+    if(/Macintosh|Mac OS X/i.test(s))os='Mac';
+    else if(/Windows/i.test(s))os='Windows';
+    else if(/iPhone/i.test(s))os='iPhone';
+    else if(/iPad/i.test(s))os='iPad';
+    else if(/Android/i.test(s))os='Android';
+    else if(/Linux/i.test(s))os='Linux';
+    var br='';
+    if(/Edg\//i.test(s))br='Edge';
+    else if(/Chrome\//i.test(s))br='Chrome';
+    else if(/Safari\//i.test(s))br='Safari';
+    else if(/Firefox\//i.test(s))br='Firefox';
+    return (br?br+' / ':'')+os;
+  }
+  function fmtWhen(v){
+    var n=Number(v)||0;
+    if(!n)return '—';
+    return new Date(n*1000).toLocaleString();
+  }
+  function userSessionsSection(username,box){
+    var wrap=document.createElement('div');
+    wrap.className='card';
+    wrap.innerHTML='<div class="section-head"><h3>登录设备</h3><span><button class="mini" data-sessions-refresh>刷新</button> <button class="mini" data-sessions-killall>全部踢出</button></span></div><div data-sessions-body class="muted">正在读取登录设备…</div>';
+    box.appendChild(wrap);
+    var body=wrap.querySelector('[data-sessions-body]');
+    function load(){
+      body.className='muted';body.textContent='正在读取登录设备…';
+      api('/api/admin/users/sessions?username='+encodeURIComponent(username)).then(function(d){
+        var items=(d&&d.items)||[];
+        if(!items.length){body.textContent='当前没有有效登录';return}
+        body.className='';
+        body.innerHTML='<div class="muted" style="margin-bottom:8px">共 '+items.length+' 个有效登录</div>'+
+          items.map(function(x){
+            return '<div class="watch-row" style="margin-bottom:6px">'+
+              '<span><b>'+esc(deviceLabel(x.ua))+'</b><div class="muted" style="font-size:11px">'+
+              esc(x.ip||'IP 未记录')+' · 登录于 '+esc(fmtWhen(Date.parse(x.created_at)/1000))+
+              ' · 最后活跃 '+esc(fmtWhen(x.last_seen_at))+'</div></span>'+
+              '<button class="mini" data-sessions-kill="'+esc(x.token_key)+'">踢出</button></div>';
+          }).join('');
+        Array.prototype.forEach.call(body.querySelectorAll('[data-sessions-kill]'),function(btn){
+          btn.onclick=function(){
+            if(!confirm('确认踢出这条登录？该设备需要重新登录。'))return;
+            api('/api/admin/users/sessions/revoke',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({username:username,token_key:btn.getAttribute('data-sessions-kill')})})
+              .then(function(){toast('已踢出该登录');load()})
+              .catch(function(e){toast('踢出失败：'+e.message)});
+          };
+        });
+      }).catch(function(e){body.className='error';body.textContent='登录设备读取失败：'+e.message});
+    }
+    wrap.querySelector('[data-sessions-refresh]').onclick=load;
+    wrap.querySelector('[data-sessions-killall]').onclick=function(){
+      if(!confirm('确认踢出 '+username+' 的**全部**登录？所有设备（含 CLI）都需要重新登录。'))return;
+      api('/api/admin/users/sessions/revoke',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({username:username,all:true})})
+        .then(function(d){toast('已踢出 '+(d.revoked||0)+' 个登录');load()})
+        .catch(function(e){toast('踢出失败：'+e.message)});
+    };
+    load();
   }
   function openUserDetail(username,userId){
     var identity=userId?('id:'+userId):username,url=userId?('/api/admin/users/detail?user_id='+encodeURIComponent(userId)):('/api/admin/users/detail?username='+encodeURIComponent(username));

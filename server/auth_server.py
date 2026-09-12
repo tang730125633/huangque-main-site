@@ -345,6 +345,11 @@ def init_db():
     token_cols = {r["name"] for r in c.execute("PRAGMA table_info(tokens)").fetchall()}
     if "scope" not in token_cols:
         c.execute("ALTER TABLE tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'account'")
+    # 登录设备痕迹（2026-09-12）：原先 tokens 表只有 token/username/时间/scope，
+    # 出了盗号连"从哪台设备登的"都查不到。补三列；老库用 ALTER 平滑升级。
+    for _col, _decl in (("ip", "TEXT"), ("ua", "TEXT"), ("last_seen_at", "INTEGER")):
+        if _col not in token_cols:
+            c.execute("ALTER TABLE tokens ADD COLUMN %s %s" % (_col, _decl))
     c.execute("""CREATE TABLE IF NOT EXISTS points_audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         who_admin TEXT NOT NULL,
@@ -4550,13 +4555,112 @@ def cleanup_expired_tokens(c=None):
     if own:
         c.commit(); c.close()
 
-def issue_token(username, c=None, ttl=None, scope="account"):
+SESSION_KEEP = 5          # 每个账号最多保留几个登录（多设备共存，但不再无限增长）
+
+
+def _trim_tokens(c, username, keep=None):
+    """只保留最近 keep 个登录，更早的删掉。
+
+    2026-09-12：tang1 攒了 99 个**全部有效**的 token —— IP12 Agent 每 15 分钟重登一次，
+    而旧 token 从不过期。多设备要保留，但无限增长既占地方、又扩大泄露面。
+    """
+    keep = int(SESSION_KEEP if keep is None else keep)
+    c.execute(
+        "DELETE FROM tokens WHERE username=? AND rowid NOT IN ("
+        " SELECT rowid FROM tokens WHERE username=?"
+        " ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+        (username, username, keep),
+    )
+
+
+def list_user_sessions(username):
+    """列出某账号当前有效的登录（含设备信息），给后台「登录设备」用。
+
+    返回的 token 做**截断**：后台只需要定位到某一条去踢，不需要拿到完整凭据，
+    截断后即使后台被看也不至于把别人的登录态带走。
+    """
+    username = str(username or "").strip()
+    if not username:
+        raise ValueError("缺少用户账号")
+    now = int(time.time())
+    c = db()
+    try:
+        rows = c.execute(
+            "SELECT token,created_at,expires_at,scope,ip,ua,last_seen_at"
+            " FROM tokens WHERE username=? AND (expires_at IS NULL OR expires_at > ?)"
+            " ORDER BY created_at DESC, rowid DESC",
+            (username, now),
+        ).fetchall()
+    finally:
+        c.close()
+    items = []
+    for r in rows:
+        tok = str(r["token"] or "")
+        items.append({
+            "token_hint": (tok[:8] + "…" + tok[-4:]) if len(tok) > 14 else tok,
+            "token_key": hashlib.sha256(tok.encode("utf-8")).hexdigest()[:32],
+            "created_at": str(r["created_at"] or ""),
+            "expires_at": int(r["expires_at"] or 0),
+            "scope": str(r["scope"] or ""),
+            "ip": str(r["ip"] or ""),
+            "ua": str(r["ua"] or ""),
+            "last_seen_at": int(r["last_seen_at"] or 0),
+            "expired": bool(r["expires_at"] and int(r["expires_at"]) <= now),
+        })
+    return {"username": username, "items": items, "total": len(items)}
+
+
+def revoke_user_sessions(username, token_key="", revoke_all=False):
+    """踢出某账号的登录。revoke_all=True 全踢，否则按 token_key（sha256 前 32 位）踢一条。
+
+    用 sha256 前缀而不是完整 token 定位 —— 后台拿不到完整凭据也能精确踢人。
+    """
+    username = str(username or "").strip()
+    if not username:
+        raise ValueError("缺少用户账号")
+    c = db()
+    try:
+        rows = c.execute("SELECT token FROM tokens WHERE username=?", (username,)).fetchall()
+        target = str(token_key or "").strip().lower()
+        if revoke_all:
+            killed = len(rows)
+            c.execute("DELETE FROM tokens WHERE username=?", (username,))
+            # CLI 设备授权也一并吊销，否则刷新令牌还能把登录换回来
+            c.execute(
+                "UPDATE cli_device_grants SET revoked_at=? WHERE username=? AND revoked_at IS NULL",
+                (int(time.time()), username))
+        else:
+            if not target:
+                raise ValueError("缺少要踢出的登录标识")
+            hit = [r["token"] for r in rows
+                   if hashlib.sha256(str(r["token"]).encode("utf-8")).hexdigest()[:32] == target]
+            if not hit:
+                raise ValueError("该登录不存在或已失效")
+            killed = len(hit)
+            c.executemany("DELETE FROM tokens WHERE token=?", [(t,) for t in hit])
+        c.commit()
+    finally:
+        c.close()
+    return {"username": username, "revoked": killed, "all": bool(revoke_all)}
+
+
+def issue_token(username, c=None, ttl=None, scope="account", ip="", ua=""):
+    """签发登录凭据。
+
+    ip / ua 记录登录设备（可选）。ip 只应传服务端可信来源（见 Handler._client_ip），
+    不要直接用客户端可伪造的请求头。
+    """
     own = c is None
     if own: c = db()
     cleanup_expired_tokens(c)
     tok = secrets.token_urlsafe(32)
-    c.execute("INSERT INTO tokens(token,username,expires_at,scope) VALUES(?,?,?,?)",
-              (tok, username, int(time.time()) + int(TOKEN_TTL if ttl is None else ttl), scope))
+    now = int(time.time())
+    c.execute(
+        "INSERT INTO tokens(token,username,expires_at,scope,ip,ua,last_seen_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (tok, username, now + int(TOKEN_TTL if ttl is None else ttl), scope,
+         str(ip or "")[:64], str(ua or "")[:300], now))
+    _trim_tokens(c, username)
     if own:
         c.commit(); c.close()
     return tok
@@ -6561,6 +6665,37 @@ class H(BaseHTTPRequestHandler):
             if err:
                 return self._send(400, {"detail": messages.get(err, err)})
             return self._send(200, {"ok": True, "notification": notice})
+        if p == "/api/auth/admin/users/sessions":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                return self._send(200, list_user_sessions(d.get("username")))
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+        if p == "/api/auth/admin/users/sessions/revoke":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                result = revoke_user_sessions(
+                    d.get("username"), d.get("token_key") or "",
+                    revoke_all=bool(d.get("all")),
+                )
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            # 审计记在后台那层（admin_api._admin_audit），auth 服务没有通用审计表
+            return self._send(200, {"ok": True, **result})
         if p == "/api/auth/admin/password/reset":
             if not self._require_internal():
                 return
@@ -7115,7 +7250,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(403, {"detail": "账号已被停用，请联系管理员", "code": "account_banned"})
             self._clear_login_failures(u)
             account_id = row["account_id"] or ensure_account_id(u)
-            tok = issue_token(u)
+            tok = issue_token(
+                u, ip=self._client_ip(),
+                ua=(self.headers.get("User-Agent") or ""),
+            )
             return self._send(200, {"user": public_user(
                 u, row["display_name"], row["points"], row["role"], row["must_change"], account_id,
                 row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
@@ -7254,7 +7392,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(403, {"detail": "账号已被停用，请联系管理员", "code": "account_banned"})
             self._clear_login_failures(u)
             account_id = row["account_id"] or ensure_account_id(u)
-            tok = issue_token(u)
+            tok = issue_token(
+                u, ip=self._client_ip(),
+                ua=(self.headers.get("User-Agent") or ""),
+            )
             return self._send(200, {"token": tok, "user": public_user(
                 u, row["display_name"], row["points"], row["role"], row["must_change"], account_id,
                 row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],

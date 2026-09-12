@@ -8502,6 +8502,53 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, auth_admin_request(suffix, self._token()))
             except Exception as e:
                 return auth_error_response(self, e)
+        if path == "/api/admin/users/sessions":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            username = (q.get("username") or [""])[0].strip()
+            if not username:
+                return self._send(400, {"detail": "缺少用户账号"})
+            try:
+                data = auth_admin_request(
+                    "/api/auth/admin/users/sessions", self._token(),
+                    method="POST", payload={"username": username},
+                )
+                return self._send(200, data)
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/users/sessions/revoke":
+            body = self._body() or {}
+            if not isinstance(body, dict):
+                return self._send(400, {"detail": "请求体必须是 JSON 对象"})
+            username = str(body.get("username") or "").strip()
+            if not username:
+                return self._send(400, {"detail": "缺少用户账号"})
+            payload = {"username": username}
+            if body.get("all"):
+                payload["all"] = True
+            else:
+                token_key = str(body.get("token_key") or "").strip()
+                if not token_key:
+                    return self._send(400, {"detail": "缺少要踢出的登录标识"})
+                payload["token_key"] = token_key
+            actor = str((self._admin() or {}).get("username") or "admin")
+            try:
+                result = auth_admin_request(
+                    "/api/auth/admin/users/sessions/revoke", self._token(),
+                    method="POST", payload=payload,
+                )
+            except Exception as e:
+                return auth_error_response(self, e)
+            # 踢登录是安全操作，必须留痕（和重置密码同一张审计表）
+            try:
+                _admin_audit(
+                    actor,
+                    "user_sessions_revoke_all" if payload.get("all") else "user_sessions_revoke",
+                    username,
+                    {"revoked": int((result or {}).get("revoked") or 0)},
+                )
+            except Exception:
+                pass
+            return self._send(200, result)
         if path == "/api/admin/users/detail":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             username = (q.get("username") or [""])[0].strip()
