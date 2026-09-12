@@ -400,7 +400,7 @@
   var LECHUANG_PRIMARY_RATIOS=['9:16','1:1','16:9','3:4'];
   var LECHUANG_QUALITY_LABELS={auto:'自动',low:'经济',medium:'标准',high:'高品质'};
   var LECHUANG_BACKGROUND_LABELS={auto:'自动',opaque:'不透明',transparent:'透明底'};
-  var lechuangItems=[], lechuangItem=null, lechuangChoice=null, lechuangWanted=null;
+  var lechuangItems=[], lechuangItem=null, lechuangChoice=null, lechuangWanted=null, lechuangNote='';
   // 候选模型：优先按已知前台标识排序，其余带「乐创」标签的生图映射排在后面（后台增删映射即可增删卡片）。
   function hqLechuangCandidates(items){
     var list=Array.isArray(items)?items.filter(function(x){return x&&x.kind==='image';}):[];
@@ -480,10 +480,72 @@
     var v=(choice&&choice.values)||{};
     return {size:v.size||'',quality:v.quality||'',background:v.background||''};
   }
+  // 三行的优先级：比例 > 清晰度 > 背景。某一维的候选值在「更高优先级的当前选择」下没有任何已发布组合时，
+  // 该值在前台灰掉不可点（后台没发布的搭配，用户点不动，而不是点了之后被悄悄换成别的参数）。
+  var LECHUANG_FIELD_ORDER=['size','quality','background'];
+  function hqLechuangAllowed(item,wanted){
+    var combos=(item&&item.combinations)||[];
+    var want=wanted||{};
+    var out={size:[],quality:[],background:[]};
+    LECHUANG_FIELD_ORDER.forEach(function(key,idx){
+      var higher=LECHUANG_FIELD_ORDER.slice(0,idx);
+      combos.forEach(function(c){
+        var v=(c&&c.values)||{};
+        var ok=higher.every(function(k){ return !want[k]||String(v[k])===String(want[k]); });
+        if(!ok) return;
+        var value=v[key];
+        if(value&&out[key].indexOf(value)<0) out[key].push(value);
+      });
+    });
+    return out;
+  }
+  // 点某一维：这一维一定生效，且优先级更高的维度一律不动；只有更低优先级的维度按「保持原值 → 组合顺序」让位。
+  // 高优先级维度满足不了时返回 null（界面本来就把这种卡片灰掉了，这里再兜一层：宁可不响应，也不偷换参数）。
+  function hqLechuangResolve(item,wanted,key,value){
+    var combos=(item&&item.combinations)||[];
+    if(!combos.length||LECHUANG_FIELD_ORDER.indexOf(key)<0) return null;
+    var idx=LECHUANG_FIELD_ORDER.indexOf(key);
+    var want=Object.assign({},wanted||{});
+    want[key]=value;
+    var fixed=LECHUANG_FIELD_ORDER.slice(0,idx+1);
+    var pool=combos.filter(function(c){
+      var v=(c&&c.values)||{};
+      return fixed.every(function(k){ return !want[k]||String(v[k])===String(want[k]); });
+    });
+    if(!pool.length) return null;
+    var best=null,bestScore=-1;
+    pool.forEach(function(c){
+      var v=(c&&c.values)||{},score=0;
+      LECHUANG_FIELD_ORDER.forEach(function(k){ if(want[k]&&String(v[k])===String(want[k])) score+=1; });
+      if(score>bestScore){ bestScore=score; best=c; }
+    });
+    return best||pool[0];
+  }
+  // 灰掉的原因（鼠标悬停能看到），以及被自动调整时的说明
+  function hqLechuangReason(key,value,wanted){
+    var want=wanted||{};
+    var ratio=hqRatioOfSize(want.size)||want.size||'当前比例';
+    var quality=LECHUANG_QUALITY_LABELS[want.quality]||want.quality||'当前清晰度';
+    var name=key==='quality'?(LECHUANG_QUALITY_LABELS[value]||value):key==='background'?(LECHUANG_BACKGROUND_LABELS[value]||value):value;
+    if(key==='size') return '当前模型没有这个比例的可用组合';
+    if(key==='quality') return ratio+' 暂不支持「'+name+'」';
+    return ratio+' + '+quality+' 暂不支持「'+name+'」';
+  }
+  function hqLechuangAdjustNote(key,before,after){
+    var labels={size:'比例',quality:'清晰度',background:'背景'};
+    var changed=LECHUANG_FIELD_ORDER.filter(function(k){ return k!==key&&String((before||{})[k]||'')!==String((after||{})[k]||''); });
+    if(!changed.length) return '';
+    return changed.map(function(k){
+      var value=(after||{})[k]||'';
+      var text=k==='size'?(hqRatioOfSize(value)||value):(k==='quality'?(LECHUANG_QUALITY_LABELS[value]||value):(LECHUANG_BACKGROUND_LABELS[value]||value));
+      return '按当前组合，'+labels[k]+'已切到「'+text+'」';
+    }).join('；');
+  }
   window.HQBananaLechuang={pickItem:hqLechuangPick,buildPayload:hqLechuangPayload,
                            facets:hqLechuangFacets,choose:hqChooseCombination,
                            wantedFromChoice:hqWantedFromChoice,ratioOfSize:hqRatioOfSize,
-                           candidates:hqLechuangCandidates,modelLabel:hqLechuangModelLabel};
+                           candidates:hqLechuangCandidates,modelLabel:hqLechuangModelLabel,
+                           allowed:hqLechuangAllowed,resolve:hqLechuangResolve,reason:hqLechuangReason};
   function lechuangDefaultPoints(){
     return hqLechuangItemPoints(lechuangItem);
   }
@@ -493,12 +555,16 @@
     var points=lechuangChoice?Number(lechuangChoice.points)||0:lechuangDefaultPoints();
     node.textContent=points?points+'点':'—';
   }
-  // 卡片行：与老引擎的行标记保持一致（同一套内联样式与高亮规则）
-  function hqRatioCard(ratio,on){
-    return '<div data-lc-ratio="'+ratio+'" style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; transition:.16s; font-family:\'JetBrains Mono\',monospace; color:'+(on?'#e7b24c':'#94a4bb')+'; background:'+(on?'rgba(231,178,76,.1)':'rgba(148,164,187,.05)')+'; border:1px solid '+(on?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)')+';">'+ratio+'</div>';
+  // 卡片行：与老引擎的行标记保持一致（同一套内联样式与高亮规则）；off=true 表示「后台没这个搭配」→ 灰掉且点不动
+  var LECHUANG_OFF_STYLE='color:#4d5a6b; background:rgba(148,164,187,.03); border:1px solid rgba(148,164,187,.09); cursor:not-allowed; opacity:.6;';
+  function hqCardAttrs(off,reason){
+    return off?(' aria-disabled="true" data-lc-disabled="1" title="'+hqLechuangText(reason||'当前组合不支持该选项')+'"'):'';
   }
-  function hqPlainCard(attr,value,label,on){
-    return '<div '+attr+'="'+value+'" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; transition:.16s; color:'+(on?'#e7b24c':'#94a4bb')+'; background:'+(on?'rgba(231,178,76,.1)':'rgba(148,164,187,.05)')+'; border:1px solid '+(on?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)')+';">'+label+'</div>';
+  function hqRatioCard(ratio,on,off,reason){
+    return '<div data-lc-ratio="'+ratio+'"'+hqCardAttrs(off,reason)+' style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; transition:.16s; font-family:\'JetBrains Mono\',monospace; '+(off?LECHUANG_OFF_STYLE:('cursor:pointer; color:'+(on?'#e7b24c':'#94a4bb')+'; background:'+(on?'rgba(231,178,76,.1)':'rgba(148,164,187,.05)')+'; border:1px solid '+(on?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)')+';'))+'">'+hqLechuangText(ratio)+'</div>';
+  }
+  function hqPlainCard(attr,value,label,on,off,reason){
+    return '<div '+attr+'="'+hqLechuangText(value)+'"'+hqCardAttrs(off,reason)+' style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; transition:.16s; '+(off?LECHUANG_OFF_STYLE:('cursor:pointer; color:'+(on?'#e7b24c':'#94a4bb')+'; background:'+(on?'rgba(231,178,76,.1)':'rgba(148,164,187,.05)')+'; border:1px solid '+(on?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)')+';'))+'">'+hqLechuangText(label)+'</div>';
   }
   // 模型卡片行：只有一个候选时整行隐藏（后台没多挂模型就和以前一样）
   function hqLechuangText(value){
@@ -532,22 +598,31 @@
       var defCombo=(lechuangItem.combinations||[]).filter(function(c){return c.id===lechuangItem.default;})[0]||(lechuangItem.combinations||[])[0];
       lechuangChoice=defCombo||null;
       lechuangWanted=hqWantedFromChoice(defCombo);
+      lechuangNote='';
     }
     var wanted=lechuangWanted;
+    var allowed=hqLechuangAllowed(lechuangItem,wanted);
     var ratio=hqRatioOfSize(wanted.size)||f.ratios[0]||'';
+    var ratioSlot=function(r){ return allowed.size.indexOf(LECHUANG_RATIO_SIZES[r]||'')>=0; };
     var primary=document.getElementById('lechuangRatioRow');
-    if(primary) primary.innerHTML=f.primary.map(function(r){return hqRatioCard(r,r===ratio);}).join('');
+    if(primary) primary.innerHTML=f.primary.map(function(r){return hqRatioCard(r,r===ratio,!ratioSlot(r),hqLechuangReason('size',LECHUANG_RATIO_SIZES[r]||'',wanted));}).join('');
     var extraWrap=document.getElementById('lechuangExtraWrap'), extra=document.getElementById('lechuangRatioMoreRow');
     if(extraWrap&&extra){
       extraWrap.hidden=!f.extra.length;
-      extra.innerHTML=f.extra.map(function(r){return hqRatioCard(r,r===ratio);}).join('');
+      extra.innerHTML=f.extra.map(function(r){return hqRatioCard(r,r===ratio,!ratioSlot(r),hqLechuangReason('size',LECHUANG_RATIO_SIZES[r]||'',wanted));}).join('');
     }
     var quality=document.getElementById('lechuangQualityRow');
-    if(quality) quality.innerHTML=f.qualities.map(function(q){return hqPlainCard('data-lc-quality',q,(LECHUANG_QUALITY_LABELS[q]||q),q===wanted.quality);}).join('');
+    if(quality) quality.innerHTML=f.qualities.map(function(q){
+      var on=allowed.quality.indexOf(q)>=0;
+      return hqPlainCard('data-lc-quality',q,(LECHUANG_QUALITY_LABELS[q]||q),q===wanted.quality,!on,hqLechuangReason('quality',q,wanted));
+    }).join('');
     var background=document.getElementById('lechuangBackgroundRow');
-    if(background) background.innerHTML=f.backgrounds.map(function(b){return hqPlainCard('data-lc-background',b,(LECHUANG_BACKGROUND_LABELS[b]||b),b===wanted.background);}).join('');
+    if(background) background.innerHTML=f.backgrounds.map(function(b){
+      var on=allowed.background.indexOf(b)>=0;
+      return hqPlainCard('data-lc-background',b,(LECHUANG_BACKGROUND_LABELS[b]||b),b===wanted.background,!on,hqLechuangReason('background',b,wanted));
+    }).join('');
     var hint=document.getElementById('lechuangHint');
-    if(hint) hint.textContent='乐创线路（'+hqLechuangModelLabel(lechuangItem)+'）：'+(lechuangChoice?lechuangChoice.points+' 点 · ':'')+'每次出一张；上传参考图自动切换为局部修图'+(wanted.background==='transparent'?'；当前为透明底':'')+'。';
+    if(hint) hint.textContent='乐创线路（'+hqLechuangModelLabel(lechuangItem)+'）：'+(lechuangChoice?lechuangChoice.points+' 点 · ':'')+'每次出一张；灰色选项在当前组合下没有对应搭配，不可选'+(lechuangNote?'；'+lechuangNote:'')+'。';
     lechuangControls={value:function(){return lechuangChoice;}};
     syncLechuangCard();
   }
@@ -558,17 +633,24 @@
     lechuangItem=next;
     lechuangWanted=null;
     lechuangChoice=null;
+    lechuangNote='';
     renderLechuangRows();
     updateCost();
   }
-  // 切换某一项：解析出最近的合法组合并回填其他项（后台改了组合也能自动收敛）
+  // 切换某一项：先看这一项在当前组合下是否可选（灰掉的直接不响应），再解析成精确的已发布组合；
+  // 只有优先级更低的维度会让位，并在提示里说明改了什么。
   function pickLechuang(key,value){
     if(!lechuangItem) return;
-    var next=Object.assign({},lechuangWanted||{});
-    if(key==='ratio'){ next.size=LECHUANG_RATIO_SIZES[value]||next.size; }
-    else next[key]=value;
-    lechuangChoice=hqChooseCombination(lechuangItem,next);
-    lechuangWanted=hqWantedFromChoice(lechuangChoice);
+    var before=Object.assign({},lechuangWanted||{});
+    var field=key==='ratio'?'size':key;
+    var target=key==='ratio'?(LECHUANG_RATIO_SIZES[value]||before.size||''):value;
+    var allowed=hqLechuangAllowed(lechuangItem,before);
+    if((allowed[field]||[]).indexOf(target)<0){ lechuangNote=hqLechuangReason(field,target,before)+'，该选项不可选'; renderLechuangRows(); return; }
+    var resolved=hqLechuangResolve(lechuangItem,before,field,target);
+    if(!resolved) return;
+    lechuangChoice=resolved;
+    lechuangWanted=hqWantedFromChoice(resolved);
+    lechuangNote=hqLechuangAdjustNote(field,before,lechuangWanted);
     renderLechuangRows();
     updateCost();
   }
@@ -579,6 +661,8 @@
     box.addEventListener('click',function(e){
       var node=e.target.closest('[data-lc-model],[data-lc-ratio],[data-lc-quality],[data-lc-background]');
       if(!node) return;
+      // 灰掉的卡片（后台没有这个搭配）不响应点击，只把原因写在提示里
+      if(node.hasAttribute('data-lc-disabled')) return;
       if(node.hasAttribute('data-lc-model')) return pickLechuangModel(node.getAttribute('data-lc-model'));
       if(node.hasAttribute('data-lc-ratio')) return pickLechuang('ratio',node.getAttribute('data-lc-ratio'));
       if(node.hasAttribute('data-lc-quality')) return pickLechuang('quality',node.getAttribute('data-lc-quality'));
@@ -1581,7 +1665,7 @@
 })();
 </script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
-<script src="/workbench/channel-parameter-controls.js?v=8e29d198"></script>
+<script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
 <script src="/workbench/channel-parameters.js?v=26139824"></script>
 </body>
 </html>
