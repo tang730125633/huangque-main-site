@@ -1195,7 +1195,16 @@
   function taskRawField(label,value,title){return '<div><span>'+esc(label)+'</span><code title="'+esc(title||value||'')+'">'+esc(value||'未采集')+'</code></div>'}
   function openTaskTermination(x){
     var dialog=el('terminateTaskDialog');
-    el('terminateTaskInfo').textContent='用户 '+(x.user||'未归属')+' · 任务 #'+x.task_id+' · '+(x.func||'')+'\n当前状态：'+(x.evidence_label||'未采集')+' · 耗时：'+fmtDuration(x.duration_sec||0)+'\n供应商工单：'+(x.provider_task_id||'未采集')+'\n任务点数：'+Number(x.cost||0);
+    var running=x.cat==='running'||x.status==='running'||x.status==='pending';
+    var info='用户 '+(x.user||'未归属')+' · 任务 #'+x.task_id+' · '+(x.func||'')
+      +'\n当前状态：'+(x.evidence_label||'未采集')
+      +' · '+(running&&x.waited_sec!=null?'已等待：'+fmtWait(x.waited_sec):'耗时：'+fmtDuration(x.duration_sec||0))
+      +'\n供应商工单：'+(x.provider_task_id||'未采集')
+      +'\n任务点数：'+Number(x.cost||0);
+    if(x.unconfirmed)info+='\n\n⚠ 提交未确认：供应商是否已接单未知（系统已禁止自动重发）。\n终止 = 按未交付退款；若供应商可能已受理，请先与其核对再决定。';
+    el('terminateTaskInfo').textContent=info;
+    var title=el('terminateTaskTitle');if(title)title.textContent=x.unconfirmed?'提交未确认 · 对账 / 退款':'终止此任务？';
+    var submitLabel=el('terminateTaskSubmit');if(submitLabel)submitLabel.textContent=x.unconfirmed?'确认终止并退款':'确认终止';
     el('terminateTaskReason').value='';el('terminateTaskError').textContent='';
     var submit=el('terminateTaskSubmit');submit.disabled=false;
     el('terminateTaskForm').onsubmit=function(event){
@@ -1210,6 +1219,12 @@
     };
     el('terminateTaskCancel').onclick=function(){dialog.close()};
     dialog.showModal();el('terminateTaskReason').focus();
+  }
+  // 运行中的任务显示「已等待」（now − created_at）：卡住的任务不再写库，耗时口径会永远停在 0 秒
+  function taskTimingMetric(x,isJob){
+    var running=isJob&&(x.cat==='running'||x.status==='running'||x.status==='pending');
+    if(running)return '<div class="task-metric"><span>已等待</span><b>'+(x.waited_sec!=null?esc(fmtWait(x.waited_sec)):'未采集')+'</b></div>';
+    return '<div class="task-metric"><span>处理耗时</span><b>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'未采集')+'</b></div>';
   }
   function renderTaskCard(x){
       var errorCatalog={};
@@ -1266,8 +1281,9 @@
         detail='<div class="task-raw">'+taskRawField('请求号',x.request_id)+taskRawField('路径',x.path,x.path)+taskRawField('来源 IP',x.ip,x.ua||x.ip)+taskRawField('错误说明',errorInfo.message||x.hq_code||'无')+'</div>';
       }
       if(x.termination){var t=x.termination;detail='<div class="task-proof-summary"><b>管理员终止记录</b><p>'+esc(t.actor)+' · '+esc(new Date(Number(t.requested_at)*1000).toLocaleString())+' · '+esc(t.reason)+'</p></div>'+detail}
-      var action=isJob&&x.can_terminate?'<button type="button" class="task-stop" data-terminate-task="'+esc(x.task_id)+'">终止任务</button>':(isJob&&x.cat==='running'&&!x.termination?'<span class="task-stop-unavailable">'+esc(x.unavailable_reason||'该任务暂不支持终止')+'</span>':'');
-      return '<article class="task-row" data-task-key="'+esc(x.source+':'+(x.task_id||x.request_id||x.time+' '+x.path))+'" data-state="'+esc(x.cat||'unknown')+'"><div class="task-row-main"><div class="task-title"><div class="task-title-top"><span class="pill neutral">'+type+'</span><h3>'+esc(x.func||'未识别功能')+'</h3><span class="pill '+tone+'">'+esc(statusLabel)+'</span></div><small><code>'+esc(identity)+'</code> · '+esc(x.time||'-')+'</small><div class="task-route">'+route.join('')+'</div></div>'+stages+'<div class="task-metrics"><div class="task-metric"><span>处理耗时</span><b>'+(x.duration_sec!=null?esc(fmtDuration(x.duration_sec)):'未采集')+'</b></div><div class="task-metric"><span>任务点数</span><b>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</b></div></div></div>'+action+'<details class="task-evidence"><summary>同一次执行 · '+esc(isJob?'不把完成冒充交付':'原始请求证据')+'</summary>'+detail+'</details></article>';
+      var stopTitle=x.unconfirmed?'提交结果未确认：供应商可能已受理。终止＝按未交付退款；请先与供应商核对。':'终止任务并退款';
+      var action=isJob&&x.can_terminate?'<button type="button" class="task-stop" data-terminate-task="'+esc(x.task_id)+'" title="'+esc(stopTitle)+'">'+(x.unconfirmed?'对账 / 退款':'终止任务')+'</button>':(isJob&&x.cat==='running'&&!x.termination?'<span class="task-stop-unavailable">'+esc(x.unavailable_reason||'该任务暂不支持终止')+'</span>':'');
+      return '<article class="task-row" data-task-key="'+esc(x.source+':'+(x.task_id||x.request_id||x.time+' '+x.path))+'" data-state="'+esc(x.cat||'unknown')+'"><div class="task-row-main"><div class="task-title"><div class="task-title-top"><span class="pill neutral">'+type+'</span><h3>'+esc(x.func||'未识别功能')+'</h3><span class="pill '+tone+'">'+esc(statusLabel)+'</span></div><small><code>'+esc(identity)+'</code> · '+esc(x.time||'-')+'</small><div class="task-route">'+route.join('')+'</div></div>'+stages+'<div class="task-metrics">'+taskTimingMetric(x,isJob)+'<div class="task-metric"><span>任务点数</span><b>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</b></div></div></div>'+action+'<details class="task-evidence"><summary>同一次执行 · '+esc(isJob?'不把完成冒充交付':'原始请求证据')+'</summary>'+detail+'</details></article>';
   }
   function renderActivity(d){
     var technicalExpanded=new Set(Array.from(el('reqBox').querySelectorAll('.task-technical[open]')).map(function(node){return node.closest('[data-task-key]').getAttribute('data-task-key')}));
@@ -2485,7 +2501,8 @@
       var d=data||{};
       if(module==='servers')return true;
       if(module==='logs'){
-        return (d.items||[]).some(function(x){return x&&(x.cat==='running'||x.status==='running'||x.status==='pending')});
+        // 提交未确认的任务不会自己推进（等人工对账），不该让页面一直保持高频刷新
+        return (d.items||[]).some(function(x){return x&&!x.unconfirmed&&(x.cat==='running'||x.status==='running'||x.status==='pending')});
       }
       var live=(d.stats||{}).live||{};
       return Number(live.running||0)>0||Number(live.refund_pending||0)>0;
