@@ -604,8 +604,17 @@ class ProviderKeyPoolTests(unittest.TestCase):
         ):
             self.assertIn(text, html)
         self.assertNotIn("data-provider-key-rename", html)
-        self.assertIn("if(document.hidden||state.poolActions)return", html)
-        self.assertIn("if(state.module==='dashboard')loadDashboard(true);else if(state.module==='operations')load(true)", html)
+        # 页面隐藏或号池敏感操作进行中不打接口。守卫原先挂在统一 15 秒定时器上，
+        # 2026-09-12 后台刷新改分级调度后搬进了 scheduleNextPoll，语义必须保留。
+        self.assertIn("if(document.hidden||state.poolActions){scheduleNextPoll();return}", html)
+        self.assertNotIn("state.refreshTimer=setInterval(", html)
+        self.assertNotIn("state.serverTimer=setInterval(", html)
+        # 回到前台按当前模块立即刷一次，不再等下一个周期。
+        self.assertIn("function pollCurrentModule(silent){", html)
+        self.assertIn("if(state.module==='dashboard')return loadDashboard(silent)", html)
+        self.assertIn("if(state.module==='operations')return load(silent)", html)
+        self.assertIn("document.addEventListener('visibilitychange'", html)
+        self.assertIn("restartPolling()", html)
         self.assertNotIn("/api/admin/provider-keys/rename", html)
         self.assertNotIn("其他上游", html)
         self.assertIn("Date.now()+ttl", html)
