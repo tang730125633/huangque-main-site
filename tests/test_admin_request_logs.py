@@ -1006,5 +1006,87 @@ class KeyPingTests(unittest.TestCase):
         )
 
 
+class ActivityProbeTests(unittest.TestCase):
+    """实时任务的轻量变化指纹：只跟任务库走，不被 nginx 日志增长带偏。
+
+    背景（2026-09-12 线上实测）：指纹里带 nginx 访问日志大小/mtime 时，6 秒采样 5/5 次都变，
+    探测永远判定「变了」→ 省不掉那 0.9 秒的重时间线。所以指纹只认任务库。
+    """
+
+    def setUp(self):
+        import sqlite3
+        import time as _time
+
+        dbf = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        dbf.close()
+        self.db_path = pathlib.Path(dbf.name)
+        self.now = int(_time.time())
+        c = sqlite3.connect(str(self.db_path))
+        c.execute(
+            "CREATE TABLE jobs(id INTEGER PRIMARY KEY, username TEXT, kind TEXT,"
+            " cost INTEGER, status TEXT, payload TEXT, created_at INTEGER, updated_at INTEGER,"
+            " result TEXT, refunded INTEGER)"
+        )
+        c.execute(
+            "INSERT INTO jobs(id,username,kind,cost,status,payload,created_at,updated_at) "
+            "VALUES(1,'tang','image',3,'running','{}',?,?)",
+            (self.now - 60, self.now - 5),
+        )
+        c.commit()
+        c.close()
+
+        logf = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False)
+        logf.write('1.1.1.1 - - [09/Jul/2026:09:00:00 +0800] "GET / HTTP/1.1" 200 10 "-" "M"\n')
+        logf.close()
+        self.log_path = pathlib.Path(logf.name)
+
+        self.old_logs = admin_api.NGINX_ACCESS_LOGS
+        self.old_db = admin_api.JOB_DB
+        admin_api.NGINX_ACCESS_LOGS = [self.log_path]
+        admin_api.JOB_DB = self.db_path
+
+    def tearDown(self):
+        admin_api.NGINX_ACCESS_LOGS = self.old_logs
+        admin_api.JOB_DB = self.old_db
+
+    def _touch_job(self, status, updated_at):
+        import sqlite3
+
+        c = sqlite3.connect(str(self.db_path))
+        c.execute("UPDATE jobs SET status=?, updated_at=? WHERE id=1", (status, updated_at))
+        c.commit()
+        c.close()
+
+    def test_probe_reports_job_fingerprint(self):
+        payload = admin_api.activity_probe(7)
+        self.assertRegex(payload["fingerprint"], r"^j:1-\d+$")
+        self.assertIsInstance(payload["checked_at"], int)
+
+    def test_fingerprint_is_stable_when_nothing_changed(self):
+        first = admin_api.activity_probe(7)["fingerprint"]
+        second = admin_api.activity_probe(7)["fingerprint"]
+        self.assertEqual(first, second, "没有任务变化时指纹必须稳定，前端才能跳过重查询")
+
+    def test_fingerprint_changes_when_a_job_moves(self):
+        before = admin_api.activity_probe(7)["fingerprint"]
+        self._touch_job("done", self.now)
+        self.assertNotEqual(before, admin_api.activity_probe(7)["fingerprint"])
+
+    def test_nginx_log_growth_does_not_move_fingerprint(self):
+        before = admin_api.activity_probe(7)["fingerprint"]
+        with open(self.log_path, "a", encoding="utf-8") as fh:
+            for i in range(200):
+                fh.write('9.9.9.9 - - [09/Jul/2026:09:01:%02d +0800] "GET /api/gen/list HTTP/1.1" 200 55 "-" "M"\n' % (i % 60))
+        self.assertEqual(before, admin_api.activity_probe(7)["fingerprint"])
+
+    def test_probe_failure_always_reports_a_new_fingerprint(self):
+        admin_api.JOB_DB = pathlib.Path(str(self.db_path) + ".missing")
+        first = admin_api.activity_probe(7)["fingerprint"]
+        second = admin_api.activity_probe(7)["fingerprint"]
+        # 探测坏了必须每次都变：前端对比「不等」→ 照常全量刷新，不漏数据
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("probe-error-"))
+
+
 if __name__ == "__main__":
     unittest.main()

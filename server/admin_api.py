@@ -3088,13 +3088,21 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
     return entries, message
 
 
-def activity_probe(days=7):
-    """实时任务的轻量变化指纹：任务库计数/最新更新时间 + nginx 日志大小与修改时间。
+_ACTIVITY_PROBE_ERROR_SEQ = 0
 
-    前端用它在「有任务在飞」时做 5 秒级变化探测，只有指纹变了才去拉 0.9 秒的重时间线；
-    这条查询只做聚合与 stat，不解析日志、不做逐条证据回查。
+
+def activity_probe(days=7):
+    """实时任务的轻量变化指纹：只跟「任务库」走（任务条数 + 最新更新时间）。
+
+    前端用它在「有任务在飞」时做 8 秒级变化探测，只有指纹变了才去拉 0.9 秒的重时间线；
+    这条查询只做一次聚合，不解析日志、不做逐条证据回查。
+
+    为什么**不**把 nginx 访问日志算进指纹：线上实测该日志随普通浏览持续增长，
+    每 6 秒采样的指纹 5/5 次都变，等于永远判定「变了」——探测就白做了。
+    只认任务库信号（新增任务、任务状态/进度更新都会改 updated_at），
+    才是「有没有活的在飞」的真信号；nginx 侧证据最多晚 60 秒，
+    由前端 60 秒兜底全量刷新补齐（PROBE_MAX_AGE）。
     """
-    parts = []
     try:
         since = int(time.time()) - max(1, int(days or 7)) * 86400
         with closing(sqlite3.connect('file:' + JOB_DB.as_posix() + '?mode=ro', uri=True, timeout=5)) as conn:
@@ -3102,16 +3110,14 @@ def activity_probe(days=7):
                 "SELECT COUNT(*), COALESCE(MAX(updated_at),0) FROM jobs WHERE created_at>=?",
                 (since,),
             ).fetchone()
-            parts.append("j:%s-%s" % (row[0], row[1]))
-    except sqlite3.Error:
-        parts.append("j:unavailable")
-    for path in NGINX_ACCESS_LOGS:
-        try:
-            stat = path.stat()
-            parts.append("n:%s-%s" % (stat.st_size, int(stat.st_mtime)))
-        except OSError:
-            continue
-    return {"fingerprint": "|".join(parts), "checked_at": int(time.time())}
+        return {"fingerprint": "j:%s-%s" % (row[0], row[1]), "checked_at": int(time.time())}
+    except (sqlite3.Error, OSError):
+        # 探测失败时给一个每次都变的指纹：前端对比必然「不等」→ 照常全量拉，
+        # 宁可慢一点，也不能因为探测坏了就漏掉刷新。
+        global _ACTIVITY_PROBE_ERROR_SEQ
+        _ACTIVITY_PROBE_ERROR_SEQ += 1
+        return {"fingerprint": "probe-error-%d-%d" % (int(time.time()), _ACTIVITY_PROBE_ERROR_SEQ),
+                "checked_at": int(time.time())}
 
 
 def request_logs(limit=200, status="", q="", include_noise=False):
