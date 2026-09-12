@@ -94,7 +94,7 @@
     const rect = story.getBoundingClientRect();
     const travel = Math.max(1, story.offsetHeight - innerHeight);
     targetProgress = clamp(-rect.top / travel);
-    const active = rect.top <= 0 && rect.bottom > innerHeight;
+    const active = rect.top < innerHeight && rect.bottom > 0;
     if (!active) {
       pointer.targetStrength = 0;
       status.mode = rect.top > 0 ? 'waiting' : 'complete';
