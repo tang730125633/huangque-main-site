@@ -51,7 +51,7 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertNotIn("video.currentTime = targetTime", self.agent_wave)
         self.assertIn("status.mode = 'smooth-playback'", self.agent_wave)
         self.assertIn("mode: 'waiting'", self.agent_wave)
-        self.assertIn("const active = rect.top <= 0 && rect.bottom > innerHeight", self.agent_wave)
+        self.assertIn("const active = rect.top < innerHeight && rect.bottom > 0", self.agent_wave)
         self.assertIn("resultVideo.pause()", self.agent_wave)
         self.assertIn("const waves = [", self.agent_wave)
         self.assertIn("status.overlayPoints = waves.length * count", self.agent_wave)
