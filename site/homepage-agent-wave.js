@@ -11,7 +11,7 @@
   const result = document.querySelector('.agent-wave-result-card');
   const resultVideo = result?.querySelector('video');
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-  const status = { ready: false, mode: 'waiting', progress: 0, videoTime: 0, chapter: 0, overlayPoints: 0 };
+  const status = { ready: false, mode: 'waiting', progress: 0, videoTime: 0, chapter: 0, overlayPoints: 0, pointerStrength: 0 };
   window.__homepageAgentWaveStatus = status;
   window.__homepageAgentWaveCheck = () => status.ready && video?.readyState >= 1 && video.autoplay && overlay?.width > 0 && status.overlayPoints > 0;
 
@@ -22,6 +22,7 @@
   let frame = 0;
   let overlayWidth = 0;
   let overlayHeight = 0;
+  const pointer = { x: -999, y: -999, targetX: -999, targetY: -999, strength: 0, targetStrength: 0 };
   const clamp = value => Math.min(1, Math.max(0, value));
 
   function resizeOverlay() {
@@ -44,6 +45,10 @@
     const left = overlayWidth * (mobile ? .18 : .42);
     const span = overlayWidth * (mobile ? .94 : .66);
     const count = mobile ? 80 : 128;
+    const pointerRadius = mobile ? 105 : 150;
+    pointer.x += (pointer.targetX - pointer.x) * .18;
+    pointer.y += (pointer.targetY - pointer.y) * .18;
+    pointer.strength += (pointer.targetStrength - pointer.strength) * .12;
     const waves = [
       { y: .28, amp: 22, freq: 1.7, speed: .24, phase: 0, color: '220,225,224', alpha: .26, drift: -12 },
       { y: .5, amp: 18, freq: 2.4, speed: -.18, phase: 1.7, color: '216,164,91', alpha: .2 + progress * .4, drift: 18 },
@@ -55,15 +60,24 @@
       for (let index = 0; index < count; index += 1) {
         const amount = index / (count - 1);
         const fade = Math.sin(amount * Math.PI);
-        const x = left + amount * span + Math.sin(time * .16 + amount * 7 + wave.phase) * 8;
-        const y = overlayHeight * wave.y
+        let x = left + amount * span + Math.sin(time * .16 + amount * 7 + wave.phase) * 8;
+        let y = overlayHeight * wave.y
           + Math.sin(amount * Math.PI * 2 * wave.freq + time * wave.speed + wave.phase + progress * 2.5) * wave.amp
           + Math.sin(amount * 19 - time * .12) * 4
           + wave.drift * progress;
+        const dx = x - pointer.x;
+        const dy = y - pointer.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const repel = pointer.strength * Math.pow(Math.max(0, 1 - distance / pointerRadius), 2);
+        const directionX = dx / distance;
+        const directionY = dy / distance;
+        const swirl = (waveIndex - 1) * repel * 18;
+        x += directionX * repel * 72 - directionY * swirl;
+        y += directionY * repel * 72 + directionX * swirl;
         if (!index) overlayContext.moveTo(x, y);
         else overlayContext.lineTo(x, y);
-        overlayContext.fillStyle = `rgba(${wave.color},${wave.alpha * fade})`;
-        const size = 1 + ((index * 17 + waveIndex * 13) % 7) / 5;
+        overlayContext.fillStyle = `rgba(${wave.color},${Math.min(1, wave.alpha * fade + repel * .5)})`;
+        const size = 1 + ((index * 17 + waveIndex * 13) % 7) / 5 + repel * 2.2;
         const jitter = (((index * 13 + waveIndex * 19) % 11) - 5) * .7;
         overlayContext.fillRect(x, y + jitter, size, size);
       }
@@ -73,6 +87,7 @@
     });
     overlayContext.globalCompositeOperation = 'source-over';
     status.overlayPoints = waves.length * count;
+    status.pointerStrength = Number(pointer.strength.toFixed(3));
   }
 
   function updateScroll() {
@@ -81,6 +96,7 @@
     targetProgress = clamp(-rect.top / travel);
     const active = rect.top <= 0 && rect.bottom > innerHeight;
     if (!active) {
+      pointer.targetStrength = 0;
       status.mode = rect.top > 0 ? 'waiting' : 'complete';
       video.pause();
       if (rect.top > 0 && video.readyState >= 1 && video.currentTime > .03) video.currentTime = 0;
@@ -149,6 +165,13 @@
 
   addEventListener('scroll', updateScroll, { passive: true });
   addEventListener('resize', () => { updateScroll(); resizeOverlay(); });
+  story.addEventListener('pointermove', (event) => {
+    if (reduced.matches || event.pointerType === 'touch') return;
+    pointer.targetX = event.clientX;
+    pointer.targetY = event.clientY;
+    pointer.targetStrength = 1;
+  }, { passive: true });
+  story.addEventListener('pointerleave', () => { pointer.targetStrength = 0; }, { passive: true });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       cancelAnimationFrame(frame);
