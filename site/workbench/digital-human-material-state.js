@@ -9,8 +9,12 @@
     return (Array.isArray(items)?items:[]).filter(function(item){
       return item&&/^img_[a-f0-9]{32}$/.test(String(item.upload_id||''))&&
         Number(item.expires_at)>now&&typeof item.name==='string';
-    }).slice(0,6).map(function(item){return {
+    }).slice(0,10).map(function(item){return {
       upload_id:item.upload_id,name:item.name,sha256:String(item.sha256||''),
+      // mime / bytes 必须一起存下来：刷新页面后要靠它们判断这个素材
+      // 能不能被成片用上（只有图片能），以及算「整批 200MB」的已用量。
+      mime:String(item.mime||''),
+      bytes:Number(item.bytes)||0,
       expires_at:Number(item.expires_at),
     };});
   }
