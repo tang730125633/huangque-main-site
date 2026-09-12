@@ -57,6 +57,12 @@ class HomeVideoBannerTests(unittest.TestCase):
         self.assertIn("status.overlayPoints = waves.length * count", self.agent_wave)
         self.assertIn("prefers-reduced-motion: reduce", self.agent_wave)
 
+    def test_agent_wave_overlay_reacts_to_pointer(self):
+        self.assertIn("story.addEventListener('pointermove'", self.agent_wave)
+        self.assertIn("event.pointerType === 'touch'", self.agent_wave)
+        self.assertIn("const repel =", self.agent_wave)
+        self.assertIn("status.pointerStrength =", self.agent_wave)
+
     def test_liquid_glass_uses_pointer_driven_highlight(self):
         self.assertIn("Huang Que AI Hub", self.html)
         self.assertIn("让 AI", self.html)
