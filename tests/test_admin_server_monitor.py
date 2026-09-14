@@ -55,15 +55,43 @@ class AdminServerMonitorTests(unittest.TestCase):
                 raise TimeoutError("transient read timeout")
             return samples[node_id]
 
-        with mock.patch.object(admin_api, "_komari_get", side_effect=fetch):
+        with mock.patch.object(admin_api, "_komari_get", side_effect=fetch), mock.patch.object(
+            admin_api, "_render_relay_nodes", return_value={}
+        ):
             data = admin_api.server_monitor_snapshot(force=True, now=1000)
 
-        self.assertEqual(data["summary"], {"total": 2, "online": 1, "warning": 0, "offline": 1})
+        self.assertEqual(data["summary"], {
+            "total": 2, "online": 1, "warning": 0, "offline": 1,
+            "render_running": 0, "gpu_active": 0,
+            "render_telemetry_available": False,
+        })
         self.assertEqual(data["items"][0]["role"], "primary_network")
         self.assertEqual(attempts["primary-secret-id"], 1)
         self.assertEqual(data["items"][0]["memory"], 50.0)
         self.assertEqual(data["items"][1]["role"], "backup_network")
         self.assertNotIn("uuid", data["items"][0])
+
+    def test_snapshot_adds_render_gpu_without_exposing_node_key(self):
+        nodes = [{
+            "uuid": "gpu-secret-id", "name": "Tang GPU 渲染节点",
+            "tags": "gpu,rtx3060,template-render", "region": "局域网",
+        }]
+        sample = [{
+            "updated_at": "1970-01-01T00:16:35Z", "cpu": {"usage": 20},
+            "ram": {}, "disk": {}, "network": {},
+        }]
+        gpu = {"utilization": 48, "encoder": 31, "memory_used": 1024,
+               "memory_total": 4096, "temperature": 40, "power": 55,
+               "name": "RTX 3060", "sample_age_seconds": 2}
+        with mock.patch.object(
+            admin_api, "_komari_get", side_effect=[nodes, sample]
+        ), mock.patch.object(admin_api, "_render_relay_nodes", return_value={
+            "tang": {"online": True, "running": 2, "gpu": gpu}
+        }):
+            data = admin_api.server_monitor_snapshot(force=True, now=1000)
+        self.assertEqual(48, data["items"][0]["gpu"]["utilization"])
+        self.assertEqual(2, data["items"][0]["render_running"])
+        self.assertNotIn("tang", data["items"][0])
 
     def test_admin_page_wires_server_module_and_read_only_endpoint(self):
         root = pathlib.Path(__file__).resolve().parents[1]

@@ -141,6 +141,24 @@ class RenderRelayManifestTests(unittest.TestCase):
         self.assertEqual("video/mp4", upload.call_args.kwargs["headers"]["Content-Type"])
         self.assertEqual(converted, upload.call_args.kwargs["headers"]["X-HQ-Asset-Sha256"])
 
+    def test_poller_reads_gpu_and_encoder_telemetry(self):
+        env = {
+            "NODE_RELAY_URL": "https://relay.test",
+            "NODE_RELAY_TOKEN": "node-token",
+            "NODE_LOCAL_TOKEN": "local-token",
+        }
+        with mock.patch.dict(os.environ, env):
+            poller = load("render_node_gpu", "deploy/render-relay/node_poller.py")
+        query = mock.MagicMock(returncode=0)
+        query.stdout = "NVIDIA GeForce RTX 3060, 48, 1024, 12288, 41, 72.5\n"
+        dmon = mock.MagicMock(returncode=0)
+        dmon.stdout = "# gpu sm mem enc dec\n0 48 20 31 0\n"
+        with mock.patch.object(poller.subprocess, "run", side_effect=[query, dmon]):
+            gpu = poller._gpu_snapshot()
+        self.assertEqual(48, gpu["utilization"])
+        self.assertEqual(31, gpu["encoder"])
+        self.assertEqual(1024 * 1024 * 1024, gpu["memory_used"])
+
 
     def _health_body(self, upstream_result, name="render_relay_health_up"):
         """起一个真实的中转器 HTTP 服务，mock 掉上游，返回 /health 的响应体。"""
@@ -210,6 +228,38 @@ class RenderRelayManifestTests(unittest.TestCase):
         ):
             self.assertNotIn(field, body, "%s 不该在上游挂掉时凭空出现" % field)
 
+    def test_gpu_telemetry_requires_relay_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["RELAY_DB"] = os.path.join(tmp, "relay.db")
+            relay = load("render_relay_telemetry", "deploy/render-relay/relay.py")
+            relay.RELAY_TOKEN = "admin-secret"
+            relay.init_db()
+            relay._LAST_HEARTBEAT["tang"] = relay._now()
+            relay._NODE_GPU["tang"] = relay._clean_gpu({
+                "name": "RTX 3060", "utilization": 48, "encoder": 31,
+                "memory_used": 1024, "memory_total": 4096,
+                "temperature": 40, "power": 55, "sampled_at": relay._now(),
+            })
+            server = ThreadingHTTPServer(("127.0.0.1", 0), relay.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = "http://127.0.0.1:%d/v1/telemetry" % server.server_port
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(url, timeout=5)
+                self.assertEqual(401, raised.exception.code)
+                request = urllib.request.Request(
+                    url, headers={"Authorization": "Bearer admin-secret"}
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    body = json.loads(response.read())
+                self.assertEqual(48, body["nodes"]["tang"]["gpu"]["utilization"])
+                self.assertTrue(body["nodes"]["tang"]["online"])
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
 
 class RelayLoadBalanceTests(unittest.TestCase):
     """负载均衡：谁空谁先拿，避免一台连着吃好几条把某条挤慢。
@@ -229,6 +279,8 @@ class RelayLoadBalanceTests(unittest.TestCase):
         self.relay.DB_PATH = str(self.db)
         self.relay._LAST_CLAIM.clear()
         self.relay._NODE_FAIL.clear()
+        self.relay._LAST_HEARTBEAT.clear()
+        self.relay._NODE_GPU.clear()
 
     def tearDown(self):
         self.relay._LAST_CLAIM.clear()

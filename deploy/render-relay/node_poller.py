@@ -5,6 +5,7 @@
 循环：向中转器取任务 → 交给本机渲染服务 → 等完成 → 把成品回传中转器。
 全部是出站请求，节点在 NAT 后也能工作。
 """
+import csv
 import hashlib
 import json
 import math
@@ -28,6 +29,7 @@ POLL_IDLE = float(os.environ.get("NODE_POLL_IDLE_SECONDS", "5"))
 CONCURRENCY = max(1, int(os.environ.get("NODE_CONCURRENCY", "2")))
 JOB_TIMEOUT = float(os.environ.get("NODE_JOB_TIMEOUT_SECONDS", "1800"))
 RENDER_TIMEOUT = float(os.environ.get("NODE_RENDER_TIMEOUT_SECONDS", "900"))
+TELEMETRY_INTERVAL = max(5.0, float(os.environ.get("NODE_TELEMETRY_SECONDS", "5")))
 
 
 def _call(url, token, method="GET", body=None, raw=None, headers=None, timeout=60):
@@ -55,6 +57,56 @@ def claim():
     except Exception as exc:
         print("[poller] claim failed: %s" % exc, flush=True)
         return None
+
+
+def _gpu_snapshot():
+    """读取一张 NVIDIA 卡的轻量遥测；不可用时不影响领活。"""
+    try:
+        process = subprocess.run([
+            "nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,"
+            "temperature.gpu,power.draw", "--format=csv,noheader,nounits",
+        ], capture_output=True, text=True, timeout=3)
+        if process.returncode:
+            return None
+        row = next(csv.reader([process.stdout.strip()], skipinitialspace=True))
+        if len(row) < 6:
+            return None
+        values = [float(value.strip()) for value in row[1:6]]
+        encoder = None
+        dmon = subprocess.run(
+            ["nvidia-smi", "dmon", "-s", "u", "-c", "1"],
+            capture_output=True, text=True, timeout=3,
+        )
+        for line in dmon.stdout.splitlines():
+            fields = line.split()
+            if line.lstrip().startswith("#") or len(fields) < 4:
+                continue
+            encoder = float(fields[3])
+            break
+        return {
+            "name": row[0].strip()[:96],
+            "utilization": values[0],
+            "encoder": encoder,
+            "memory_used": int(values[1] * 1024 * 1024),
+            "memory_total": int(values[2] * 1024 * 1024),
+            "temperature": values[3],
+            "power": values[4],
+            "sampled_at": int(time.time()),
+        }
+    except (OSError, StopIteration, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def heartbeat():
+    while True:
+        started = time.monotonic()
+        try:
+            _call(RELAY + "/v1/heartbeat", NODE_TOKEN, "POST", body={
+                "node": NODE_NAME, "gpu": _gpu_snapshot(),
+            }, timeout=8)
+        except Exception as exc:
+            print("[poller] telemetry failed: %s" % exc, flush=True)
+        time.sleep(max(1.0, TELEMETRY_INTERVAL - (time.monotonic() - started)))
 
 
 def run_local(payload, job_id=""):
@@ -189,7 +241,8 @@ def worker(slot):
 def main():
     print("[poller] node=%s relay=%s local=%s 并发=%d"
           % (NODE_NAME, RELAY, LOCAL, CONCURRENCY), flush=True)
-    threads = []
+    threads = [threading.Thread(target=heartbeat, daemon=True)]
+    threads[0].start()
     for slot in range(1, CONCURRENCY + 1):
         t = threading.Thread(target=worker, args=(slot,), daemon=True)
         t.start()

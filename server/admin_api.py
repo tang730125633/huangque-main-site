@@ -118,6 +118,10 @@ IMGGEN_BASE = os.environ.get("IMGGEN_BASE", "http://127.0.0.1:8101").rstrip("/")
 LEADGEN_BASE = os.environ.get("LEADGEN_BASE", "http://127.0.0.1:8100").rstrip("/")
 DL_BASE = os.environ.get("DL_BASE", "http://127.0.0.1:8097").rstrip("/")
 KOMARI_BASE_URL = os.environ.get("HQ_KOMARI_BASE_URL", "").strip().rstrip("/")
+RENDER_RELAY_TELEMETRY_URL = os.environ.get(
+    "HQ_RENDER_RELAY_TELEMETRY_URL", "http://127.0.0.1:8213/v1/telemetry"
+).strip()
+RENDER_RELAY_TOKEN = os.environ.get("MATRIX_TEMPLATE_API_TOKEN", "").strip()
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
 ASSET_DB = pathlib.Path(os.environ.get("AUDIO_DB", str(BASE / "audio_assets.db")))
@@ -791,6 +795,33 @@ def _komari_percent(used, total):
     return round(max(0.0, min(100.0, float(used or 0) * 100 / total)), 1) if total else 0.0
 
 
+def _render_node_key(name):
+    prefixes = {
+        "Tang ": "tang", "Yuelei ": "yuelei", "Win3060 ": "win3060",
+        "HY 3050Ti ": "hy3050ti", "BF 3060 ": "bf3060",
+    }
+    return next((key for prefix, key in prefixes.items() if name.startswith(prefix)), "")
+
+
+def _render_relay_nodes():
+    if not RENDER_RELAY_TELEMETRY_URL or not RENDER_RELAY_TOKEN:
+        return {}
+    try:
+        request = urllib.request.Request(
+            RENDER_RELAY_TELEMETRY_URL,
+            headers={
+                "Accept": "application/json",
+                "Authorization": "Bearer " + RENDER_RELAY_TOKEN,
+                "User-Agent": "huangque-admin/render-telemetry",
+            },
+        )
+        with DIRECT_OPENER.open(request, timeout=3) as response:
+            payload = json.loads(response.read(262145).decode("utf-8"))
+        return payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+    except Exception:
+        return {}
+
+
 def server_monitor_snapshot(force=False, now=None):
     now = float(now or time.time())
     with _KOMARI_CACHE_LOCK:
@@ -798,6 +829,7 @@ def server_monitor_snapshot(force=False, now=None):
             return _KOMARI_CACHE["value"]
 
         nodes = _komari_get("/api/nodes") or []
+        render_nodes = _render_relay_nodes()
 
         def recent(node):
             path = "/api/recent/" + urllib.parse.quote(
@@ -832,6 +864,15 @@ def server_monitor_snapshot(force=False, now=None):
             if online and disk_usage >= 90:
                 alerts.append("磁盘空间紧张")
             name = str(node.get("name") or "未命名节点")
+            render = render_nodes.get(_render_node_key(name)) or {}
+            gpu = render.get("gpu") if isinstance(render.get("gpu"), dict) else None
+            gpu_memory = _komari_percent(
+                (gpu or {}).get("memory_used"), (gpu or {}).get("memory_total")
+            )
+            if online and gpu and float(gpu.get("temperature") or 0) >= 85:
+                alerts.append("GPU 温度过高")
+            if online and gpu_memory >= 95:
+                alerts.append("显存紧张")
             role = "primary_network" if name.startswith("Novix") else (
                 "backup_network" if name.startswith("搬瓦工") else "server"
             )
@@ -861,6 +902,11 @@ def server_monitor_snapshot(force=False, now=None):
                 "total_down": int(network.get("totalDown") or 0),
                 "uptime": int(sample.get("uptime") or 0),
                 "sampled_at": str(sample.get("updated_at") or ""),
+                "gpu_expected": "gpu" in str(node.get("tags") or "").lower().split(","),
+                "gpu_name": str((gpu or {}).get("name") or node.get("gpu_name") or ""),
+                "gpu": gpu,
+                "render_online": render.get("online") if render else None,
+                "render_running": int(render.get("running") or 0),
             })
 
         order = {"primary_network": 0, "backup_network": 1, "server": 2}
@@ -873,6 +919,14 @@ def server_monitor_snapshot(force=False, now=None):
                 "online": sum(item["online"] for item in items),
                 "warning": sum(item["status"] == "warning" for item in items),
                 "offline": sum(not item["online"] for item in items),
+                "render_running": sum(item["render_running"] for item in items),
+                "gpu_active": sum(
+                    bool(item["gpu"]) and (
+                        float(item["gpu"].get("utilization") or 0) >= 10
+                        or float(item["gpu"].get("encoder") or 0) >= 10
+                    ) for item in items
+                ),
+                "render_telemetry_available": bool(render_nodes),
             },
             "checked_at": int(now),
             "refresh_interval_seconds": 5,
