@@ -93,7 +93,9 @@ test('layout loader accepts wrapped and legacy contracts and exposes empty and r
     lifecycle(){},detail(){},mapping(){},refresh(){},task(){},journey(){}
   });
   const settle=()=>new Promise(resolve=>setImmediate(resolve));
-  workspace.showTab('layout');await settle();
+  workspace.showTab('layout');
+  assert.match(elements.cmLayout.innerHTML,/正在读取前台布局/);
+  await settle();
   assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:grok"/);
 
   response={video:{order:['talking'],default:'talking'},image:{order:['banana'],default:'banana'}};
@@ -102,9 +104,15 @@ test('layout loader accepts wrapped and legacy contracts and exposes empty and r
 
   response={layout:{video:{order:[],default:''},image:{order:[],default:''}}};
   workspace.showTab('layout');await settle();
-  assert.match(elements.cmLayout.innerHTML,/cm-layout-empty/);
+  assert.equal((elements.cmLayout.innerHTML.match(/cm-layout-empty/g)||[]).length,2);
+  assert.equal(elements.cmLayout.saveButton.disabled,true);
 
   failure=Error('network down');workspace.showTab('layout');await settle();
   assert.match(elements.cmLayout.innerHTML,/cm-layout-error/);
   assert.equal(typeof elements.cmLayout.retryButton.onclick,'function');
+  failure=null;response={layout:{video:{order:['minimax'],default:'minimax'},image:{order:['seedream'],default:'seedream'}}};
+  elements.cmLayout.retryButton.onclick();
+  assert.match(elements.cmLayout.innerHTML,/正在读取前台布局/);
+  await settle();
+  assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:minimax"/);
 });

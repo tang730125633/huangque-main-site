@@ -261,6 +261,19 @@ class ParameterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             params.layout_save('admin',{'layout':{'video':{'order':['grok'],'default':'grok'},'image':{'order':[],'default':''}}})
 
+    def test_admin_layout_state_route_returns_wrapped_contract(self):
+        import server.admin_api as admin
+
+        handler = object.__new__(admin.H)
+        handler.path = '/api/admin/channel-manager/layout-state'
+        handler.headers = {'Content-Length': '2'}
+        handler._admin = lambda: {'username': 'admin'}
+        handler._body = lambda: {}
+        handler._send = lambda status, payload: (status, payload)
+
+        expected = params.admin_layout_state()
+        self.assertEqual(admin.H.do_POST(handler), (200, expected))
+
     def test_grok15_mapping_and_legacy_provider(self):
         self.ch=cm.save('a',dict(self.body,adapter='xai_video',model='grok-imagine-video-1.5'))
         cm.save_mapping('admin',dict(kind='xiaole_video',front='grok15',label='果肉视频 1.5',channel=self.ch['id'],enabled=True))
