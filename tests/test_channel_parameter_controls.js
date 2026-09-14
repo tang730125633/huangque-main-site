@@ -117,6 +117,19 @@ test('unavailable image deep link falls back to the effective default',async()=>
   assert.deepEqual(runtime.selected,['gpt']);
 });
 
+test('legacy banana variant deep links keep the compatible banana engine',async()=>{
+  for(const variant of ['nb2','pro']){
+    const runtime=imageLayoutRuntime('?engine='+variant,{
+      items:[],layout:{image:{order:['gpt','banana'],default:'gpt'}},layout_entries:{image:[
+        {key:'gpt',visible:true,defaultable:true},{key:'banana',visible:true,defaultable:true}
+      ]}
+    },'banana');
+    await runtime.settle();
+    assert.equal(runtime.current(),'banana');
+    assert.deepEqual(runtime.selected,[]);
+  }
+});
+
 test('catalog refresh moves an active engine away when its feature turns off',async()=>{
   const response={items:[],layout:{image:{order:['gpt','xiaole'],default:'xiaole'}},layout_entries:{image:[
     {key:'gpt',visible:true,defaultable:true},{key:'xiaole',visible:true,defaultable:true}

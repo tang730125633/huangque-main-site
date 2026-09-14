@@ -30,7 +30,8 @@
         (layout.image?.order||[]).forEach(key=>{const el=row.querySelector('[data-engine="'+key+'"]');if(el)row.appendChild(el);});
         const def=layout.image?.default;
         const api=window.HQBananaWorkbench,current=api?.getEngine?.();
-        const requested=q.get('engine'),requestedEntry=catalog.find(entry=>entry.key===requested);
+        const requestedRaw=q.get('engine'),requested=['nb2','pro'].includes(requestedRaw)?'banana':requestedRaw;
+        const requestedEntry=catalog.find(entry=>entry.key===requested);
         const currentEntry=catalog.find(entry=>entry.key===current);
         let selected='';
         if(applyDefault)selected=q.has('engine')?(hasCatalog?(canUse(requestedEntry)?requested:def):''):def;
