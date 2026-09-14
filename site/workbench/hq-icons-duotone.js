@@ -15,6 +15,7 @@
     layers: '<path d="M12 2l9 5-9 5-9-5z" ' + A + '/><path d="M3 12l9 5 9-5M3 17l9 5 9-5" ' + L + '/>',
     server: '<rect x="4" y="3" width="16" height="7" rx="2" ' + L + '/><rect x="4" y="14" width="16" height="7" rx="2" ' + L + '/><path d="M8 6.5h.01M8 17.5h.01M12 6.5h5M12 17.5h5" ' + A + '/>',
     cpu: '<rect x="6" y="6" width="12" height="12" rx="2" ' + L + '/><path d="M9 9h6v6H9zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M18 9h4M2 15h4M18 15h4" ' + A + '/>',
+    gpu: '<rect x="3" y="5" width="18" height="14" rx="2" ' + L + '/><circle cx="10" cy="12" r="4" ' + A + '/><path d="M10 9.5v5M7.5 12h5M21 9h2M21 15h2M5 19v2M17 19v2" ' + L + '/>',
     memory: '<path d="M4 7h16v10H4zM7 10v4M11 10v4M15 10v4M3 5h18M3 19h18" ' + L + '/><path d="M8 7V4M16 7V4M8 20v-3M16 20v-3" ' + A + '/>',
     disk: '<ellipse cx="12" cy="6" rx="8" ry="3" ' + L + '/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" ' + L + '/><path d="M16 11h2M16 17h2" ' + A + '/>',
     network: '<path d="M5 8a10 10 0 0 1 14 0M8 12a6 6 0 0 1 8 0M11 16a2 2 0 0 1 2 0" ' + L + '/><circle cx="12" cy="19" r="1.4" fill="__ACC__"/>',
