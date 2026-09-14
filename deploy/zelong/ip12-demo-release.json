@@ -1,7 +1,7 @@
 {
-  "release": "20260914-448fc12be491",
+  "release": "20260914-9aefe45f898a",
   "domain": "zelong.huangquechuanmei.com",
-  "path": "/ip12-demo/releases/20260914-448fc12be491/",
+  "path": "/ip12-demo/releases/20260914-9aefe45f898a/",
   "files": [
     {
       "path": "media/case-7755.mp4",
@@ -140,8 +140,8 @@
     },
     {
       "path": "showcase.html",
-      "size": 25165048,
-      "sha256": "14b347f6ff7fd8cd3f1db27167245cf54478a5cc1d5a89a1ff78c6a74fa7a643"
+      "size": 25165124,
+      "sha256": "7d67ae7df5810cca86d408b58edadf1889ae421ef790be9ead2ffef02a90d1bc"
     }
   ]
 }
