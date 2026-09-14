@@ -23,6 +23,15 @@ Internal notes, ZIP files, local paths, and raw conversations are not published.
 No nginx change, service restart, homepage replacement, or production-host
 deployment is required. Existing workbench routes remain unchanged.
 
+## Presentation Regression
+
+Run `node tests/ip12_demo_navigation.mjs /path/to/showcase.html` against the
+exact release artifact before publishing. Back/forward navigation follows the
+viewing trail without collapsing the tree; explicit collapse/reset controls
+remain separate. Audio-bearing videos expose a sound toggle, and the subtitle
+GIF links to its original audio-bearing recording. GIF-derived recordings do
+not acquire an audio track through conversion.
+
 To roll back, restore the previous tracked entry through the normal deployment
 flow. Retain immutable releases so old links remain usable. For the initial
 release, there is no previous demo entry to restore.
