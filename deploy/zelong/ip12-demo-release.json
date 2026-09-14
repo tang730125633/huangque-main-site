@@ -1,0 +1,147 @@
+{
+  "release": "20260914-448fc12be491",
+  "domain": "zelong.huangquechuanmei.com",
+  "path": "/ip12-demo/releases/20260914-448fc12be491/",
+  "files": [
+    {
+      "path": "media/case-7755.mp4",
+      "size": 2412764,
+      "sha256": "2f1d338892a90e69bf02f331457f0c01e025e3c21d99783d05a82f9141fdb845"
+    },
+    {
+      "path": "media/case-7782.mp4",
+      "size": 577833,
+      "sha256": "b7f123abb505ec631d1a6b2277c7c347b7179671d084fc75740f0e9aa2646d03"
+    },
+    {
+      "path": "media/case-7893.mp4",
+      "size": 2182531,
+      "sha256": "209b378016dbeb18c8516f68d5ea0506e69cf686bc943ffdc1d58ff9d1c58d81"
+    },
+    {
+      "path": "media/case-7900.mp4",
+      "size": 6921875,
+      "sha256": "8b1067bb862563449c58bbd954825e392d44da5a9951a63afd4c17590f6b2175"
+    },
+    {
+      "path": "media/case-8029.mp4",
+      "size": 1196269,
+      "sha256": "5d85b24b824396410539a565cc6a9cc7235ad840b9c2b75534b20b8e004574de"
+    },
+    {
+      "path": "media/case-8063.mp4",
+      "size": 822557,
+      "sha256": "2bcc5c97b0845dc1ddbade64abb98a21bf0c5587ef5c7dba6baaedb925c9432e"
+    },
+    {
+      "path": "media/case-8087.mp4",
+      "size": 921380,
+      "sha256": "0cf3d5faced707c0e7492f1e62e8aa9eda2e23934431b901b0aade0e182577d6"
+    },
+    {
+      "path": "media/case-8129.mp4",
+      "size": 1903964,
+      "sha256": "b1882c080ff37102bd2bcae49749e41c109f549a8594332b49f3d46406b45c6c"
+    },
+    {
+      "path": "media/case-8130.mp4",
+      "size": 2831900,
+      "sha256": "e1c7d0bb3141af175a873a3181cda3a8d9996f70c65b10608e8b87883d4cbe2b"
+    },
+    {
+      "path": "media/case-8131.mp4",
+      "size": 1826250,
+      "sha256": "870e4732f018b8aa27f0078792d8cdf8943b7f53c3df912130eca77ead8a4e9c"
+    },
+    {
+      "path": "media/case-8132.mp4",
+      "size": 1645800,
+      "sha256": "bc5738cd0c8bc14d34aad8f4c422226c13d8597747e76ba670e4c98f8060e531"
+    },
+    {
+      "path": "media/case-8133.mp4",
+      "size": 2489840,
+      "sha256": "f82c31969eb6aee912bb7a1b53d3ffb4235a67ea158f751a0253dc96e0e5544b"
+    },
+    {
+      "path": "media/case-8134.mp4",
+      "size": 1643907,
+      "sha256": "c34b16b915a1bacf7ab2c69c755a8a89de6cae01da9902c7f82de3fb1916eb8d"
+    },
+    {
+      "path": "media/case-8135.mp4",
+      "size": 2499910,
+      "sha256": "8ae7aa82567eced99482850f8fc3e1112a1b907987747661f9f22a8ec1a07248"
+    },
+    {
+      "path": "media/case-8136.mp4",
+      "size": 2245061,
+      "sha256": "12c523fee34d0ff343b3fd285a867a06c28a0c63d8ae4bbd657dae85edf4627d"
+    },
+    {
+      "path": "media/miniapp-add-subtitles.mp4",
+      "size": 5324069,
+      "sha256": "3b0c22d8dd0b98b90de7eff5955bb6185f9b3e8e33aade8d0171abb953f7fdb9"
+    },
+    {
+      "path": "media/miniapp-image-revision.mp4",
+      "size": 736892,
+      "sha256": "f24081d162e09ee3fe361f261443d25dad3dc9da3d944839b9206d8b92c9de14"
+    },
+    {
+      "path": "media/miniapp-poster-demo.mp4",
+      "size": 1742020,
+      "sha256": "9fdfd9c03469c07446a45e530c9cb220386a47e9c57e967f7a3de38f71cb61b4"
+    },
+    {
+      "path": "media/miniapp-step-101.mp4",
+      "size": 693678,
+      "sha256": "bc5ccb23ece39554270ebb8476540487aa00d2a15f73fb7e555a69653912a7f8"
+    },
+    {
+      "path": "media/miniapp-step-102.mp4",
+      "size": 270065,
+      "sha256": "1839d9104277b100051d1f07bc57f565f9708e19d0ea4268647305c70a191884"
+    },
+    {
+      "path": "media/miniapp-step-103.mp4",
+      "size": 370138,
+      "sha256": "a6965f293181a2f6f3f17971f2dcfd5a3d83d3ca058c65c65722005b1c7e1f77"
+    },
+    {
+      "path": "media/miniapp-step-104.mp4",
+      "size": 1063026,
+      "sha256": "546c696e37ccd4f7bbdf850a2acfd7ace80b3e080fc7c8df144ceb323a3d6212"
+    },
+    {
+      "path": "media/miniapp-step-105.mp4",
+      "size": 426280,
+      "sha256": "9259534fcb2c975383f7a2e303f1fe3b6ab93ce7d1c2e4f9308c1cc94e24ccbc"
+    },
+    {
+      "path": "media/miniapp-step-106.mp4",
+      "size": 354591,
+      "sha256": "8e244d636c824d1a4287195c1e18f6453ffae16c116ef7f741aee090b1096a74"
+    },
+    {
+      "path": "media/miniapp-step-107.mp4",
+      "size": 808153,
+      "sha256": "896bb7e55840d722ad130c82a240c8af0347c202096248cb5f10ccfebe42affe"
+    },
+    {
+      "path": "media/miniapp-template-upload.mp4",
+      "size": 2853631,
+      "sha256": "791cccc19cf2ec78ea370db63c2b3e76a6fbd687b9b61878df5f7e5f52adbd38"
+    },
+    {
+      "path": "media/miniapp-voice-switch.mp4",
+      "size": 1181772,
+      "sha256": "1114ec9c5d6327668e9664d46f433a18008210fa85b720c07eb7904c7c974699"
+    },
+    {
+      "path": "showcase.html",
+      "size": 25165048,
+      "sha256": "14b347f6ff7fd8cd3f1db27167245cf54478a5cc1d5a89a1ff78c6a74fa7a643"
+    }
+  ]
+}
