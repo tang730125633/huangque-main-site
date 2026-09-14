@@ -318,12 +318,12 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                      before_commit=None, charge_transaction_key="", before_charge=None,
                      submission_key="", invocation_source="internal"):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
-    from .channel_manager import capture
+    from . import channel_manager
     try:
         items = [(int(cost or 0), (
-            capture(kind, payload)
+            channel_manager.capture(kind, payload)
             if invocation_source == 'internal'
-            else capture(kind, payload, invocation_source=invocation_source)
+            else channel_manager.capture(kind, payload, invocation_source=invocation_source)
         )) for cost, payload in items]
         from .channel_parameters import quote
         for cost,payload in items:
@@ -341,6 +341,7 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                    if charge_transaction_key else deduct(username, total, reason))
     now = int(time.time())
     try:
+        observation_ids = []
         with closing(jdb()) as c:
             try:
                 job_ids = []
@@ -362,10 +363,15 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                     job_ids.append(cur.lastrowid)
                 if before_commit is not None:
                     before_commit(c, tuple(job_ids))
+                for job_id, (_, payload) in zip(job_ids, items):
+                    observation_ids.append(channel_manager.record_shadow(
+                        job_id, payload.get('_channel_shadow')))
+                    channel_manager.confirm_acceptance(payload)
                 c.commit()
                 return job_ids, points_left
             except Exception:
                 c.rollback()
+                channel_manager.delete_observations(observation_ids)
                 raise
     except Exception as error:
         state = _compensate_failed_insert(
@@ -394,14 +400,15 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
     This intentionally has no billing side effect.  Its caller owns the persisted
     compensation state and must record refund intent before contacting Auth.
     """
-    from .channel_manager import capture
-    payload = capture(kind, payload)
+    from . import channel_manager
+    payload = channel_manager.capture(kind, payload)
     from .channel_parameters import quote
     expected=quote(kind,payload)
     if expected is not None and int(cost)!=expected:
         raise ValueError('参数点数已变化，请重新确认后提交')
     now = int(time.time())
     with closing(jdb()) as connection:
+        observation_ids = []
         try:
             cursor = connection.execute(
                 "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
@@ -412,8 +419,12 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
             job_id = int(cursor.lastrowid)
             if before_commit is not None:
                 before_commit(connection, job_id)
+            observation_ids.append(channel_manager.record_shadow(
+                job_id, payload.get('_channel_shadow')))
+            channel_manager.confirm_acceptance(payload)
             connection.commit()
             return job_id
         except Exception:
             connection.rollback()
+            channel_manager.delete_observations(observation_ids)
             raise

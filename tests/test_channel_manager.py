@@ -2,9 +2,11 @@ import base64
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +14,8 @@ from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 
 from server.content_domains import channel_manager as cm, channel_runtime as runtime
 
@@ -30,10 +34,39 @@ class ChannelTests(unittest.TestCase):
     def mapping(self):
         return cm.save_mapping('admin',dict(kind='image',front='front-model',channel=self.ch['id'],enabled=True))
 
+    def job_db(self):
+        path = self.tmp.name + '/jobs.db'
+        connection = sqlite3.connect(path, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("""CREATE TABLE IF NOT EXISTS jobs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+            status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,
+            created_at INTEGER,updated_at INTEGER,owner TEXT,refunded INTEGER DEFAULT 0)""")
+        connection.commit()
+        return connection
+
     def test_vault_and_public_redaction(self):
         self.assertNotIn(b'private-secret',Path(self.tmp.name+'/channels.db').read_bytes())
         self.assertNotIn('private-secret',json.dumps(cm.overview()))
         self.assertEqual(cm.version(self.ch['id'],1,True)['secret'],'private-secret')
+
+    def test_schema_upgrade_is_additive_and_idempotent(self):
+        legacy_path = self.tmp.name + '/legacy-channels.db'
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            connection.execute('CREATE TABLE settings(id INTEGER PRIMARY KEY,value TEXT)')
+            connection.execute("INSERT INTO settings VALUES(9,'legacy-sentinel')")
+            connection.commit()
+        with patch.dict(os.environ, {'HQ_CHANNEL_DB':legacy_path}):
+            with closing(cm.db()):
+                pass
+            with closing(cm.db()) as connection:
+                tables = {row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                self.assertTrue({
+                    'operation_mappings', 'operation_mapping_versions', 'run_snapshots'
+                }.issubset(tables))
+                self.assertEqual('legacy-sentinel', connection.execute(
+                    'SELECT value FROM settings WHERE id=9').fetchone()[0])
 
     def test_supplier_classification_is_versioned_and_validated(self):
         changed=cm.save('admin',dict(self.body,**self.ch,supplier='中转供应商',connection_type='relay'))
@@ -135,6 +168,95 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual([4, 3, 2, 1], [
             item['revision'] for item in cm.overview()['operation_mappings'][0]['history']
         ])
+
+    def test_operation_publish_serializes_concurrent_channel_change(self):
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        validated = threading.Event()
+        release = threading.Event()
+        original = cm._mapping_channel
+
+        def pause_after_validation(*args, **kwargs):
+            result = original(*args, **kwargs)
+            validated.set()
+            release.wait(2)
+            return result
+
+        with patch.object(cm, '_mapping_channel', side_effect=pause_after_validation), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            publish = pool.submit(cm.save_operation_mapping, 'admin', {
+                'operation_id':'image.xiaole.text', 'state':'managed',
+                'channel':self.ch['id'], 'expected_revision':0,
+            })
+            self.assertTrue(validated.wait(1))
+            update = pool.submit(
+                cm.save, 'admin', dict(self.body, **self.ch, model='new-model'))
+            try:
+                time.sleep(.1)
+                self.assertFalse(update.done(), 'channel update crossed the publish transaction')
+            finally:
+                release.set()
+            self.assertEqual('managed', publish.result(timeout=2)['state'])
+            self.assertEqual(2, update.result(timeout=2)['version'])
+
+    def test_managed_acceptance_rechecks_after_charge_and_refunds_stale_route(self):
+        from server.content_domains import jobs_store
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        refunds = []
+
+        def change_channel(_connection, _job_id):
+            cm.save('admin', dict(self.body, **self.ch, model='untested-model'))
+
+        with self.assertRaises(jobs_store.PaidJobInsertError):
+            jobs_store.create_paid_job(
+                self.job_db, lambda *_args: 90,
+                lambda username, cost, *_args, **_kwargs: refunds.append((username, cost)) or True,
+                'image', 'u', 1,
+                {'source_page':'banana','provider':'xiaole','prompt':'hello'},
+                'content', before_commit=change_channel, invocation_source='web')
+        self.assertEqual([('u', 1)], refunds)
+        with closing(self.job_db()) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0])
+
+    def test_shadow_job_persists_observable_server_snapshot(self):
+        from server.content_domains import jobs_store
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        job_id, _ = jobs_store.create_paid_job(
+            self.job_db, lambda *_args: 90, lambda *_args, **_kwargs: True,
+            'image', 'u', 1,
+            {'source_page':'banana','provider':'xiaole','prompt':'hello',
+             '_channel_shadow':{'operation_id':'forged','id':'attacker'}},
+            'content', invocation_source='agent')
+        evidence = cm.task_evidence(job_id)
+        self.assertEqual('captured', evidence['state'])
+        self.assertEqual('image.xiaole.text', evidence['operation_id'])
+        self.assertEqual('agent', evidence['invocation_source'])
+        self.assertEqual(self.ch['id'], evidence['execution_snapshot']['id'])
+        self.assertEqual({str(job_id)}, cm.search_task_ids('image.xiaole.text'))
+        with closing(self.job_db()) as connection:
+            payload = json.loads(connection.execute(
+                'SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()[0])
+        self.assertIn('_channel_shadow', payload)
+        self.assertNotIn('_channel_binding', payload)
+
+    def test_invocation_source_requires_matching_internal_token(self):
+        from server.content_domains import core
+        handler = types.SimpleNamespace(headers={})
+        with patch.object(core, 'AUTH_INTERNAL_TOKEN', 'trusted-token'):
+            self.assertEqual('web', core._invocation_source(handler))
+            handler.headers = {'X-HQ-Internal-Token':'wrong-token'}
+            self.assertEqual('web', core._invocation_source(handler))
+            handler.headers = {'X-HQ-Internal-Token':'trusted-token'}
+            self.assertEqual('agent', core._invocation_source(handler))
 
     def test_managed_publish_requires_fresh_full_generation_evidence(self):
         with self.assertRaisesRegex(ValueError, '完整生成测试'):

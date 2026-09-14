@@ -202,9 +202,11 @@ def version(cid, rev=None, with_secret=False):
 MAPPING_STATES = {'legacy', 'shadow', 'managed', 'paused'}
 
 
-def operation_mapping(operation_id, revision=None):
+def operation_mapping(operation_id, revision=None, connection=None):
     operation_id = str(operation_id or '').strip()
-    with closing(db()) as c:
+    owns_connection = connection is None
+    c = connection or db()
+    try:
         if revision is None:
             row = c.execute(
                 'SELECT operation_id,revision,state,config,actor,updated FROM operation_mappings WHERE operation_id=?',
@@ -216,6 +218,9 @@ def operation_mapping(operation_id, revision=None):
                 'FROM operation_mapping_versions WHERE operation_id=? AND revision=?',
                 (operation_id, int(revision)),
             ).fetchone()
+    finally:
+        if owns_connection:
+            c.close()
     if not row:
         return None
     return dict(json.loads(row['config']), operation_id=row['operation_id'],
@@ -241,17 +246,25 @@ def _validate_operation_config(cfg, contract):
         raise ValueError('Grok 1.5 必须使用参考图，不能承接文生视频功能')
 
 
-def _mapping_channel(cid, contract_or_kind, require_ready=False):
+def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None):
     contract = contract_or_kind if isinstance(contract_or_kind, dict) else None
     kind = contract['channel_kind'] if contract else str(contract_or_kind)
     cid = str(cid or '').strip()
     if not cid:
         raise ValueError('请选择主渠道')
-    with closing(db()) as c:
+    owns_connection = connection is None
+    c = connection or db()
+    try:
         current = c.execute('SELECT version,enabled FROM channels WHERE id=?', (cid,)).fetchone()
         if not current:
             raise ValueError('渠道不存在')
-        cfg = version(cid, current['version'])
+        version_row = c.execute(
+            'SELECT config FROM versions WHERE channel=? AND version=?',
+            (cid, current['version']),
+        ).fetchone()
+        if not version_row:
+            raise ValueError('渠道版本不存在')
+        cfg = dict(json.loads(version_row['config']), id=cid, version=current['version'])
         if cfg.get('_lifecycle', {}).get('deleted'):
             raise ValueError('回收站渠道不能配置映射')
         if contract:
@@ -267,6 +280,9 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False):
             ).fetchone()
             if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
                 raise ValueError('发布托管前，当前渠道版本必须有最近24小时内通过的完整生成测试')
+    finally:
+        if owns_connection:
+            c.close()
     return cfg
 
 
@@ -281,21 +297,22 @@ def save_operation_mapping(actor, body):
     if state not in MAPPING_STATES:
         raise ValueError('映射状态必须为 legacy、shadow、managed 或 paused')
     cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
-    if state in {'shadow', 'managed'}:
-        _mapping_channel(cid, contract, require_ready=state == 'managed')
-        if backup:
-            if backup == cid:
-                raise ValueError('备用渠道必须与主渠道不同')
-            _mapping_channel(backup, contract)
-    else:
-        cid, backup = '', ''
-    config = {
-        'kind': contract['channel_kind'], 'label': contract['name'],
-        'channel': cid, 'backup': backup,
-    }
     now = time.time()
     with closing(db()) as c:
         c.execute('BEGIN IMMEDIATE')
+        if state in {'shadow', 'managed'}:
+            _mapping_channel(
+                cid, contract, require_ready=state == 'managed', connection=c)
+            if backup:
+                if backup == cid:
+                    raise ValueError('备用渠道必须与主渠道不同')
+                _mapping_channel(backup, contract, connection=c)
+        else:
+            cid, backup = '', ''
+        config = {
+            'kind': contract['channel_kind'], 'label': contract['name'],
+            'channel': cid, 'backup': backup,
+        }
         current = c.execute('SELECT revision FROM operation_mappings WHERE operation_id=?',
                             (operation_id,)).fetchone()
         expected = body.get('expected_revision')
@@ -413,6 +430,31 @@ def routing_for_payload(kind, payload):
     return operation_id, operation_mapping(operation_id) if operation_id else None
 
 
+def confirm_acceptance(payload):
+    """Linearize a managed acceptance immediately before the durable job commit."""
+    binding = payload.get('_channel_binding') if isinstance(payload, dict) else None
+    if not isinstance(binding, dict) or not binding.get('operation_id'):
+        return True
+    operation_id = str(binding['operation_id'])
+    from .function_registry import operation
+    contract = operation(operation_id)
+    with closing(db()) as c:
+        c.execute('BEGIN IMMEDIATE')
+        mapping = operation_mapping(operation_id, connection=c)
+        if (not mapping or mapping.get('state') != 'managed'
+                or int(mapping.get('revision') or 0) != int(binding.get('mapping_revision') or 0)
+                or mapping.get('channel') != binding.get('id')):
+            raise ValueError('功能映射已变化，请刷新后重新提交')
+        cfg = _mapping_channel(
+            binding.get('id'), contract, require_ready=True, connection=c)
+        if (int(cfg['version']) != int(binding.get('version') or 0)
+                or cfg.get('adapter') != binding.get('adapter')
+                or cfg.get('model') != binding.get('model')):
+            raise ValueError('渠道版本已变化，请刷新后重新提交')
+        c.commit()
+    return True
+
+
 def capture(kind, payload, preparation=False, invocation_source='web'):
     clean = dict(payload)
     clean.pop('_channel_binding', None)  # Never trust a client supplied private snapshot.
@@ -456,6 +498,54 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
         'invocation_source': source,
     }
     return clean
+
+
+def record_shadow(job_id, snapshot):
+    """Persist a server-owned shadow observation without making a provider call."""
+    if not isinstance(snapshot, dict) or not snapshot.get('operation_id'):
+        return None
+    public_snapshot = {key: snapshot.get(key) for key in (
+        'operation_id', 'mapping_revision', 'id', 'version', 'adapter',
+        'model', 'invocation_source', 'state', 'detail',
+    ) if snapshot.get(key) not in (None, '')}
+    now = time.time()
+    with closing(db()) as c:
+        c.execute('BEGIN IMMEDIATE')
+        existing = c.execute(
+            "SELECT id FROM runs WHERE job_id=? AND kind='shadow' ORDER BY started DESC LIMIT 1",
+            (str(job_id),),
+        ).fetchone()
+        if existing:
+            c.commit()
+            return existing['id']
+        rid = uuid.uuid4().hex
+        c.execute(
+            'INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+            (rid, str(public_snapshot.get('id') or ''),
+             int(public_snapshot.get('version') or 0), 'shadow', 'captured',
+             now, now, 0, '候选渠道快照（未调用 Provider）', str(job_id), '', 0),
+        )
+        c.execute('INSERT INTO run_snapshots VALUES(?,?,?,?,?)', (
+            rid, public_snapshot['operation_id'],
+            public_snapshot.get('mapping_revision'),
+            public_snapshot.get('invocation_source', 'web'),
+            json.dumps(public_snapshot, ensure_ascii=False),
+        ))
+        c.commit()
+    return rid
+
+
+def delete_observations(run_ids):
+    """Remove observations whose corresponding job transaction rolled back."""
+    run_ids = [str(item) for item in run_ids if item]
+    if not run_ids:
+        return
+    placeholders = ','.join('?' for _ in run_ids)
+    with closing(db()) as c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute('DELETE FROM run_snapshots WHERE run_id IN (' + placeholders + ')', run_ids)
+        c.execute("DELETE FROM runs WHERE kind='shadow' AND id IN (" + placeholders + ')', run_ids)
+        c.commit()
 
 
 def rollback(actor, body):
@@ -584,7 +674,8 @@ def task_evidence(job_id):
         row = c.execute(
             "SELECT r.channel,r.version,r.state,r.provider_id,s.operation_id,s.mapping_revision,"
             "s.invocation_source,s.snapshot FROM runs r LEFT JOIN run_snapshots s ON s.run_id=r.id "
-            "WHERE r.kind='task' AND r.job_id=? ORDER BY r.started DESC LIMIT 1",
+            "WHERE r.kind IN ('task','shadow') AND r.job_id=? "
+            "ORDER BY CASE WHEN r.kind='task' THEN 0 ELSE 1 END,r.started DESC LIMIT 1",
             (str(job_id),),
         ).fetchone()
     if not row:
@@ -645,7 +736,7 @@ def search_task_ids(query):
                 "SELECT DISTINCT r.job_id FROM runs r LEFT JOIN versions v "
                 "ON v.channel=r.channel AND v.version=r.version "
                 "LEFT JOIN run_snapshots s ON s.run_id=r.id "
-                "WHERE r.kind='task' AND (LOWER(r.provider_id) LIKE ? "
+                "WHERE r.kind IN ('task','shadow') AND (LOWER(r.provider_id) LIKE ? "
                 "OR LOWER(r.channel) LIKE ? OR LOWER(CAST(r.version AS TEXT)) LIKE ? "
                 "OR LOWER(COALESCE(v.config,'')) LIKE ? OR LOWER(COALESCE(s.operation_id,'')) LIKE ? "
                 "OR LOWER(COALESCE(CAST(s.mapping_revision AS TEXT),'')) LIKE ?)",

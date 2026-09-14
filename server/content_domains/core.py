@@ -30,6 +30,15 @@ AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 
 
+def _invocation_source(handler):
+    """Classify a request source only after authenticating the internal boundary."""
+    return (
+        "agent"
+        if cli_gateway._internal_auth(handler, AUTH_INTERNAL_TOKEN)
+        else "web"
+    )
+
+
 def _local_file_signing_secret(environment):
     """Load the dedicated public-file signing key without crossing trust domains."""
     return str(environment.get("HQ_LOCAL_FILE_SIGNING_SECRET", "") or "").strip()
@@ -4531,9 +4540,7 @@ class H(BaseHTTPRequestHandler):
                         from . import channel_manager
                         body = channel_manager.capture(
                             kind, body,
-                            invocation_source=(
-                                'agent' if self.headers.get('X-HQ-Internal-Token') else 'web'
-                            ),
+                            invocation_source=_invocation_source(self),
                         )
                     except ValueError as error:
                         _idempotency_abort(user["username"], p, idem_key)
@@ -4686,9 +4693,7 @@ class H(BaseHTTPRequestHandler):
                             charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key)) if idem_key else "",
                             before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key, kind, cost, body, SERVICE_OWNER, "job-charge:%s:%s:%s" % (user["username"], p, idem_key))) if staged_ref_keys else None,
                             submission_key=idem_key or "",
-                            invocation_source=(
-                                'agent' if self.headers.get('X-HQ-Internal-Token') else 'web'
-                            ))
+                            invocation_source=_invocation_source(self))
                 except matrix_template_submission.AttemptInProgress:
                     return self._send(409, {
                         "detail": "相同模板成片请求正在恢复，请稍后查询",
