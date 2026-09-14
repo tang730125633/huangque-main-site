@@ -8,8 +8,8 @@
 
 - 目标分支：`main`
 - 阶段一基线：`main@b620e50c4fc956c9ae5076db23c26ae313ef7911`
-- 业务/Schema SHA：`08ee6786f04600163f87af8c57253b0e189900b4`
-- 阶段一合成候选：`240f39318f569adcc0030a3c8531dc5e4127a63e`
+- 业务/Schema SHA：`d179e531e99adef3d66d95a21ce603d190567958`
+- 阶段一合成候选：`d179e531e99adef3d66d95a21ce603d190567958`
 - 数据库：`/home/ubuntu/content-api/channel_management.db`
 - 维护窗口：`2026-09-15 02:00–03:00 Asia/Shanghai`
 - Owner、执行负责人、回滚负责人：`LU-003`
@@ -17,17 +17,16 @@
 
 LU-003 于 2026-09-14 给出的当前阶段一批准原文：
 
-> 我以 LU-003 负责人身份重新批准 PR 1564 业务/Schema SHA
-> `08ee6786f04600163f87af8c57253b0e189900b4`，基于
-> `main@b620e50c4fc956c9ae5076db23c26ae313ef7911`，沿用
-> `2026-09-15 02:00–03:00 Asia/Shanghai` 维护窗口、
-> `/home/ubuntu/content-api/channel_management.db` 数据库路径、停写、WAL 一致性备份、
-> 三张新表及索引的幂等迁移、空库与旧库升级验证和失败回滚方案；授权版本化并发布到
-> PR 1564。本批准取代旧阶段一批准，不授权部署、真实 Provider 调用或数据库整体恢复。
+> 我以 LU-003 负责人身份批准 PR 1564 新业务/Schema SHA
+> `d179e531e99adef3d66d95a21ce603d190567958`，基于
+> `main@b620e50c4fc956c9ae5076db23c26ae313ef7911`，沿用既定维护窗口、数据库路径、停写、
+> WAL 一致性备份、三张新表及索引的幂等迁移、升级验证和失败回滚方案；授权版本化并发布到
+> PR。本批准取代旧阶段一批准，不授权部署、真实 Provider 调用或数据库整体恢复。
 
-此前基于 `main@aac1934ba2612cc76b1d4d2eaa3640c9495f5d90` 的阶段一批准因
-`main` 前进而失效，仅保留在 PR 评论审计历史中。业务代码、Schema、数据库路径、维护窗口、
-目标分支或基线再次变化时，当前批准立即失效，必须重新固定、验证和批准。
+此前针对业务/Schema SHA `08ee6786f04600163f87af8c57253b0e189900b4` 的阶段一批准因
+复审修复改变业务代码而失效；更早基于 `main@aac1934ba2612cc76b1d4d2eaa3640c9495f5d90`
+的批准也因主线前进失效，二者仅保留在 PR 评论审计历史中。业务代码、Schema、数据库路径、
+维护窗口、目标分支或基线再次变化时，当前批准立即失效，必须重新固定、验证和批准。
 
 ## Schema 边界
 
@@ -79,8 +78,8 @@ LU-003 于 2026-09-14 给出的当前阶段一批准原文：
    不运行完整生成测试，不调用真实 Provider。核对任务计数、退款标记及用户点数未变化后才可
    恢复写流量。
 
-仓库验证证据：共享渠道/任务/HTTP 安全组合 204 项、后台 E2E 71 项、HQ CLI 内容 38 项、
-监控回归 3 项、管理前端渠道回归 12 项通过；`py_compile`、`node --check`、
+仓库验证证据：共享渠道/任务/HTTP 安全组合 208 项、后台 E2E 与 HQ CLI 相邻流程 111 项、
+管理前端渠道回归 46 项通过；`py_compile`、`node --check`、
 `scripts/ci_validate.py`、`scripts/stamp_assets.py --check` 和 `git diff --check` 通过。
 `tests.test_function_registry` 的音频 ffprobe 断言已在相同 `main` 基线独立复现，属于主线既有
 失败而非本 PR 回归。
