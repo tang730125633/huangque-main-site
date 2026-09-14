@@ -588,6 +588,24 @@ class FunctionRegistryTests(unittest.TestCase):
         self.assertEqual(filtered["total"], 1)
         self.assertIn("video.grok.image", filtered["items"][0]["func"])
 
+    def test_channel_operation_catalog_is_shared_with_agent_capabilities(self):
+        catalog = self.admin.function_registry.operation_catalog(channel_eligible=True)
+        by_id = {item["operation_id"]: item for item in catalog}
+        self.assertEqual("image", by_id["image.xiaole.text"]["channel_kind"])
+        self.assertEqual(["image-generate"], by_id["image.xiaole.text"]["agent_capabilities"])
+        self.assertEqual(["video-generate"], by_id["video.grok.text"]["agent_capabilities"])
+        self.assertTrue(all(item["channel_eligible"] for item in catalog))
+
+    def test_uploaded_references_select_reference_operation(self):
+        classify = self.admin.function_registry.classify_task
+        self.assertEqual(
+            "image.xiaole.reference",
+            classify("image", {
+                "source_page":"banana", "provider":"xiaole",
+                "reference_upload_ids":["upload-id"],
+            }),
+        )
+
     def test_unused_compose_store_is_not_an_incident(self):
         self.admin.VIDEO_COMPOSE_DB.unlink()
         stats = self.admin.job_stats(7)

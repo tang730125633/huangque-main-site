@@ -4529,7 +4529,12 @@ class H(BaseHTTPRequestHandler):
                         and not digital_human_paid_child):
                     try:
                         from . import channel_manager
-                        body = channel_manager.capture(kind, body)
+                        body = channel_manager.capture(
+                            kind, body,
+                            invocation_source=(
+                                'agent' if self.headers.get('X-HQ-Internal-Token') else 'web'
+                            ),
+                        )
                     except ValueError as error:
                         _idempotency_abort(user["username"], p, idem_key)
                         _short_drama_domain()._http_error(self, error)
@@ -4680,7 +4685,10 @@ class H(BaseHTTPRequestHandler):
                             before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id, user["username"], p, idem_key)) if staged_ref_keys else paid_association,
                             charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key)) if idem_key else "",
                             before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key, kind, cost, body, SERVICE_OWNER, "job-charge:%s:%s:%s" % (user["username"], p, idem_key))) if staged_ref_keys else None,
-                            submission_key=idem_key or "")
+                            submission_key=idem_key or "",
+                            invocation_source=(
+                                'agent' if self.headers.get('X-HQ-Internal-Token') else 'web'
+                            ))
                 except matrix_template_submission.AttemptInProgress:
                     return self._send(409, {
                         "detail": "相同模板成片请求正在恢复，请稍后查询",

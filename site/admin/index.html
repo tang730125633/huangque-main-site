@@ -574,7 +574,7 @@
           <div class="toolbar"><input class="field" id="cmSearch" type="search" aria-label="搜索渠道" placeholder="搜索渠道、供应商、模型或功能"><select id="cmSupplier" aria-label="供应商筛选"></select><select id="cmTransport" aria-label="接入方式"><option value="">全部接入方式</option><option value="official">官方直连</option><option value="relay">中转 API</option><option value="unknown">未标注</option></select><select id="cmState" aria-label="渠道状态"><option value="">全部状态</option><option value="enabled">使用中</option><option value="disabled">已停用</option><option value="attention">需要检查</option><option value="deleted">回收站</option></select><label><input id="cmHistory" type="checkbox"> 包含历史 / 停用</label></div>
           <p id="cmCount" class="muted" role="status"></p><div id="cmList"></div>
         </div>
-        <div data-cm-panel="mapping" hidden><div class="section-head"><h3>功能映射</h3><button id="cmMapNew">新增映射</button></div><p class="muted">前台功能 → 请求标识 → 实际渠道与模型。只改变后续任务路由，不改前台展示名称。备用渠道手动切换。</p><div id="cmMappings"></div><p class="muted">现有供应商的固定功能关系在“渠道列表 → 详情”查看；尚未接入托管协议的功能不支持通用映射。</p></div>
+        <div data-cm-panel="mapping" hidden><div class="section-head"><h3>功能映射</h3><button id="cmMapNew">配置功能</button></div><p class="muted">以稳定 operation_id 统一网页、Agent、后台测试和任务证据。映射按版本发布；主备切换暂由管理员明确操作，不自动重试付费生成。</p><div id="cmMappings"></div><p class="muted">legacy 保持旧线路，shadow 只记录候选路由，managed 才接管新任务，paused 明确拒绝且不静默降级。</p></div>
         <div data-cm-panel="health" hidden><h3>测试与健康</h3><p class="muted">连接、鉴权和生成结果分别记录。证据有效期 24 小时；未验证、过期或缺少证据不会显示为通过。统计取最近 24 小时，定时任务使用北京时间。</p><div id="cmHealth"></div><h3>通知设置与发送状态</h3><div id="cmNotifications"></div><h3>最近测试与任务</h3><div id="cmRuns"></div></div>
         <div data-cm-panel="audit" hidden><h3>配置操作记录</h3><p class="muted">托管渠道版本与映射变更。号池密钥操作沿用现有管理员审计。</p><div id="cmAudit"></div></div>
         <div data-cm-panel="layout" hidden><div id="cmLayout"></div></div>
@@ -819,9 +819,9 @@
 <link rel="stylesheet" href="/admin/channel-parameters.css?v=2e6d738e">
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
 <script src="/admin/channel-parameters.js?v=a2c62bdb"></script>
-<script src="/admin/channel-catalog.js?v=c527a54c"></script>
+<script src="/admin/channel-catalog.js?v=7e1f94b2"></script>
 <script src="/admin/channel-workspace.js?v=581fbcc6"></script>
-<script src="/admin/channel-manager.js?v=d167e344"></script>
+<script src="/admin/channel-manager.js?v=7e1f94b2"></script>
 <script>
 (function(){
   var token = '__cookie__';

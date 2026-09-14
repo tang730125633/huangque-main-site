@@ -1625,6 +1625,47 @@ def e2e_runner(operation_key):
     return None
 
 
+def operation(operation_id):
+    """Return one public operation contract from the customer-function registry."""
+    operation_id = str(operation_id or "").strip()
+    for page in FUNCTION_REGISTRY:
+        for feature in page["functions"]:
+            for leaf in feature.get("shared_steps", []) + feature.get("modes", []):
+                if leaf.get("key") == operation_id:
+                    task_match = deepcopy(leaf.get("task_match") or {})
+                    kind = str(task_match.get("kind") or "")
+                    channel_kind = kind if kind in {"image", "xiaole_video"} else ""
+                    return {
+                        "operation_id": operation_id,
+                        "name": leaf.get("name") or operation_id,
+                        "page": page["key"],
+                        "page_name": page["name"],
+                        "feature": feature.get("key") or "",
+                        "feature_name": feature.get("name") or "",
+                        "task_match": task_match,
+                        "channel_kind": channel_kind,
+                        "channel_eligible": bool(channel_kind),
+                        "agent_capabilities": (
+                            ["image-generate"] if channel_kind == "image" and page["key"] == "banana"
+                            else ["video-generate"] if channel_kind == "xiaole_video" and page["key"] == "video"
+                            else []
+                        ),
+                    }
+    return None
+
+
+def operation_catalog(channel_eligible=None):
+    """Flatten the registry into the shared Web/Admin/Agent operation inventory."""
+    items = []
+    for page in FUNCTION_REGISTRY:
+        for feature in page["functions"]:
+            for leaf in feature.get("shared_steps", []) + feature.get("modes", []):
+                item = operation(leaf.get("key"))
+                if item and (channel_eligible is None or item["channel_eligible"] is channel_eligible):
+                    items.append(item)
+    return items
+
+
 def _task_rules():
     rules = []
     for page in FUNCTION_REGISTRY:
@@ -1673,8 +1714,16 @@ def classify_task(kind, metadata=None):
         return None
     if kind == "canvas_agent" and source_page != "canvas":
         return None
+    reference_items = (
+        metadata.get("reference_images") or metadata.get("reference_upload_ids")
+        or metadata.get("images") or []
+    )
     try:
-        references = int(metadata.get("reference_count") or (1 if metadata.get("image") else 0))
+        references = int(
+            metadata.get("reference_count")
+            or (len(reference_items) if isinstance(reference_items, (list, tuple)) and reference_items else 0)
+            or (1 if metadata.get("image") or metadata.get("image_upload_id") else 0)
+        )
     except (TypeError, ValueError):
         references = 0
     channel = str(metadata.get("channel") or "").strip().lower()

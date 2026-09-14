@@ -30,9 +30,15 @@ def db():
       CREATE TABLE IF NOT EXISTS versions(channel TEXT, version INTEGER, config TEXT, secret TEXT,
         actor TEXT, created REAL, PRIMARY KEY(channel,version));
       CREATE TABLE IF NOT EXISTS mappings(selector TEXT PRIMARY KEY, config TEXT, actor TEXT, updated REAL);
+      CREATE TABLE IF NOT EXISTS operation_mappings(operation_id TEXT PRIMARY KEY, revision INTEGER,
+        state TEXT, config TEXT, actor TEXT, updated REAL);
+      CREATE TABLE IF NOT EXISTS operation_mapping_versions(operation_id TEXT, revision INTEGER,
+        state TEXT, config TEXT, actor TEXT, created REAL, PRIMARY KEY(operation_id,revision));
       CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, channel TEXT, version INTEGER, kind TEXT,
         state TEXT, started REAL, updated REAL, duration REAL, detail TEXT, job_id TEXT, provider_id TEXT,
         reservation REAL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS run_snapshots(run_id TEXT PRIMARY KEY, operation_id TEXT,
+        mapping_revision INTEGER, invocation_source TEXT, snapshot TEXT);
       CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, action TEXT, target TEXT, actor TEXT, created REAL);
       CREATE TABLE IF NOT EXISTS schedule(channel TEXT PRIMARY KEY, light_due REAL, full_due REAL);
       CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY, value TEXT);
@@ -42,6 +48,8 @@ def db():
       CREATE INDEX IF NOT EXISTS channel_runs_job ON runs(job_id,kind);
       CREATE INDEX IF NOT EXISTS channel_runs_state ON runs(state,started);
       CREATE INDEX IF NOT EXISTS channel_events_rate ON events(action,target,created);
+      CREATE INDEX IF NOT EXISTS operation_mapping_history
+        ON operation_mapping_versions(operation_id,revision DESC);
     ''')
     return c
 
@@ -133,6 +141,15 @@ def save(actor, body):
                 if (mapping.get('enabled') and cid in {mapping.get('channel'), mapping.get('backup')}
                         and mapping.get('kind') != ADAPTERS[adapter]['kind']):
                     raise ValueError('该渠道仍被已启用映射使用，不能更改为不兼容协议；请先调整映射')
+            for mapping_row in c.execute('SELECT operation_id,state,config FROM operation_mappings'):
+                mapping = json.loads(mapping_row['config'])
+                if (mapping_row['state'] in {'shadow', 'managed'}
+                        and cid in {mapping.get('channel'), mapping.get('backup')}):
+                    from .function_registry import operation
+                    try:
+                        _validate_operation_config(config, operation(mapping_row['operation_id']))
+                    except ValueError as exc:
+                        raise ValueError('该渠道仍被功能映射使用，不能保存不兼容配置；请先调整映射') from exc
         version = old['version'] + 1 if old else 1
         if old and 'reference_images' not in config['fixture']:
             previous = json.loads(c.execute('SELECT config FROM versions WHERE channel=? AND version=?',(cid,old['version'])).fetchone()[0])
@@ -182,6 +199,142 @@ def version(cid, rev=None, with_secret=False):
     return result
 
 
+MAPPING_STATES = {'legacy', 'shadow', 'managed', 'paused'}
+
+
+def operation_mapping(operation_id, revision=None):
+    operation_id = str(operation_id or '').strip()
+    with closing(db()) as c:
+        if revision is None:
+            row = c.execute(
+                'SELECT operation_id,revision,state,config,actor,updated FROM operation_mappings WHERE operation_id=?',
+                (operation_id,),
+            ).fetchone()
+        else:
+            row = c.execute(
+                'SELECT operation_id,revision,state,config,actor,created AS updated '
+                'FROM operation_mapping_versions WHERE operation_id=? AND revision=?',
+                (operation_id, int(revision)),
+            ).fetchone()
+    if not row:
+        return None
+    return dict(json.loads(row['config']), operation_id=row['operation_id'],
+                revision=row['revision'], state=row['state'], actor=row['actor'],
+                updated=row['updated'])
+
+
+def _validate_operation_config(cfg, contract):
+    if not contract or ADAPTERS[cfg['adapter']]['kind'] != contract['channel_kind']:
+        raise ValueError('功能与渠道能力不兼容')
+    rule = contract.get('task_match') or {}
+    needs_references = rule.get('reference_count') == '>0'
+    supports_references = bool(
+        ADAPTERS[cfg['adapter']].get('references')
+        or int((cfg.get('parameters') or {}).get('reference_max') or 0) > 0
+    )
+    if needs_references and not supports_references:
+        raise ValueError('该功能需要参考图，但渠道协议未声明参考图能力')
+    if rule.get('mask_present') and not (cfg.get('parameters') or {}).get('mask'):
+        raise ValueError('该功能需要蒙版能力，但渠道未启用蒙版参数')
+    if (rule.get('reference_count') == 0 and cfg['adapter'] == 'xai_video'
+            and cfg.get('model') == 'grok-imagine-video-1.5'):
+        raise ValueError('Grok 1.5 必须使用参考图，不能承接文生视频功能')
+
+
+def _mapping_channel(cid, contract_or_kind, require_ready=False):
+    contract = contract_or_kind if isinstance(contract_or_kind, dict) else None
+    kind = contract['channel_kind'] if contract else str(contract_or_kind)
+    cid = str(cid or '').strip()
+    if not cid:
+        raise ValueError('请选择主渠道')
+    with closing(db()) as c:
+        current = c.execute('SELECT version,enabled FROM channels WHERE id=?', (cid,)).fetchone()
+        if not current:
+            raise ValueError('渠道不存在')
+        cfg = version(cid, current['version'])
+        if cfg.get('_lifecycle', {}).get('deleted'):
+            raise ValueError('回收站渠道不能配置映射')
+        if contract:
+            _validate_operation_config(cfg, contract)
+        elif ADAPTERS[cfg['adapter']]['kind'] != kind:
+            raise ValueError('功能与渠道能力不兼容')
+        if require_ready:
+            if not current['enabled']:
+                raise ValueError('主渠道尚未启用，不能发布为托管状态')
+            latest = c.execute(
+                "SELECT state,updated FROM runs WHERE channel=? AND version=? AND kind='full' "
+                'ORDER BY started DESC,rowid DESC LIMIT 1', (cid, current['version']),
+            ).fetchone()
+            if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
+                raise ValueError('发布托管前，当前渠道版本必须有最近24小时内通过的完整生成测试')
+    return cfg
+
+
+def save_operation_mapping(actor, body):
+    """Publish one immutable operation mapping revision with optimistic locking."""
+    from .function_registry import operation
+    operation_id = str(body.get('operation_id') or '').strip()
+    contract = operation(operation_id)
+    if not contract or not contract['channel_eligible']:
+        raise ValueError('该功能不支持通用图片/视频渠道映射')
+    state = str(body.get('state') or 'legacy').strip().lower()
+    if state not in MAPPING_STATES:
+        raise ValueError('映射状态必须为 legacy、shadow、managed 或 paused')
+    cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
+    if state in {'shadow', 'managed'}:
+        _mapping_channel(cid, contract, require_ready=state == 'managed')
+        if backup:
+            if backup == cid:
+                raise ValueError('备用渠道必须与主渠道不同')
+            _mapping_channel(backup, contract)
+    else:
+        cid, backup = '', ''
+    config = {
+        'kind': contract['channel_kind'], 'label': contract['name'],
+        'channel': cid, 'backup': backup,
+    }
+    now = time.time()
+    with closing(db()) as c:
+        c.execute('BEGIN IMMEDIATE')
+        current = c.execute('SELECT revision FROM operation_mappings WHERE operation_id=?',
+                            (operation_id,)).fetchone()
+        expected = body.get('expected_revision')
+        try:
+            expected_number = None if expected in (None, '') else int(expected)
+        except (TypeError, ValueError):
+            raise ValueError('功能映射版本无效，请刷新后重试') from None
+        if current and expected_number != int(current['revision']):
+            raise ValueError('功能映射已被修改，请刷新后重试')
+        if not current and expected_number not in (None, 0):
+            raise ValueError('功能映射版本无效，请刷新后重试')
+        revision = int(current['revision']) + 1 if current else 1
+        encoded = json.dumps(config, ensure_ascii=False)
+        c.execute('INSERT INTO operation_mapping_versions VALUES(?,?,?,?,?,?)',
+                  (operation_id, revision, state, encoded, actor, now))
+        c.execute('INSERT OR REPLACE INTO operation_mappings VALUES(?,?,?,?,?,?)',
+                  (operation_id, revision, state, encoded, actor, now))
+        _audit(c, 'operation-mapping.publish', operation_id + ':v' + str(revision), actor)
+        c.commit()
+    return operation_mapping(operation_id)
+
+
+def rollback_operation_mapping(actor, body):
+    """Restore a historical mapping by publishing it as a new revision."""
+    operation_id = str(body.get('operation_id') or '').strip()
+    try:
+        target_revision = int(body.get('target_revision'))
+    except (TypeError, ValueError):
+        raise ValueError('请选择有效的历史映射版本') from None
+    old = operation_mapping(operation_id, target_revision)
+    if not old:
+        raise ValueError('历史映射版本不存在')
+    return save_operation_mapping(actor, {
+        'operation_id': operation_id, 'state': old['state'],
+        'channel': old.get('channel') or '', 'backup': old.get('backup') or '',
+        'expected_revision': body.get('expected_revision'),
+    })
+
+
 def save_mapping(actor, body):
     kind, front = str(body.get('kind') or ''), str(body.get('front') or '').strip()
     cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
@@ -211,30 +364,34 @@ def save_mapping(actor, body):
     return config
 
 
-def capture(kind, payload, preparation=False):
-    clean = dict(payload)
-    clean.pop('_channel_binding', None)  # Never trust a client supplied private snapshot.
+def _front(kind, payload):
+    return str(payload.get('channel') if kind == 'xiaole_video' else payload.get('model') or '')
+
+
+def _legacy_capture(kind, clean, preparation=False):
+    """Compatibility route for operations not yet published to the new control plane."""
     if preparation and clean.get('parameter_selection'):
         from .channel_parameters import historical, apply
-        cfg=historical(clean)
-        if ADAPTERS[cfg['adapter']]['kind']!=kind:raise ValueError('参数功能类型不匹配')
-        clean,_=apply(cfg,clean)
+        cfg = historical(clean)
+        if ADAPTERS[cfg['adapter']]['kind'] != kind:
+            raise ValueError('参数功能类型不匹配')
+        clean, _ = apply(cfg, clean)
         from .channel_runtime import validate_payload
-        validate_payload(cfg,clean)
-        clean['_channel_binding']={'id':cfg['id'],'version':cfg['version']}
+        validate_payload(cfg, clean)
+        clean['_channel_binding'] = {'id': cfg['id'], 'version': cfg['version']}
         return clean
     if kind not in {'image', 'xiaole_video'}:
         from .channel_lifecycle import require_legacy
-        require_legacy(kind,clean)
+        require_legacy(kind, clean)
         return clean
-    front = str(clean.get('channel') if kind == 'xiaole_video' else clean.get('model') or '')
+    front = _front(kind, clean)
     with closing(db()) as c:
-        row = c.execute('SELECT config FROM mappings WHERE selector=?', (kind+':'+front,)).fetchone()
+        row = c.execute('SELECT config FROM mappings WHERE selector=?', (kind + ':' + front,)).fetchone()
         if not row or not json.loads(row[0]).get('enabled'):
             if clean.get('parameter_selection'):
                 raise ValueError('功能映射已变化，请刷新参数后重新提交')
             from .channel_lifecycle import require_legacy
-            require_legacy(kind,clean)
+            require_legacy(kind, clean)
             return clean
         mapping = json.loads(row[0])
         ch = c.execute('SELECT * FROM channels WHERE id=?', (mapping['channel'],)).fetchone()
@@ -242,10 +399,62 @@ def capture(kind, payload, preparation=False):
             raise ValueError('该功能的主渠道已停用，请管理员切换渠道')
     cfg = version(ch['id'], ch['version'])
     from .channel_parameters import apply
-    clean, parameter_points = apply(cfg,clean)
+    clean, _ = apply(cfg, clean)
     from .channel_runtime import validate_payload
     validate_payload(cfg, clean)
     clean['_channel_binding'] = {'id': ch['id'], 'version': ch['version'], 'front': front}
+    return clean
+
+
+def routing_for_payload(kind, payload):
+    """Resolve only the immutable operation mapping metadata; no provider call occurs."""
+    from .function_registry import classify_task
+    operation_id = classify_task(kind, payload)
+    return operation_id, operation_mapping(operation_id) if operation_id else None
+
+
+def capture(kind, payload, preparation=False, invocation_source='web'):
+    clean = dict(payload)
+    clean.pop('_channel_binding', None)  # Never trust a client supplied private snapshot.
+    clean.pop('_channel_shadow', None)
+    source = str(invocation_source or 'web').strip().lower()
+    if source not in {'web', 'agent', 'admin_e2e', 'internal'}:
+        source = 'internal'
+    operation_id, mapping = routing_for_payload(kind, clean)
+    if not mapping or mapping['state'] == 'legacy':
+        return _legacy_capture(kind, clean, preparation)
+    if mapping['state'] == 'paused':
+        raise ValueError('该功能已由管理员暂停，未执行旧线路降级')
+    cid = mapping.get('channel') or ''
+    if mapping['state'] == 'shadow':
+        try:
+            from .function_registry import operation
+            cfg = _mapping_channel(cid, operation(operation_id) or mapping['kind'])
+            clean['_channel_shadow'] = {
+                'operation_id': operation_id, 'mapping_revision': mapping['revision'],
+                'id': cfg['id'], 'version': cfg['version'], 'adapter': cfg['adapter'],
+                'model': cfg['model'], 'invocation_source': source,
+            }
+        except ValueError as exc:
+            clean['_channel_shadow'] = {
+                'operation_id': operation_id, 'mapping_revision': mapping['revision'],
+                'id': cid, 'state': 'invalid', 'detail': str(exc)[:120],
+                'invocation_source': source,
+            }
+        return _legacy_capture(kind, clean, preparation)
+    from .function_registry import operation
+    cfg = _mapping_channel(
+        cid, operation(operation_id) or mapping['kind'], require_ready=True)
+    from .channel_parameters import apply
+    clean, _ = apply(cfg, clean, required=not preparation)
+    from .channel_runtime import validate_payload
+    validate_payload(cfg, clean)
+    clean['_channel_binding'] = {
+        'operation_id': operation_id, 'mapping_revision': mapping['revision'],
+        'id': cfg['id'], 'version': cfg['version'], 'adapter': cfg['adapter'],
+        'model': cfg['model'], 'front': _front(kind, clean),
+        'invocation_source': source,
+    }
     return clean
 
 
@@ -262,7 +471,17 @@ def overview():
     with closing(db()) as c:
         channels = [dict(r) for r in c.execute('SELECT * FROM channels')]
         mappings = [json.loads(r[0]) for r in c.execute('SELECT config FROM mappings')]
-        runs = [dict(r) for r in c.execute('SELECT * FROM runs ORDER BY started DESC LIMIT 100')]
+        operation_mappings = [operation_mapping(r[0]) for r in c.execute(
+            'SELECT operation_id FROM operation_mappings ORDER BY operation_id')]
+        for mapping in operation_mappings:
+            mapping['history'] = [dict(row) for row in c.execute(
+                'SELECT revision,state,actor,created FROM operation_mapping_versions '
+                'WHERE operation_id=? ORDER BY revision DESC LIMIT 20',
+                (mapping['operation_id'],))]
+        runs = [dict(r) for r in c.execute(
+            'SELECT r.*,s.operation_id,s.mapping_revision,s.invocation_source '
+            'FROM runs r LEFT JOIN run_snapshots s ON s.run_id=r.id '
+            'ORDER BY r.started DESC LIMIT 100')]
         events = [dict(r) for r in c.execute('SELECT * FROM events ORDER BY created DESC LIMIT 30')]
         for channel in channels:
             cfg = version(channel['id'], channel['version'])
@@ -285,12 +504,18 @@ def overview():
                 check_row = c.execute("SELECT kind,state,updated,detail FROM runs WHERE channel=? AND version=? AND kind=? ORDER BY started DESC,rowid DESC LIMIT 1", (channel['id'],channel['version'],check_kind)).fetchone()
                 if check_row:
                     channel['checks'].append(dict(check_row))
-    return {'items': channels, 'mappings': mappings, 'runs': runs, 'events': events, 'adapters': ADAPTERS,
+    from .function_registry import operation_catalog
+    operations = operation_catalog(channel_eligible=True)
+    current = {item['operation_id']: item for item in operation_mappings}
+    for item in operations:
+        item['mapping'] = current.get(item['operation_id'])
+    return {'items': channels, 'mappings': mappings, 'operation_mappings': operation_mappings,
+            'operations': operations, 'runs': runs, 'events': events, 'adapters': ADAPTERS,
             'legacy_controls':legacy_states(), 'legacy_scopes':LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone':'Asia/Shanghai', 'stats_window':'最近24小时'}
 
 
-def reserve(cid, kind, job_id='', snapshot=None):
+def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
     cfg = snapshot or version(cid)
     now, rid = time.time(), uuid.uuid4().hex
     with closing(db()) as c:
@@ -319,6 +544,18 @@ def reserve(cid, kind, job_id='', snapshot=None):
         if pending >= max(1,cfg['queue_limit']):
             raise ValueError('渠道等待队列已满')
         c.execute('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', (rid,cid,cfg['version'],kind,'queued',now,now,None,'等待执行',str(job_id),'',cfg['test_cost'] if kind=='full' else 0))
+        binding = execution_snapshot if isinstance(execution_snapshot, dict) else {}
+        if binding:
+            public_snapshot = {key: binding.get(key) for key in (
+                'operation_id', 'mapping_revision', 'id', 'version', 'adapter',
+                'model', 'front', 'invocation_source',
+            ) if binding.get(key) not in (None, '')}
+            c.execute('INSERT INTO run_snapshots VALUES(?,?,?,?,?)', (
+                rid, public_snapshot.get('operation_id', ''),
+                public_snapshot.get('mapping_revision'),
+                public_snapshot.get('invocation_source', 'web'),
+                json.dumps(public_snapshot, ensure_ascii=False),
+            ))
         c.commit()
     return rid
 
@@ -344,8 +581,20 @@ def notification_settings(private=False):
 
 def task_evidence(job_id):
     with closing(db()) as c:
-        row = c.execute("SELECT channel,version,state,provider_id FROM runs WHERE kind='task' AND job_id=? ORDER BY started DESC LIMIT 1",(str(job_id),)).fetchone()
-    return dict(row) if row else {}
+        row = c.execute(
+            "SELECT r.channel,r.version,r.state,r.provider_id,s.operation_id,s.mapping_revision,"
+            "s.invocation_source,s.snapshot FROM runs r LEFT JOIN run_snapshots s ON s.run_id=r.id "
+            "WHERE r.kind='task' AND r.job_id=? ORDER BY r.started DESC LIMIT 1",
+            (str(job_id),),
+        ).fetchone()
+    if not row:
+        return {}
+    result = dict(row)
+    if result.get('snapshot'):
+        result['execution_snapshot'] = json.loads(result.pop('snapshot'))
+    else:
+        result.pop('snapshot', None)
+    return result
 
 
 def task_recovery_state(job_id):
@@ -395,10 +644,12 @@ def search_task_ids(query):
             rows = c.execute(
                 "SELECT DISTINCT r.job_id FROM runs r LEFT JOIN versions v "
                 "ON v.channel=r.channel AND v.version=r.version "
+                "LEFT JOIN run_snapshots s ON s.run_id=r.id "
                 "WHERE r.kind='task' AND (LOWER(r.provider_id) LIKE ? "
                 "OR LOWER(r.channel) LIKE ? OR LOWER(CAST(r.version AS TEXT)) LIKE ? "
-                "OR LOWER(COALESCE(v.config,'')) LIKE ?)",
-                (needle, needle, needle, needle),
+                "OR LOWER(COALESCE(v.config,'')) LIKE ? OR LOWER(COALESCE(s.operation_id,'')) LIKE ? "
+                "OR LOWER(COALESCE(CAST(s.mapping_revision AS TEXT),'')) LIKE ?)",
+                (needle, needle, needle, needle, needle, needle),
             ).fetchall()
         return {str(row[0]) for row in rows if row[0] not in (None, '')}
     except (OSError, sqlite3.Error):

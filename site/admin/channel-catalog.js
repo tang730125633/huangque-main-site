@@ -19,7 +19,8 @@
       checks:[],model:c.model||'按功能配置'})).concat((data.items||[]).map(c=>({...c,uid:'managed:'+c.id,source:'managed',
         supplier:c.supplier||'未标注供应商',connection_type:c.connection_type||'unknown',
         categories:[data.adapters?.[c.adapter]?.kind==='image'?'image':'video'],retired:!c.enabled,deleted:!!c._lifecycle?.deleted,
-        attention:c.health!=='成品核验通过',features:(data.mappings||[]).filter(m=>m.channel===c.id).map(m=>m.label||m.front)})));
+        attention:c.health!=='成品核验通过',features:[...(data.mappings||[]),...(data.operation_mappings||[])]
+          .filter(m=>m.channel===c.id).map(m=>m.label||m.operation_id||m.front)})));
   }
   function filter(rows,f){return rows.filter(c=>(f.status==='deleted'?c.deleted:!c.deleted)&&(f.history||['disabled','deleted'].includes(f.status)||!c.retired)&&(f.category==='all'||c.categories.includes(f.category))&&(!f.supplier||c.supplier===f.supplier)&&(!f.transport||c.connection_type===f.transport)&&(!f.status||f.status==='deleted'||(f.status==='enabled'?c.enabled:f.status==='disabled'?!c.enabled:c.attention))&&(!f.q||[c.name,c.supplier,c.model,...(c.features||[])].join(' ').toLowerCase().includes(f.q.toLowerCase())))}
   function compatible(data,kind){return (data.items||[]).filter(c=>!c._lifecycle?.deleted&&data.adapters?.[c.adapter]?.kind===kind)}

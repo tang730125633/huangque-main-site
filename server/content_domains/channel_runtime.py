@@ -379,9 +379,13 @@ def generate(cfg, payload, rid, job_id):
         trace.record(job_id,'artifact','passed',provider_task_id=provider_id,**metadata)
         url = core.public_url(filename,'image/'+output_format if media=='image' else 'video/mp4')
         trace.record(job_id,'delivery','unknown',**metadata)
+        binding = payload.get('_channel_binding') or {}
         return {'type':media,'file':filename,'url':url,'files':[filename],'urls':[url],'count':1,
                 'mode':('text2img' if not refs else 'img2img') if media=='image' else 'generate','provider':cfg['name'],'model':cfg['model'],
-                'request_id':provider_id,'channel_id':cfg['id'],'channel_version':cfg['version']}
+                'request_id':provider_id,'channel_id':cfg['id'],'channel_version':cfg['version'],
+                'operation_id':binding.get('operation_id'),
+                'mapping_revision':binding.get('mapping_revision'),
+                'invocation_source':binding.get('invocation_source')}
     except Exception:
         target.unlink(missing_ok=True)
         raise
@@ -514,7 +518,7 @@ def _notify(row,state):
 def run_task(binding,payload,job_id,job_db=None):
     """托管渠道任务入口；带上任务库句柄后，管理员终止可以在执行循环里安全停手。"""
     cfg = store.version(binding['id'],binding['version'])
-    rid = store.reserve(cfg['id'],'task',str(job_id),cfg)
+    rid = store.reserve(cfg['id'],'task',str(job_id),cfg,execution_snapshot=binding)
     if job_db is None:
         return execute(rid,payload)
     from . import task_termination

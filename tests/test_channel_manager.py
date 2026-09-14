@@ -85,6 +85,109 @@ class ChannelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'刷新'):
             cm.save('admin',dict(self.body,**self.ch))
 
+    def test_operation_mapping_is_versioned_and_managed_route_is_fail_closed(self):
+        payload = {'source_page':'banana','provider':'xiaole','prompt':'hello'}
+        shadow = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        self.assertEqual(1, shadow['revision'])
+        shadowed = cm.capture('image', payload, invocation_source='agent')
+        self.assertNotIn('_channel_binding', shadowed)
+        self.assertEqual('image.xiaole.text', shadowed['_channel_shadow']['operation_id'])
+
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        managed = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':1,
+        })
+        captured = cm.capture('image', payload, invocation_source='agent')
+        binding = captured['_channel_binding']
+        self.assertEqual(2, managed['revision'])
+        self.assertEqual('image.xiaole.text', binding['operation_id'])
+        self.assertEqual(2, binding['mapping_revision'])
+        self.assertEqual('agent', binding['invocation_source'])
+        self.assertEqual('test-model', binding['model'])
+
+        cm.save('admin', dict(self.body, **self.ch, model='new-untested-model'))
+        with self.assertRaisesRegex(ValueError, '完整生成测试'):
+            cm.capture('image', payload)
+
+        paused = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'paused',
+            'expected_revision':2,
+        })
+        self.assertEqual(3, paused['revision'])
+        with self.assertRaises(ValueError):
+            cm.capture('image', payload)
+        with self.assertRaisesRegex(ValueError, '刷新'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.text', 'state':'legacy',
+                'expected_revision':2,
+            })
+        restored = cm.rollback_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'target_revision':1,
+            'expected_revision':3,
+        })
+        self.assertEqual('shadow', restored['state'])
+        self.assertEqual(4, restored['revision'])
+        self.assertEqual([4, 3, 2, 1], [
+            item['revision'] for item in cm.overview()['operation_mappings'][0]['history']
+        ])
+
+    def test_managed_publish_requires_fresh_full_generation_evidence(self):
+        with self.assertRaisesRegex(ValueError, '完整生成测试'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.text', 'state':'managed',
+                'channel':self.ch['id'], 'expected_revision':0,
+            })
+
+    def test_operation_mapping_rejects_missing_reference_capability(self):
+        with self.assertRaisesRegex(ValueError, '参考图'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.reference', 'state':'shadow',
+                'channel':self.ch['id'], 'expected_revision':0,
+            })
+
+    def test_recycle_bin_blocks_operation_mapping_references(self):
+        from server.content_domains import channel_lifecycle
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        disabled = channel_lifecycle.mutate('admin', {
+            'id':self.ch['id'], 'version':1, 'action':'disable', 'reason':'maintenance',
+        })
+        with self.assertRaisesRegex(ValueError, '映射引用'):
+            channel_lifecycle.mutate('admin', {
+                'id':self.ch['id'], 'version':disabled['version'],
+                'action':'delete', 'reason':'retire',
+            })
+
+    def test_task_evidence_contains_immutable_operation_snapshot(self):
+        snapshot = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':4,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'invocation_source':'agent',
+        }
+        rid = cm.reserve(self.ch['id'], 'task', 'snapshot-92',
+                         execution_snapshot=snapshot)
+        cm.finish(rid, 'running', 'accepted', 'provider-92')
+        evidence = cm.task_evidence('snapshot-92')
+        self.assertEqual('image.xiaole.text', evidence['operation_id'])
+        self.assertEqual(4, evidence['mapping_revision'])
+        self.assertEqual('agent', evidence['invocation_source'])
+        self.assertEqual('test-model', evidence['execution_snapshot']['model'])
+        self.assertEqual({'snapshot-92'}, cm.search_task_ids('image.xiaole.text'))
+
+    def test_overview_exposes_shared_operation_catalog(self):
+        item = next(x for x in cm.overview()['operations']
+                    if x['operation_id'] == 'image.xiaole.text')
+        self.assertEqual('image', item['channel_kind'])
+        self.assertEqual(['image-generate'], item['agent_capabilities'])
+        self.assertIsNone(item['mapping'])
+
     def test_video_validation_retains_managed_snapshot(self):
         from server.content_domains import feature_flags, video
         binding = {'id': 'managed-video', 'version': 3, 'front': 'grok'}

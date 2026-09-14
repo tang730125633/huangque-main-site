@@ -351,6 +351,13 @@ def quote(kind,payload,allow_historical=False):
     if kind not in {'image','xiaole_video'}:return None
     if allow_historical and payload.get('parameter_selection'):
         return apply(historical(payload),payload)[1]
+    operation_id, operation_route = store.routing_for_payload(kind, payload)
+    if operation_route:
+        if operation_route['state'] == 'paused':
+            raise ValueError('该功能已由管理员暂停，无法报价')
+        if operation_route['state'] == 'managed':
+            cfg = store.version(operation_route['channel'])
+            return apply(cfg, payload)[1]
     front=str(payload.get('channel') if kind=='xiaole_video' else payload.get('model') or '')
     with closing(store.db()) as c:
         r=c.execute('SELECT config FROM mappings WHERE selector=?',(kind+':'+front,)).fetchone()
