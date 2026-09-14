@@ -54,6 +54,11 @@ def layout_state():
     return _clean_layout(json.loads(row[0]) if row else {})
 
 
+def admin_layout_state():
+    """Return the stable admin API envelope used by both load and save."""
+    return {'layout': layout_state()}
+
+
 def layout_save(actor, body):
     value = _clean_layout(body.get('layout') if isinstance(body, dict) else {}, strict=True)
     with closing(store.db()) as c:

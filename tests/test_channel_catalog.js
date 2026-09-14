@@ -73,3 +73,38 @@ test('admin scripts parse together and channel entry is unique',()=>{
   assert.equal((html.match(/data-module-tab="managedChannels"/g)||[]).length,1);
   assert.equal((html.match(/data-module-tab="channels"/g)||[]).length,0);
 });
+
+test('layout loader accepts wrapped and legacy contracts and exposes empty and retry states',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-workspace.js'),'utf8');
+  const element=id=>({id,hidden:false,innerHTML:'',textContent:'',value:'',checked:false,
+    classList:{toggle(){}},addEventListener(){},setAttribute(){},querySelectorAll(){return[]},
+    querySelector(selector){
+      if(selector==='#cmLayoutSave')return this.saveButton||(this.saveButton={disabled:false});
+      if(selector==='#cmLayoutRetry')return this.retryButton||(this.retryButton={});
+      return null;
+    }});
+  const ids=['cmLayout','cmSearch','cmSupplier','cmTransport','cmState','cmHistory','cmDrawer'];
+  const elements=Object.fromEntries(ids.map(id=>[id,element(id)])),root=element('root');
+  let failure=null,response={layout:{video:{order:['grok'],default:'grok'},image:{order:['gpt'],default:'gpt'}}};
+  const context={window:null,document:{querySelector:()=>root,querySelectorAll:()=>[]}};context.window=context;
+  vm.createContext(context);vm.runInContext(source,context);
+  const workspace=context.initChannelWorkspace({
+    el:id=>elements[id],esc:String,api:async()=>{if(failure)throw failure;return response},legacy:()=>[],closeLegacy(){},
+    lifecycle(){},detail(){},mapping(){},refresh(){},task(){},journey(){}
+  });
+  const settle=()=>new Promise(resolve=>setImmediate(resolve));
+  workspace.showTab('layout');await settle();
+  assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:grok"/);
+
+  response={video:{order:['talking'],default:'talking'},image:{order:['banana'],default:'banana'}};
+  workspace.showTab('layout');await settle();
+  assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:talking"/);
+
+  response={layout:{video:{order:[],default:''},image:{order:[],default:''}}};
+  workspace.showTab('layout');await settle();
+  assert.match(elements.cmLayout.innerHTML,/cm-layout-empty/);
+
+  failure=Error('network down');workspace.showTab('layout');await settle();
+  assert.match(elements.cmLayout.innerHTML,/cm-layout-error/);
+  assert.equal(typeof elements.cmLayout.retryButton.onclick,'function');
+});

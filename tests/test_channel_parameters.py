@@ -253,6 +253,7 @@ class ParameterTests(unittest.TestCase):
     def test_workbench_layout_defaults_roundtrip_and_strict_save(self):
         state=params.layout_state()
         self.assertEqual(state['video']['order'][0],'grok');self.assertEqual(state['image']['default'],'gpt')
+        self.assertEqual(params.admin_layout_state(),{'layout':state})
         self.assertIn('layout',params.public_catalog())
         saved=params.layout_save('admin',{'layout':{'video':{'order':['talking','grok','cinematic','tryon','minimax','micro','sora','omni'],'default':'talking'},'image':{'order':['gpt','banana','seedream','xiaole','zelong2'],'default':'gpt'}}})
         self.assertEqual(saved['layout']['video']['order'][0],'talking')
