@@ -253,12 +253,26 @@ class ParameterTests(unittest.TestCase):
     def test_workbench_layout_defaults_roundtrip_and_strict_save(self):
         state=params.layout_state()
         self.assertEqual(state['video']['order'][0],'grok');self.assertEqual(state['image']['default'],'gpt')
+        self.assertEqual(params.admin_layout_state(),{'layout':state})
         self.assertIn('layout',params.public_catalog())
         saved=params.layout_save('admin',{'layout':{'video':{'order':['talking','grok','cinematic','tryon','minimax','micro','sora','omni'],'default':'talking'},'image':{'order':['gpt','banana','seedream','xiaole','zelong2'],'default':'gpt'}}})
         self.assertEqual(saved['layout']['video']['order'][0],'talking')
         self.assertEqual(params.layout_state()['video']['default'],'talking')
         with self.assertRaises(ValueError):
             params.layout_save('admin',{'layout':{'video':{'order':['grok'],'default':'grok'},'image':{'order':[],'default':''}}})
+
+    def test_admin_layout_state_route_returns_wrapped_contract(self):
+        import server.admin_api as admin
+
+        handler = object.__new__(admin.H)
+        handler.path = '/api/admin/channel-manager/layout-state'
+        handler.headers = {'Content-Length': '2'}
+        handler._admin = lambda: {'username': 'admin'}
+        handler._body = lambda: {}
+        handler._send = lambda status, payload: (status, payload)
+
+        expected = params.admin_layout_state()
+        self.assertEqual(admin.H.do_POST(handler), (200, expected))
 
     def test_grok15_mapping_and_legacy_provider(self):
         self.ch=cm.save('a',dict(self.body,adapter='xai_video',model='grok-imagine-video-1.5'))

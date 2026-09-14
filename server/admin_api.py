@@ -9041,7 +9041,7 @@ class H(BaseHTTPRequestHandler):
                        'parameters':channel_parameters.change,
                        'parameter-preview':channel_parameters.preview,
                        'parameter-state':lambda actor,body:channel_parameters.admin_state(str(body.get('id') or ''),body.get('profile')),
-                       'layout-state':lambda actor,body:channel_parameters.layout_state(),
+                       'layout-state':lambda actor,body:channel_parameters.admin_layout_state(),
                        'layout-save':channel_parameters.layout_save,
                        'secret-reveal':reveal_channel_secret}
             action = actions.get(path.rsplit('/',1)[-1])

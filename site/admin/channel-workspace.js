@@ -25,10 +25,13 @@
       const layout=state||{};
       const page=key=>{
         const cfg=layout[key]||{},order=cfg.order||[],def=cfg.default||(order[0]||'');
-        return '<div class="cm-layout-page"><h4>'+(key==='video'?'视频页':'图片页')+'</h4><p class="muted">用上移/下移调整渠道顺序，单选默认渠道。保存后用户页面 15 秒内自动应用；可用性仍由功能开关控制。</p><div class="cm-layout-list">'+order.map((k,i)=>'<div class="cm-layout-row" data-layout-row="'+key+':'+k+'"><button type="button" data-layout-move="'+key+':'+k+':-1" '+(i===0?'disabled':'')+' aria-label="上移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↑</button><button type="button" data-layout-move="'+key+':'+k+':1" '+(i===order.length-1?'disabled':'')+' aria-label="下移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↓</button><span>'+esc(LAYOUT_NAMES[key]?.[k]||k)+'</span><label><input type="radio" name="layoutDefault_'+key+'" value="'+esc(k)+'" '+(def===k?'checked':'')+'> 默认</label></div>').join('')+'</div></div>';
+        const items=order.map((k,i)=>'<div class="cm-layout-row" data-layout-row="'+key+':'+k+'"><button type="button" data-layout-move="'+key+':'+k+':-1" '+(i===0?'disabled':'')+' aria-label="上移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↑</button><button type="button" data-layout-move="'+key+':'+k+':1" '+(i===order.length-1?'disabled':'')+' aria-label="下移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↓</button><span>'+esc(LAYOUT_NAMES[key]?.[k]||k)+'</span><label><input type="radio" name="layoutDefault_'+key+'" value="'+esc(k)+'" '+(def===k?'checked':'')+'> 默认</label></div>').join('');
+        return '<div class="cm-layout-page"><h4>'+(key==='video'?'视频页':'图片页')+'</h4><p class="muted">用上移/下移调整渠道顺序，单选默认渠道。保存后用户页面 15 秒内自动应用；可用性仍由功能开关控制。</p><div class="cm-layout-list">'+(items||'<div class="empty cm-layout-empty">当前页面没有可排列的功能。</div>')+'</div></div>';
       };
       host.innerHTML='<div class="section-head"><h3>前台布局（渠道顺序与默认）</h3><button type="button" id="cmLayoutSave" class="primary">保存布局</button></div>'+page('video')+page('image')+'<p id="cmLayoutStatus" role="status"></p>';
-      host.querySelector('#cmLayoutSave').onclick=async e=>{
+      const save=host.querySelector('#cmLayoutSave'),hasCompleteLayout=['video','image'].every(key=>(layout[key]?.order||[]).length);
+      save.disabled=!hasCompleteLayout;if(!hasCompleteLayout)save.title='视频页和图片页都需要至少一个可排列功能';
+      save.onclick=async e=>{
         const btn=e.currentTarget,status=el('cmLayoutStatus');btn.disabled=true;status.textContent='';
         const collect=key=>{
           const rows=[...host.querySelectorAll('[data-layout-row]')].filter(r=>r.dataset.layoutRow.startsWith(key+':')).map(r=>r.dataset.layoutRow.slice(key.length+1));
@@ -42,12 +45,20 @@
         finally{btn.disabled=false}
       };
     }
+    function renderLayoutError(error){
+      const host=el('cmLayout');if(!host)return;
+      host.innerHTML='<div class="empty cm-layout-error" role="alert"><p>前台布局读取失败：'+esc(error?.message||'未知错误')+'</p><button type="button" id="cmLayoutRetry">重新加载</button></div>';
+      host.querySelector('#cmLayoutRetry').onclick=loadLayout;
+    }
     async function loadLayout(){
       if(layoutLoading)return;layoutLoading=true;
+      const host=el('cmLayout');if(host)host.innerHTML='<p class="muted" role="status">正在读取前台布局…</p>';
       try{
         const result=await api('/api/admin/channel-manager/layout-state',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-        renderLayout(result.layout||{});
-      }catch(error){const host=el('cmLayout');if(host)host.innerHTML='<p class="muted">'+esc(error.message)+'</p>'}
+        const layout=result?.layout||(result&&(result.video||result.image)?result:null);
+        if(!layout)throw Error('布局接口未返回有效配置');
+        renderLayout(layout);
+      }catch(error){renderLayoutError(error)}
       finally{layoutLoading=false}
     }
     function list(){
