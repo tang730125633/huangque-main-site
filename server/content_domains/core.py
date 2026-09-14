@@ -2109,6 +2109,11 @@ def _requeue_running_job(job_id):
     return startup_recovery.requeue_running_job(jdb, job_id)
 
 def reclaim_orphaned_running():
+    try:
+        jobs_store.reconcile_shadow_observations(jdb)
+    except (OSError, sqlite3.Error) as exc:
+        print('[channel-shadow] startup projection deferred: %s' %
+              type(exc).__name__, flush=True)
     return startup_recovery.reclaim_orphaned_running(
         jdb=jdb,
         service_owner=SERVICE_OWNER,

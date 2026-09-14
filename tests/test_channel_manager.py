@@ -224,6 +224,50 @@ class ChannelTests(unittest.TestCase):
             self.assertEqual(0, connection.execute(
                 "SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0])
 
+    def test_managed_acceptance_holds_channel_lock_through_job_commit(self):
+        from server.content_domains import jobs_store
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        with closing(self.job_db()):
+            pass
+        committing = threading.Event()
+        release = threading.Event()
+        path = self.tmp.name + '/jobs.db'
+
+        class BlockingConnection(sqlite3.Connection):
+            def commit(connection):
+                committing.set()
+                release.wait(2)
+                return super().commit()
+
+        def blocking_job_db():
+            connection = sqlite3.connect(
+                path, timeout=10, factory=BlockingConnection)
+            connection.row_factory = sqlite3.Row
+            return connection
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            submission = pool.submit(
+                jobs_store.create_paid_job,
+                blocking_job_db, lambda *_args: 90,
+                lambda *_args, **_kwargs: True, 'image', 'u', 1,
+                {'source_page':'banana','provider':'xiaole','prompt':'hello'},
+                'content', None, '', None, '', 'web')
+            self.assertTrue(committing.wait(1))
+            update = pool.submit(
+                cm.save, 'admin', dict(self.body, **self.ch, model='new-model'))
+            try:
+                time.sleep(.1)
+                self.assertFalse(update.done(), 'channel changed before job commit completed')
+            finally:
+                release.set()
+            self.assertGreater(submission.result(timeout=2)[0], 0)
+            self.assertEqual(2, update.result(timeout=2)['version'])
+
     def test_shadow_job_persists_observable_server_snapshot(self):
         from server.content_domains import jobs_store
         cm.save_operation_mapping('admin', {
@@ -247,6 +291,66 @@ class ChannelTests(unittest.TestCase):
                 'SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()[0])
         self.assertIn('_channel_shadow', payload)
         self.assertNotIn('_channel_binding', payload)
+
+    def test_shadow_projection_recovers_after_post_commit_crash_gap(self):
+        from server.content_domains import jobs_store
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        with patch.object(cm, 'record_shadow', side_effect=RuntimeError('simulated crash gap')):
+            job_id, _ = jobs_store.create_paid_job(
+                self.job_db, lambda *_args: 90, lambda *_args, **_kwargs: True,
+                'image', 'u', 1,
+                {'source_page':'banana','provider':'xiaole','prompt':'hello'},
+                'content', invocation_source='web')
+        self.assertEqual({}, cm.task_evidence(job_id))
+        self.assertEqual(1, jobs_store.reconcile_shadow_observations(self.job_db))
+        evidence = cm.task_evidence(job_id)
+        self.assertEqual('image.xiaole.text', evidence['operation_id'])
+        observation_id = evidence['execution_snapshot']['observation_id']
+        with closing(self.job_db()) as connection:
+            stored_payload = json.loads(connection.execute(
+                'SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()[0])
+        self.assertEqual(observation_id, cm.record_shadow(
+            job_id, stored_payload['_channel_shadow']))
+        with closing(cm.db()) as connection:
+            self.assertEqual(1, connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE id=? AND kind='shadow'",
+                (observation_id,)).fetchone()[0])
+
+    def test_shadow_identity_does_not_alias_reused_job_id(self):
+        common = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'invocation_source':'web',
+        }
+        first = cm._seal_shadow(dict(common, observation_id='a' * 32))
+        second = cm._seal_shadow(dict(
+            common, observation_id='b' * 32, mapping_revision=2))
+        self.assertEqual('a' * 32, cm.record_shadow(7, first))
+        self.assertEqual('b' * 32, cm.record_shadow(7, second))
+        with closing(cm.db()) as connection:
+            self.assertEqual(2, connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE job_id='7' AND kind='shadow'").fetchone()[0])
+        self.assertEqual('b' * 32,
+                         cm.task_evidence(7)['execution_snapshot']['observation_id'])
+
+    def test_shadow_projection_rejects_unsealed_job_payload(self):
+        from server.content_domains import jobs_store
+        with closing(self.job_db()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
+                "VALUES('image','u',0,?,1,1,'content')",
+                (json.dumps({'_channel_shadow': {
+                    'operation_id':'image.xiaole.text',
+                    'observation_id':'c' * 32,
+                    'id':self.ch['id'],
+                }}),))
+            job_id = cursor.lastrowid
+            connection.commit()
+        self.assertEqual(0, jobs_store.reconcile_shadow_observations(self.job_db))
+        self.assertEqual({}, cm.task_evidence(job_id))
 
     def test_invocation_source_requires_matching_internal_token(self):
         from server.content_domains import core

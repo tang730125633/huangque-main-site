@@ -19,6 +19,7 @@ content_jobs.db 的 jobs 表被三个进程共写：
 """
 import hashlib
 import json
+import sqlite3
 import time
 import uuid
 from contextlib import closing
@@ -341,7 +342,6 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                    if charge_transaction_key else deduct(username, total, reason))
     now = int(time.time())
     try:
-        observation_ids = []
         with closing(jdb()) as c:
             try:
                 job_ids = []
@@ -363,21 +363,23 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                     job_ids.append(cur.lastrowid)
                 if before_commit is not None:
                     before_commit(c, tuple(job_ids))
-                for job_id, (_, payload) in zip(job_ids, items):
-                    observation_ids.append(channel_manager.record_shadow(
-                        job_id, payload.get('_channel_shadow')))
-                    channel_manager.confirm_acceptance(payload)
-                c.commit()
-                return job_ids, points_left
+                with channel_manager.acceptance_guard(payload for _, payload in items):
+                    c.commit()
             except Exception:
                 c.rollback()
-                channel_manager.delete_observations(observation_ids)
                 raise
     except Exception as error:
         state = _compensate_failed_insert(
             jdb, refund, username, total, kind, submission_ref, error, owner,
             charge_transaction_key=charge_transaction_key)
         raise PaidJobInsertError(state, submission_ref) from error
+    for job_id, (_, payload) in zip(job_ids, items):
+        try:
+            channel_manager.record_shadow(job_id, payload.get('_channel_shadow'))
+        except Exception as exc:
+            print('[channel-shadow] projection pending job=%s error=%s' % (
+                job_id, type(exc).__name__), flush=True)
+    return job_ids, points_left
 
 
 def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
@@ -408,7 +410,6 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
         raise ValueError('参数点数已变化，请重新确认后提交')
     now = int(time.time())
     with closing(jdb()) as connection:
-        observation_ids = []
         try:
             cursor = connection.execute(
                 "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
@@ -419,12 +420,38 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
             job_id = int(cursor.lastrowid)
             if before_commit is not None:
                 before_commit(connection, job_id)
-            observation_ids.append(channel_manager.record_shadow(
-                job_id, payload.get('_channel_shadow')))
-            channel_manager.confirm_acceptance(payload)
-            connection.commit()
-            return job_id
+            with channel_manager.acceptance_guard([payload]):
+                connection.commit()
         except Exception:
             connection.rollback()
-            channel_manager.delete_observations(observation_ids)
             raise
+    try:
+        channel_manager.record_shadow(job_id, payload.get('_channel_shadow'))
+    except Exception as exc:
+        print('[channel-shadow] projection pending job=%s error=%s' % (
+            job_id, type(exc).__name__), flush=True)
+    return job_id
+
+
+def reconcile_shadow_observations(jdb, limit=None):
+    """Replay durable shadow snapshots from committed jobs into channel evidence."""
+    from . import channel_manager
+    with closing(jdb()) as c:
+        sql = (
+            "SELECT id,payload FROM jobs WHERE payload LIKE '%\"_channel_shadow\"%' "
+            "ORDER BY id DESC"
+        )
+        if limit is None:
+            rows = c.execute(sql).fetchall()
+        else:
+            rows = c.execute(sql + " LIMIT ?", (max(1, int(limit)),)).fetchall()
+    projected = 0
+    for row in rows:
+        try:
+            payload = json.loads(row['payload'] or '{}')
+            snapshot = payload.get('_channel_shadow') if isinstance(payload, dict) else None
+            if channel_manager.record_shadow(row['id'], snapshot):
+                projected += 1
+        except (TypeError, ValueError, OSError, sqlite3.Error):
+            continue
+    return projected

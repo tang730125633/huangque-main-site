@@ -1,12 +1,14 @@
 """Versioned channel routing. No credentials or mutable configuration in jobs."""
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
 import sqlite3
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 ADAPTERS = {
@@ -430,29 +432,71 @@ def routing_for_payload(kind, payload):
     return operation_id, operation_mapping(operation_id) if operation_id else None
 
 
-def confirm_acceptance(payload):
-    """Linearize a managed acceptance immediately before the durable job commit."""
+def _seal_shadow(snapshot):
+    """Authenticate the server-owned payload used for crash-safe projection."""
+    from .provider_keys import _master_key
+    clean = dict(snapshot)
+    clean.pop('proof', None)
+    body = json.dumps(
+        clean, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+    ).encode('utf-8')
+    clean['proof'] = hmac.new(
+        _master_key(), b'hq-channel-shadow-v1\0' + body, hashlib.sha256,
+    ).hexdigest()
+    return clean
+
+
+def _valid_shadow(snapshot):
+    if not isinstance(snapshot, dict):
+        return False
+    supplied = str(snapshot.get('proof') or '')
+    return bool(supplied) and hmac.compare_digest(
+        supplied, _seal_shadow(snapshot).get('proof', ''),
+    )
+
+
+def _confirm_acceptance(connection, payload):
     binding = payload.get('_channel_binding') if isinstance(payload, dict) else None
     if not isinstance(binding, dict) or not binding.get('operation_id'):
         return True
     operation_id = str(binding['operation_id'])
     from .function_registry import operation
     contract = operation(operation_id)
+    mapping = operation_mapping(operation_id, connection=connection)
+    if (not mapping or mapping.get('state') != 'managed'
+            or int(mapping.get('revision') or 0) != int(binding.get('mapping_revision') or 0)
+            or mapping.get('channel') != binding.get('id')):
+        raise ValueError('功能映射已变化，请刷新后重新提交')
+    cfg = _mapping_channel(
+        binding.get('id'), contract, require_ready=True, connection=connection)
+    if (int(cfg['version']) != int(binding.get('version') or 0)
+            or cfg.get('adapter') != binding.get('adapter')
+            or cfg.get('model') != binding.get('model')):
+        raise ValueError('渠道版本已变化，请刷新后重新提交')
+    return True
+
+
+@contextmanager
+def acceptance_guard(payloads):
+    """Keep channel state immutable until the corresponding job commit finishes."""
+    payloads = list(payloads)
+    managed = [payload for payload in payloads
+               if isinstance(payload, dict)
+               and isinstance(payload.get('_channel_binding'), dict)
+               and payload['_channel_binding'].get('operation_id')]
+    if not managed:
+        yield
+        return
     with closing(db()) as c:
         c.execute('BEGIN IMMEDIATE')
-        mapping = operation_mapping(operation_id, connection=c)
-        if (not mapping or mapping.get('state') != 'managed'
-                or int(mapping.get('revision') or 0) != int(binding.get('mapping_revision') or 0)
-                or mapping.get('channel') != binding.get('id')):
-            raise ValueError('功能映射已变化，请刷新后重新提交')
-        cfg = _mapping_channel(
-            binding.get('id'), contract, require_ready=True, connection=c)
-        if (int(cfg['version']) != int(binding.get('version') or 0)
-                or cfg.get('adapter') != binding.get('adapter')
-                or cfg.get('model') != binding.get('model')):
-            raise ValueError('渠道版本已变化，请刷新后重新提交')
-        c.commit()
-    return True
+        try:
+            for payload in managed:
+                _confirm_acceptance(c, payload)
+            yield
+        finally:
+            # This transaction is a lock-backed read snapshot. Releasing it only
+            # after the job commit makes that commit the acceptance linearization.
+            c.rollback()
 
 
 def capture(kind, payload, preparation=False, invocation_source='web'):
@@ -472,17 +516,19 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
         try:
             from .function_registry import operation
             cfg = _mapping_channel(cid, operation(operation_id) or mapping['kind'])
-            clean['_channel_shadow'] = {
+            clean['_channel_shadow'] = _seal_shadow({
                 'operation_id': operation_id, 'mapping_revision': mapping['revision'],
+                'observation_id': uuid.uuid4().hex,
                 'id': cfg['id'], 'version': cfg['version'], 'adapter': cfg['adapter'],
                 'model': cfg['model'], 'invocation_source': source,
-            }
+            })
         except ValueError as exc:
-            clean['_channel_shadow'] = {
+            clean['_channel_shadow'] = _seal_shadow({
                 'operation_id': operation_id, 'mapping_revision': mapping['revision'],
+                'observation_id': uuid.uuid4().hex,
                 'id': cid, 'state': 'invalid', 'detail': str(exc)[:120],
                 'invocation_source': source,
-            }
+            })
         return _legacy_capture(kind, clean, preparation)
     from .function_registry import operation
     cfg = _mapping_channel(
@@ -502,23 +548,27 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
 
 def record_shadow(job_id, snapshot):
     """Persist a server-owned shadow observation without making a provider call."""
-    if not isinstance(snapshot, dict) or not snapshot.get('operation_id'):
+    if (not _valid_shadow(snapshot) or not snapshot.get('operation_id')
+            or not re.fullmatch(r'[0-9a-f]{32}', str(snapshot.get('observation_id') or ''))):
         return None
     public_snapshot = {key: snapshot.get(key) for key in (
-        'operation_id', 'mapping_revision', 'id', 'version', 'adapter',
+        'operation_id', 'mapping_revision', 'observation_id', 'id', 'version', 'adapter',
         'model', 'invocation_source', 'state', 'detail',
     ) if snapshot.get(key) not in (None, '')}
     now = time.time()
     with closing(db()) as c:
         c.execute('BEGIN IMMEDIATE')
+        rid = public_snapshot['observation_id']
         existing = c.execute(
-            "SELECT id FROM runs WHERE job_id=? AND kind='shadow' ORDER BY started DESC LIMIT 1",
-            (str(job_id),),
+            "SELECT r.job_id,s.snapshot FROM runs r JOIN run_snapshots s ON s.run_id=r.id "
+            "WHERE r.id=? AND r.kind='shadow'", (rid,),
         ).fetchone()
         if existing:
+            if (str(existing['job_id']) != str(job_id)
+                    or json.loads(existing['snapshot']) != public_snapshot):
+                raise ValueError('影子观察身份冲突，拒绝覆盖既有证据')
             c.commit()
-            return existing['id']
-        rid = uuid.uuid4().hex
+            return rid
         c.execute(
             'INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
             (rid, str(public_snapshot.get('id') or ''),
@@ -533,19 +583,6 @@ def record_shadow(job_id, snapshot):
         ))
         c.commit()
     return rid
-
-
-def delete_observations(run_ids):
-    """Remove observations whose corresponding job transaction rolled back."""
-    run_ids = [str(item) for item in run_ids if item]
-    if not run_ids:
-        return
-    placeholders = ','.join('?' for _ in run_ids)
-    with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
-        c.execute('DELETE FROM run_snapshots WHERE run_id IN (' + placeholders + ')', run_ids)
-        c.execute("DELETE FROM runs WHERE kind='shadow' AND id IN (" + placeholders + ')', run_ids)
-        c.commit()
 
 
 def rollback(actor, body):
