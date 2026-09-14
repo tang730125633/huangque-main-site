@@ -85,7 +85,15 @@ test('layout loader accepts wrapped and legacy contracts and exposes empty and r
     }});
   const ids=['cmLayout','cmSearch','cmSupplier','cmTransport','cmState','cmHistory','cmDrawer'];
   const elements=Object.fromEntries(ids.map(id=>[id,element(id)])),root=element('root');
-  let failure=null,response={layout:{video:{order:['grok'],default:'grok'},image:{order:['gpt'],default:'gpt'}}};
+  let failure=null,response={
+    layout:{video:{order:['grok'],default:'grok'},image:{order:['gpt','lechuang','xiaole'],default:'gpt'}},
+    effective_layout:{video:{order:['grok'],default:'grok'},image:{order:['gpt','lechuang','xiaole'],default:'gpt'}},
+    entries:{video:[{key:'grok',label:'果肉视频生成',visible:true,defaultable:true,status:'visible',reason:'主站显示'}],image:[
+      {key:'gpt',label:'黄雀引擎 2',visible:true,defaultable:true,status:'visible',reason:'主站显示'},
+      {key:'lechuang',label:'乐创 · 生图',visible:true,defaultable:true,status:'visible',reason:'主站显示',models:['GPT Image 2','GPT Image 2.5']},
+      {key:'xiaole',label:'果肉生图',visible:false,defaultable:false,status:'feature_off',reason:'功能开关未开启'}
+    ]}
+  };
   const context={window:null,document:{querySelector:()=>root,querySelectorAll:()=>[]}};context.window=context;
   vm.createContext(context);vm.runInContext(source,context);
   const workspace=context.initChannelWorkspace({
@@ -97,6 +105,10 @@ test('layout loader accepts wrapped and legacy contracts and exposes empty and r
   assert.match(elements.cmLayout.innerHTML,/正在读取前台布局/);
   await settle();
   assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:grok"/);
+  assert.match(elements.cmLayout.innerHTML,/乐创 · 生图/);
+  assert.match(elements.cmLayout.innerHTML,/GPT Image 2 · GPT Image 2.5/);
+  assert.match(elements.cmLayout.innerHTML,/功能开关未开启/);
+  assert.match(elements.cmLayout.innerHTML,/当前用户页预览/);
 
   response={video:{order:['talking'],default:'talking'},image:{order:['banana'],default:'banana'}};
   workspace.showTab('layout');await settle();

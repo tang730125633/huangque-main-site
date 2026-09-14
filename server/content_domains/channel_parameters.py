@@ -7,6 +7,7 @@ import json
 import time
 from contextlib import closing
 from . import channel_manager as store
+from . import channel_lifecycle, feature_flags
 
 LABELS={'size':'图片尺寸','quality':'生成质量','output_format':'文件格式','background':'背景',
         'ratio':'画面比例','resolution':'清晰度','duration':'时长（秒）'}
@@ -17,11 +18,24 @@ SIZES={'1024x1024':'1:1','1536x1024':'3:2','1024x1536':'2:3',
        '1024x1280':'4:5','1280x1024':'5:4','1024x768':'4:3','768x1024':'3:4',
        '1280x720':'16:9','720x1280':'9:16'}
 
-# 前台工作台布局：后台可调的渠道顺序与默认渠道。仅控制展示，可用性仍由功能开关决定。
-WORKBENCH_LAYOUT_KEYS = {
-    'video': ['grok', 'talking', 'cinematic', 'tryon', 'minimax', 'micro', 'sora', 'omni'],
-    'image': ['gpt', 'banana', 'seedream', 'xiaole', 'zelong2'],
+# 前台工作台入口目录：后台布局和用户页都从这里取名称与入口编号，避免两边各维护一份。
+WORKBENCH_ENTRY_CATALOG = {
+    'video': [
+        {'key':'grok','label':'果肉视频生成'}, {'key':'talking','label':'数字化 IP'},
+        {'key':'cinematic','label':'电影化身'}, {'key':'tryon','label':'换装换背景'},
+        {'key':'minimax','label':'麦克视频'}, {'key':'micro','label':'Seedance 视频'},
+        {'key':'sora','label':'Sora 2'}, {'key':'omni','label':'Omni 视频'},
+    ],
+    'image': [
+        {'key':'gpt','label':'黄雀引擎 2','provider':'openai'},
+        {'key':'banana','label':'纳米香蕉','provider':'gemini'},
+        {'key':'seedream','label':'黄雀引擎 1','provider':'seedance'},
+        {'key':'lechuang','label':'乐创 · 生图','managed_group':'lechuang'},
+        {'key':'xiaole','label':'果肉生图','feature':'image_xiaole'},
+        {'key':'zelong2','label':'泽龙2生图','host':'zelong.huangquechuanmei.com'},
+    ],
 }
+WORKBENCH_LAYOUT_KEYS = {page:[item['key'] for item in items] for page,items in WORKBENCH_ENTRY_CATALOG.items()}
 DEFAULT_WORKBENCH_LAYOUT = {
     'video': {'order': list(WORKBENCH_LAYOUT_KEYS['video']), 'default': 'grok'},
     'image': {'order': list(WORKBENCH_LAYOUT_KEYS['image']), 'default': 'gpt'},
@@ -54,19 +68,89 @@ def layout_state():
     return _clean_layout(json.loads(row[0]) if row else {})
 
 
-def admin_layout_state():
-    """Return the stable admin API envelope used by both load and save."""
-    return {'layout': layout_state()}
+def _published_items():
+    result=[]
+    with closing(store.db()) as c:
+        for row in c.execute('SELECT config FROM mappings'):
+            m=json.loads(row[0])
+            if not m.get('enabled'):continue
+            ch=c.execute('SELECT version,enabled FROM channels WHERE id=?',(m['channel'],)).fetchone()
+            if not ch or not ch['enabled']:continue
+            cfg=json.loads(c.execute('SELECT config FROM versions WHERE channel=? AND version=?',(m['channel'],ch['version'])).fetchone()[0])
+            spec=cfg.get('parameters')
+            if not spec or cfg.get('_lifecycle',{}).get('deleted'):continue
+            cfg.update(id=m['channel'],version=ch['version'])
+            result.append(dict(kind=m['kind'],front=m['front'],label=m['label'],revision=token(cfg),
+                fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
+                reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
+                mask_enabled=spec.get('mask') is True))
+    return result
+
+
+def _lechuang_items(items):
+    known={'gpt-image-2','gpt-image-2.5-flare'}
+    return [item for item in items if item.get('kind')=='image' and
+            (item.get('front') in known or '乐创' in str(item.get('label') or ''))]
+
+
+def workbench_entries(published_items=None, hostname='huangquechuanmei.com'):
+    published_items = _published_items() if published_items is None else published_items
+    legacy = channel_lifecycle.legacy_states()
+    hostname = str(hostname or '').strip().lower().split(':',1)[0]
+    result={}
+    for page,catalog in WORKBENCH_ENTRY_CATALOG.items():
+        entries=[]
+        for source in catalog:
+            item=dict(source);visible=True;defaultable=True;status='visible';reason='主站显示';models=[]
+            provider=item.get('provider')
+            if provider and legacy.get(provider,{}).get('enabled') is False:
+                defaultable=False;status='provider_off';reason='供应商已暂停新任务'
+            if item.get('managed_group')=='lechuang':
+                matches=_lechuang_items(published_items)
+                models=[str(x.get('label') or x.get('front') or '') for x in matches]
+                visible=defaultable=bool(matches)
+                if not matches:status='unconfigured';reason='尚无已启用且已发布参数的渠道映射'
+            if item.get('feature') and not feature_flags.is_enabled(item['feature']):
+                visible=defaultable=False;status='feature_off';reason='功能开关未开启'
+            required_host=item.get('host')
+            if required_host and hostname!=required_host:
+                visible=defaultable=False;status='site_only';reason='仅在专属站点 '+required_host+' 显示'
+            entries.append(dict(key=item['key'],label=item['label'],visible=visible,
+                                defaultable=defaultable,status=status,reason=reason,models=models))
+        result[page]=entries
+    return result
+
+
+def _effective_layout(layout, entries):
+    effective={}
+    for page,cfg in layout.items():
+        available={x['key'] for x in entries.get(page,[]) if x['visible'] and x['defaultable']}
+        default=cfg.get('default')
+        if default not in available:
+            default=next((key for key in cfg.get('order',[]) if key in available),'')
+        effective[page]={'order':list(cfg.get('order',[])),'default':default}
+    return effective
+
+
+def admin_layout_state(hostname='huangquechuanmei.com'):
+    """Return saved layout plus the user-visible, availability-aware directory."""
+    layout=layout_state();entries=workbench_entries(hostname=hostname)
+    return {'layout':layout,'effective_layout':_effective_layout(layout,entries),'entries':entries}
 
 
 def layout_save(actor, body):
     value = _clean_layout(body.get('layout') if isinstance(body, dict) else {}, strict=True)
+    entries=workbench_entries()
+    for page,cfg in value.items():
+        allowed={item['key'] for item in entries.get(page,[]) if item['defaultable'] and item['visible']}
+        if cfg['default'] not in allowed:
+            raise ValueError(page + ' 默认渠道当前不可用，请选择可接单渠道')
     with closing(store.db()) as c:
         c.execute('BEGIN IMMEDIATE')
         c.execute('INSERT OR REPLACE INTO settings VALUES(4,?)', (json.dumps(value, ensure_ascii=False),))
         store._audit(c, 'layout.save', 'workbench', actor)
         c.commit()
-    return {'layout': value}
+    return admin_layout_state()
 
 
 def capabilities(cfg,profile=None):
@@ -237,23 +321,10 @@ def historical(payload):
     except (ValueError,TypeError,KeyError):raise ValueError('参数版本无效，请刷新页面') from None
 
 
-def public_catalog():
-    result=[]
-    with closing(store.db()) as c:
-        for row in c.execute('SELECT config FROM mappings'):
-            m=json.loads(row[0])
-            if not m.get('enabled'):continue
-            ch=c.execute('SELECT version,enabled FROM channels WHERE id=?',(m['channel'],)).fetchone()
-            if not ch or not ch['enabled']:continue
-            cfg=json.loads(c.execute('SELECT config FROM versions WHERE channel=? AND version=?',(m['channel'],ch['version'])).fetchone()[0])
-            spec=cfg.get('parameters')
-            if not spec or cfg.get('_lifecycle',{}).get('deleted'):continue
-            cfg.update(id=m['channel'],version=ch['version'])
-            result.append(dict(kind=m['kind'],front=m['front'],label=m['label'],revision=token(cfg),
-                fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
-                reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
-                mask_enabled=spec.get('mask') is True))
-    return {'items':result,'refresh_seconds':15,'layout':layout_state()}
+def public_catalog(hostname='huangquechuanmei.com'):
+    result=_published_items();entries=workbench_entries(result,hostname)
+    layout=_effective_layout(layout_state(),entries)
+    return {'items':result,'refresh_seconds':15,'layout':layout,'layout_entries':entries}
 
 
 def apply(cfg,payload,required=True):

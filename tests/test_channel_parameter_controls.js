@@ -75,10 +75,72 @@ test('both workbenches stay visible until a managed channel actually takes over'
   // 待确认的提交需要重新展示面板
   assert.match(source,/if\(pending\)\{managedActive=true;render\(\)/);
   // 前台布局仍由面板脚本在 load 中应用，与是否接管无关
-  assert.match(source,/if\(!layoutApplied\)applyWorkbenchLayout\(d\.layout\)/);
+  assert.match(source,/applyWorkbenchLayout\(d\.layout,d\.layout_entries\)/);
+  assert.match(source,/entry\.visible!==false/);
 });
 test('image panel exposes a direct entry to the mask inpainting engine',()=>{
   const source=fs.readFileSync(path.join(__dirname,'../site/workbench/channel-parameters.js'),'utf8');
   assert.match(source,/kind==='image'\?'<button id="cpInpaintEntry">涂抹局部修图（黄雀引擎 2）<\/button>':''/);
   assert.match(source,/window\.HQBananaWorkbench\?\.selectEngine\?\.\('gpt'\)/);
+});
+
+function imageLayoutRuntime(search,response,current='xiaole'){
+  const source=fs.readFileSync(path.join(__dirname,'../site/workbench/channel-parameters.js'),'utf8');
+  const cards=Object.fromEntries(['gpt','xiaole'].map(key=>[key,{style:{},attrs:{},setAttribute(name,value){this.attrs[name]=value}}]));
+  const row={querySelector(selector){const match=selector.match(/data-engine="([^"]+)"/);return match?cards[match[1]]:null},appendChild(){}};
+  const legacy={hidden:false,setAttribute(){}};
+  const host={dataset:{kind:'image'},hidden:false,className:'',innerHTML:'',querySelector(){return null},scrollIntoView(){}};
+  let interval=null,selected=[];
+  const context={
+    window:null,document:{hidden:false,getElementById:id=>id==='publishedChannelParameters'?host:id==='engineRow'?row:null,querySelector:s=>s==='.banana-workspace'?legacy:null},
+    location:{search,href:'https://huangquechuanmei.com/workbench/banana.html'+search},URLSearchParams,URL,
+    sessionStorage:{getItem(){return null},setItem(){}},crypto:{randomUUID:()=> 'id'},confirm:()=>true,
+    fetch:async url=>({ok:true,status:200,json:async()=>url==='/api/auth/me'?{user:{username:'u'}}:response}),
+    setInterval(fn){interval=fn;return 1},setTimeout(){return 1},clearInterval(){},FileReader:function(){},
+  };
+  context.window=context;context.window.ChannelParameterControls={esc:String,mount(){}};
+  context.window.HQBananaWorkbench={getEngine:()=>current,selectEngine(key){current=key;selected.push(key)}};
+  context.window.addEventListener=()=>{};
+  vm.createContext(context);vm.runInContext(source,context);
+  const settle=async()=>{for(let i=0;i<4;i++)await new Promise(resolve=>setImmediate(resolve))};
+  return {cards,selected,settle,current:()=>current,refresh:async()=>{interval();await settle()}};
+}
+
+test('unavailable image deep link falls back to the effective default',async()=>{
+  const runtime=imageLayoutRuntime('?engine=xiaole',{
+    items:[],layout:{image:{order:['gpt','xiaole'],default:'gpt'}},layout_entries:{image:[
+      {key:'gpt',visible:true,defaultable:true},{key:'xiaole',visible:true,defaultable:false}
+    ]}
+  });
+  await runtime.settle();
+  assert.equal(runtime.current(),'gpt');
+  assert.deepEqual(runtime.selected,['gpt']);
+});
+
+test('legacy banana variant deep links keep the compatible banana engine',async()=>{
+  for(const variant of ['nb2','pro']){
+    const runtime=imageLayoutRuntime('?engine='+variant,{
+      items:[],layout:{image:{order:['gpt','banana'],default:'gpt'}},layout_entries:{image:[
+        {key:'gpt',visible:true,defaultable:true},{key:'banana',visible:true,defaultable:true}
+      ]}
+    },'banana');
+    await runtime.settle();
+    assert.equal(runtime.current(),'banana');
+    assert.deepEqual(runtime.selected,[]);
+  }
+});
+
+test('catalog refresh moves an active engine away when its feature turns off',async()=>{
+  const response={items:[],layout:{image:{order:['gpt','xiaole'],default:'xiaole'}},layout_entries:{image:[
+    {key:'gpt',visible:true,defaultable:true},{key:'xiaole',visible:true,defaultable:true}
+  ]}};
+  const runtime=imageLayoutRuntime('',response);
+  await runtime.settle();
+  response.layout.image.default='gpt';
+  response.layout_entries.image[1]={key:'xiaole',visible:false,defaultable:false};
+  await runtime.refresh();
+  assert.equal(runtime.cards.xiaole.style.display,'none');
+  assert.equal(runtime.cards.xiaole.attrs['aria-hidden'],'true');
+  assert.equal(runtime.current(),'gpt');
+  assert.deepEqual(runtime.selected,['gpt']);
 });

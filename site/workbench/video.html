@@ -4922,11 +4922,11 @@
   loadVideoHistory();
   resumeTrackedVideoTask();
   // 后台「前台布局」配置通过 channel-parameters.js 应用：暴露切换函数供其调用
-  window.HQVideoWorkbench={updateFunction:updateFunction};
+  window.HQVideoWorkbench={updateFunction:updateFunction,getFunction:function(){return videoFunction;}};
 })();
 </script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
-<script src="/workbench/channel-parameters.js?v=26139824"></script>
+<script src="/workbench/channel-parameters.js?v=29240e2a"></script>
 </body>
 </html>

@@ -3,8 +3,6 @@
     const {el,esc}=env,C=window.ChannelCatalog,api=env.api;
     let data={},rows=[],tab='catalog',selected=null,returnFocus=null;
     let layoutLoading=false;
-    const LAYOUT_NAMES={video:{grok:'果肉视频生成',talking:'数字化 IP',cinematic:'电影化身',tryon:'换装换背景',minimax:'麦克视频',micro:'Seedance 视频',sora:'Sora 2',omni:'Omni 视频'},
-      image:{gpt:'黄雀引擎 2',banana:'纳米香蕉',seedream:'黄雀引擎 1',xiaole:'果肉生图',zelong2:'泽龙2生图'}};
     const filters={category:'all',q:'',supplier:'',transport:'',status:'',history:false};
     const date=n=>n?new Date(n*1000).toLocaleString():'未采集';
     const table=(head,body)=>'<div class="cm-table-scroll"><table><thead><tr>'+head.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+body.join('')+'</tbody></table></div>';
@@ -20,17 +18,26 @@
       return '<div class="cm-row-actions">'+button(c)+edit+modelButton+(c.source==='managed'?'<button data-parameters="'+esc(c.id)+'">参数</button>':'')+toggle+'<details><summary>更多</summary>'+remove+'</details></div>';
     }
     function showTab(name){tab=name;document.querySelectorAll('[data-cm-panel]').forEach(n=>n.hidden=n.dataset.cmPanel!==name);document.querySelectorAll('[data-cm-tab]').forEach(n=>{n.classList.toggle('active',n.dataset.cmTab===name);n.setAttribute('aria-pressed',String(n.dataset.cmTab===name))});if(name==='layout')loadLayout()}
-    function renderLayout(state){
+    function renderLayout(state,catalog,effectiveState){
       const host=el('cmLayout');if(!host)return;
-      const layout=state||{};
+      const layout=state||{},effective=effectiveState||layout,directory=catalog||{};
       const page=key=>{
-        const cfg=layout[key]||{},order=cfg.order||[],def=cfg.default||(order[0]||'');
-        const items=order.map((k,i)=>'<div class="cm-layout-row" data-layout-row="'+key+':'+k+'"><button type="button" data-layout-move="'+key+':'+k+':-1" '+(i===0?'disabled':'')+' aria-label="上移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↑</button><button type="button" data-layout-move="'+key+':'+k+':1" '+(i===order.length-1?'disabled':'')+' aria-label="下移 '+esc(LAYOUT_NAMES[key]?.[k]||k)+'">↓</button><span>'+esc(LAYOUT_NAMES[key]?.[k]||k)+'</span><label><input type="radio" name="layoutDefault_'+key+'" value="'+esc(k)+'" '+(def===k?'checked':'')+'> 默认</label></div>').join('');
-        return '<div class="cm-layout-page"><h4>'+(key==='video'?'视频页':'图片页')+'</h4><p class="muted">用上移/下移调整渠道顺序，单选默认渠道。保存后用户页面 15 秒内自动应用；可用性仍由功能开关控制。</p><div class="cm-layout-list">'+(items||'<div class="empty cm-layout-empty">当前页面没有可排列的功能。</div>')+'</div></div>';
+        const cfg=layout[key]||{},order=cfg.order||[],def=effective[key]?.default||(cfg.default||order[0]||'');
+        const entries=Array.isArray(directory[key])?directory[key]:order.map(k=>({key:k,label:k,visible:true,defaultable:true,reason:'等待状态目录'}));
+        const byKey=Object.fromEntries(entries.map(item=>[item.key,item]));
+        const items=order.map((k,i)=>{
+          const meta=byKey[k]||{key:k,label:k,visible:false,defaultable:false,reason:'入口目录中不存在'};
+          const unavailable=meta.visible===false||meta.defaultable===false;
+          const models=(meta.models||[]).join(' · ');
+          return '<div class="cm-layout-row '+(unavailable?'unavailable':'')+'" data-layout-row="'+key+':'+k+'"><button type="button" data-layout-move="'+key+':'+k+':-1" '+(i===0?'disabled':'')+' aria-label="上移 '+esc(meta.label)+'">↑</button><button type="button" data-layout-move="'+key+':'+k+':1" '+(i===order.length-1?'disabled':'')+' aria-label="下移 '+esc(meta.label)+'">↓</button><span><b>'+esc(meta.label)+'</b><small>'+esc(models||meta.reason||'')+'</small></span><em class="cm-layout-badge '+(unavailable?'off':'on')+'">'+(meta.visible===false?'用户页隐藏':meta.defaultable===false?'暂停接单':'用户页显示')+'</em><label><input type="radio" name="layoutDefault_'+key+'" value="'+esc(k)+'" '+(def===k?'checked':'')+' '+(meta.defaultable===false||meta.visible===false?'disabled':'')+'> 默认</label></div>';
+        }).join('');
+        const preview=order.map(k=>byKey[k]).filter(item=>item&&item.visible!==false).map(item=>'<span class="cm-layout-preview-item">'+esc(item.label)+(item.key===def?' · 默认':'')+'</span>').join('');
+        const fallback=cfg.default&&cfg.default!==def?'<p class="cm-layout-warning">已配置的默认渠道当前不可用，用户页会自动改用「'+esc(byKey[def]?.label||def||'无可用渠道')+'」。</p>':'';
+        return '<div class="cm-layout-page"><h4>'+(key==='video'?'视频页':'图片页')+'</h4><p class="muted">上移/下移决定用户页顺序；只有当前可接单的渠道能设为默认。保存后约 15 秒生效。</p>'+fallback+'<div class="cm-layout-list">'+(items||'<div class="empty cm-layout-empty">当前页面没有可排列的功能。</div>')+'</div><div class="cm-layout-preview"><b>当前用户页预览</b><div>'+(preview||'<span class="muted">当前没有可显示渠道</span>')+'</div></div></div>';
       };
       host.innerHTML='<div class="section-head"><h3>前台布局（渠道顺序与默认）</h3><button type="button" id="cmLayoutSave" class="primary">保存布局</button></div>'+page('video')+page('image')+'<p id="cmLayoutStatus" role="status"></p>';
-      const save=host.querySelector('#cmLayoutSave'),hasCompleteLayout=['video','image'].every(key=>(layout[key]?.order||[]).length);
-      save.disabled=!hasCompleteLayout;if(!hasCompleteLayout)save.title='视频页和图片页都需要至少一个可排列功能';
+      const save=host.querySelector('#cmLayoutSave'),hasCompleteLayout=['video','image'].every(key=>(layout[key]?.order||[]).length&&(!Array.isArray(directory[key])||directory[key].some(item=>item.visible!==false&&item.defaultable!==false)));
+      save.disabled=!hasCompleteLayout;if(!hasCompleteLayout)save.title='视频页和图片页都需要至少一个可接单的默认渠道';
       save.onclick=async e=>{
         const btn=e.currentTarget,status=el('cmLayoutStatus');btn.disabled=true;status.textContent='';
         const collect=key=>{
@@ -57,7 +64,7 @@
         const result=await api('/api/admin/channel-manager/layout-state',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
         const layout=result?.layout||(result&&(result.video||result.image)?result:null);
         if(!layout)throw Error('布局接口未返回有效配置');
-        renderLayout(layout);
+        renderLayout(layout,result?.entries,result?.effective_layout);
       }catch(error){renderLayoutError(error)}
       finally{layoutLoading=false}
     }

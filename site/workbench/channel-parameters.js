@@ -14,22 +14,42 @@
   const storageKey=()=> 'hq_parameter_request:'+owner+':'+kind;
   function savePending(){sessionStorage.setItem(storageKey(),JSON.stringify(pending))}
   const note=text=>{const n=host.querySelector('#cpUserNote');if(n)n.textContent=text};
-  function applyWorkbenchLayout(layout){
-    layoutApplied=true;
+  function applyWorkbenchLayout(layout,entries){
+    const applyDefault=!layoutApplied;layoutApplied=true;
     if(!layout||typeof layout!=='object')return;
     try{
       const q=new URLSearchParams(location.search);
+      const canUse=entry=>!!entry&&entry.visible!==false&&entry.defaultable!==false;
       if(kind==='image'){
         const row=document.getElementById('engineRow');if(!row)return;
+        const hasCatalog=Array.isArray(entries?.image),catalog=hasCatalog?entries.image:[];
+        catalog.forEach(entry=>{
+          const item=row.querySelector('[data-engine="'+entry.key+'"]');if(!item)return;
+          const visible=entry.visible!==false;item.style.display=visible?'':'none';item.setAttribute('aria-hidden',visible?'false':'true');
+        });
         (layout.image?.order||[]).forEach(key=>{const el=row.querySelector('[data-engine="'+key+'"]');if(el)row.appendChild(el);});
         const def=layout.image?.default;
-        if(def&&!q.has('engine')&&typeof window.HQBananaWorkbench?.selectEngine==='function')window.HQBananaWorkbench.selectEngine(def);
+        const api=window.HQBananaWorkbench,current=api?.getEngine?.();
+        const requestedRaw=q.get('engine'),requested=['nb2','pro'].includes(requestedRaw)?'banana':requestedRaw;
+        const requestedEntry=catalog.find(entry=>entry.key===requested);
+        const currentEntry=catalog.find(entry=>entry.key===current);
+        let selected='';
+        if(applyDefault)selected=q.has('engine')?(hasCatalog?(canUse(requestedEntry)?requested:def):''):def;
+        else if(hasCatalog&&current&&!canUse(currentEntry))selected=def;
+        if(selected&&selected!==current&&typeof api?.selectEngine==='function')api.selectEngine(selected);
       }else{
         const tabs=document.querySelector('.function-tabs');if(!tabs)return;
+        const hasCatalog=Array.isArray(entries?.video),catalog=hasCatalog?entries.video:[];
+        catalog.forEach(entry=>{
+          const item=tabs.querySelector('[data-function="'+entry.key+'"]');if(!item)return;
+          const visible=entry.visible!==false;item.hidden=!visible;item.setAttribute('aria-hidden',visible?'false':'true');
+        });
         (layout.video?.order||[]).forEach(key=>{const el=tabs.querySelector('[data-function="'+key+'"]');if(el)tabs.appendChild(el);});
         const def=layout.video?.default;
         const hasDeepLink=['function','prefill','prompt','task','action'].some(k=>q.has(k));
-        if(def&&!hasDeepLink&&typeof window.HQVideoWorkbench?.updateFunction==='function')window.HQVideoWorkbench.updateFunction(def);
+        const api=window.HQVideoWorkbench,current=api?.getFunction?.(),currentEntry=catalog.find(entry=>entry.key===current);
+        const shouldFallback=hasCatalog&&current&&!canUse(currentEntry);
+        if(def&&(shouldFallback||(applyDefault&&!hasDeepLink))&&def!==current&&typeof api?.updateFunction==='function')api.updateFunction(def);
       }
     }catch(error){}
   }
@@ -132,7 +152,7 @@
     if(fetching||busy)return;fetching=true;
     try{
       const d=await request('/api/gen/channel-parameters'),next=d.items.filter(i=>i.kind===kind);
-      if(!layoutApplied)applyWorkbenchLayout(d.layout);
+      applyWorkbenchLayout(d.layout,d.layout_entries);
       const changed=JSON.stringify(items)!==JSON.stringify(next);items=next;ready=true;
       if(changed||!host.innerHTML)render();
     }catch(error){if(host.innerHTML)note('参数暂时无法刷新；提交时会再次校验。')}
