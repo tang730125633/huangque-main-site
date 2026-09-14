@@ -370,23 +370,7 @@
   });
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:1};
-  var xiaoleCard=document.querySelector('#engineRow [data-engine="xiaole"]');
-  function setXiaoleAvailable(enabled){
-    if(!xiaoleCard) return;
-    xiaoleCard.style.display=enabled?'':'none';
-    xiaoleCard.setAttribute('aria-hidden',enabled?'false':'true');
-    if(!enabled&&engine==='xiaole') selectEngine('gpt');
-    if(enabled&&new URLSearchParams(location.search).get('engine')==='xiaole') selectEngine('xiaole');
-  }
-  fetch('/api/gen/health',{cache:'no-store'}).then(function(response){
-    if(!response.ok) throw new Error('health unavailable');
-    return response.json();
-  }).then(function(data){setXiaoleAvailable(data.image_xiaole_enabled===true);})
-    .catch(function(){setXiaoleAvailable(false);});
-  var zelongCard=document.querySelector('#engineRow [data-engine="zelong2"]');
-  if(zelongCard && location.hostname==='zelong.huangquechuanmei.com'){
-    zelongCard.style.display=''; zelongCard.setAttribute('aria-hidden','false');
-  }
+  // 引擎卡的显示状态由 /api/gen/channel-parameters 的统一入口目录控制。
   var COUNT_OPTIONS=[1,2,4];
   // 乐创托管线路：以一张引擎卡接入老工作台，参数与点数来自后台已发布的参数契约。
   // 参数区沿用其他引擎的卡片行布局（比例 / 清晰度 / 生成数量 / 背景），选中值再解析成契约里的合法组合，
@@ -1666,6 +1650,6 @@
 </script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
-<script src="/workbench/channel-parameters.js?v=26139824"></script>
+<script src="/workbench/channel-parameters.js?v=6567ca8c"></script>
 </body>
 </html>

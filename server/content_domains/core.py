@@ -4826,7 +4826,8 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         if p == '/api/gen/channel-parameters':
             from .channel_parameters import public_catalog
-            try:return self._send(200,public_catalog())
+            hostname=str(self.headers.get('Host') or '').strip().lower().split(':',1)[0]
+            try:return self._send(200,public_catalog(hostname))
             except (OSError,sqlite3.Error):return self._send(503,{'detail':'模型参数暂不可用'})
         audio_domain, points_domain, video_domain = _domains()
         avatar_prefix = "/api/gen/text-video/avatar/"

@@ -3,6 +3,7 @@ import json
 import sqlite3
 import base64
 import io
+import re
 import sys
 import types
 from pathlib import Path
@@ -253,13 +254,35 @@ class ParameterTests(unittest.TestCase):
     def test_workbench_layout_defaults_roundtrip_and_strict_save(self):
         state=params.layout_state()
         self.assertEqual(state['video']['order'][0],'grok');self.assertEqual(state['image']['default'],'gpt')
-        self.assertEqual(params.admin_layout_state(),{'layout':state})
+        self.assertEqual(params.admin_layout_state()['layout'],state)
         self.assertIn('layout',params.public_catalog())
-        saved=params.layout_save('admin',{'layout':{'video':{'order':['talking','grok','cinematic','tryon','minimax','micro','sora','omni'],'default':'talking'},'image':{'order':['gpt','banana','seedream','xiaole','zelong2'],'default':'gpt'}}})
+        saved=params.layout_save('admin',{'layout':{'video':{'order':['talking','grok','cinematic','tryon','minimax','micro','sora','omni'],'default':'talking'},'image':{'order':['gpt','banana','seedream','lechuang','xiaole','zelong2'],'default':'gpt'}}})
         self.assertEqual(saved['layout']['video']['order'][0],'talking')
         self.assertEqual(params.layout_state()['video']['default'],'talking')
         with self.assertRaises(ValueError):
             params.layout_save('admin',{'layout':{'video':{'order':['grok'],'default':'grok'},'image':{'order':[],'default':''}}})
+
+    def test_image_layout_catalog_matches_workbench_and_resolves_visibility(self):
+        html=(Path(__file__).resolve().parents[1]/'site'/'workbench'/'banana.html').read_text(encoding='utf-8')
+        dom=set(re.findall(r'data-engine="([a-zA-Z0-9_-]+)"',html))
+        self.assertEqual(dom,set(params.WORKBENCH_LAYOUT_KEYS['image']))
+        self.mapping(front='gpt-image-2');self.publish()
+        with patch('server.content_domains.feature_flags.is_enabled',side_effect=lambda key:key!='image_xiaole'), \
+             patch('server.content_domains.channel_lifecycle.legacy_states',return_value={'openai':{'enabled':False}}):
+            state=params.admin_layout_state()
+        image={item['key']:item for item in state['entries']['image']}
+        self.assertTrue(image['lechuang']['visible']);self.assertTrue(image['lechuang']['defaultable'])
+        self.assertEqual(image['lechuang']['models'],['黄雀模型'])
+        self.assertFalse(image['xiaole']['visible']);self.assertIn('功能开关',image['xiaole']['reason'])
+        self.assertFalse(image['zelong2']['visible']);self.assertIn('专属站点',image['zelong2']['reason'])
+        self.assertTrue(image['gpt']['visible']);self.assertFalse(image['gpt']['defaultable'])
+        self.assertNotEqual(state['effective_layout']['image']['default'],'gpt')
+
+    def test_unavailable_image_entry_cannot_be_saved_as_default(self):
+        layout=params.layout_state();layout['image']['default']='xiaole'
+        with patch('server.content_domains.feature_flags.is_enabled',return_value=False), \
+             self.assertRaisesRegex(ValueError,'默认'):
+            params.layout_save('admin',{'layout':layout})
 
     def test_admin_layout_state_route_returns_wrapped_contract(self):
         import server.admin_api as admin

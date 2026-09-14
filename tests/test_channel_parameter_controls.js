@@ -75,7 +75,8 @@ test('both workbenches stay visible until a managed channel actually takes over'
   // 待确认的提交需要重新展示面板
   assert.match(source,/if\(pending\)\{managedActive=true;render\(\)/);
   // 前台布局仍由面板脚本在 load 中应用，与是否接管无关
-  assert.match(source,/if\(!layoutApplied\)applyWorkbenchLayout\(d\.layout\)/);
+  assert.match(source,/applyWorkbenchLayout\(d\.layout,d\.layout_entries\)/);
+  assert.match(source,/entry\.visible!==false/);
 });
 test('image panel exposes a direct entry to the mask inpainting engine',()=>{
   const source=fs.readFileSync(path.join(__dirname,'../site/workbench/channel-parameters.js'),'utf8');
