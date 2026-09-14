@@ -52,6 +52,8 @@ PRIORITY_NODES = {
 }
 PRIORITY_WINDOW = max(1, int(os.environ.get("RELAY_PRIORITY_WINDOW", "20")))
 _LAST_CLAIM = {}          # node -> 最近一次来领活的时间（内存态，重启后重新学习）
+_LAST_HEARTBEAT = {}      # node -> 最近一次独立遥测心跳，不参与“是否有空位”判断
+_NODE_GPU = {}            # node -> 最近一次 GPU 遥测
 # 节点心跳：轮询器空闲时每 POLL_IDLE(默认 5) 秒来问一次，所以「90 秒没来过」= 掉线。
 # 以前中转器只能靠 PRIORITY_WINDOW(20 秒) 猜「它还有没有空位」，**看不出节点死活** ——
 # 节点挂了，任务就静静躺在队列里，没有任何信号。现在 /health 直接报每台节点的
@@ -86,6 +88,26 @@ def _node_record(node, ok, now, detail=""):
         st["until"] = now + FAIL_COOLDOWN
         print("[render-relay] ⚠️ 节点 %s 连续失败 %d 次，熔断 %d 秒不再派活：%s"
               % (node, st["n"], FAIL_COOLDOWN, str(detail)[:160]), flush=True)
+
+
+def _clean_gpu(value):
+    if not isinstance(value, dict):
+        return None
+    try:
+        out = {
+            "name": str(value.get("name") or "")[:96],
+            "utilization": max(0.0, min(100.0, float(value["utilization"]))),
+            "memory_used": max(0, int(value["memory_used"])),
+            "memory_total": max(0, int(value["memory_total"])),
+            "temperature": float(value["temperature"]),
+            "power": max(0.0, float(value["power"])),
+            "sampled_at": int(value["sampled_at"]),
+        }
+        encoder = value.get("encoder")
+        out["encoder"] = None if encoder is None else max(0.0, min(100.0, float(encoder)))
+        return out
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
 
 
 def _should_yield_to_idler(node, now):
@@ -370,8 +392,8 @@ class Handler(BaseHTTPRequestHandler):
             # 用户会直接收到「渠道繁忙」，而让任务排队等节点回来往往才是对的。
             now = _now()
             nodes = {}
-            for name in set(per_node) | set(_LAST_CLAIM):
-                seen = _LAST_CLAIM.get(name)
+            for name in set(per_node) | set(_LAST_CLAIM) | set(_LAST_HEARTBEAT):
+                seen = _LAST_HEARTBEAT.get(name, _LAST_CLAIM.get(name))
                 age = None if seen is None else max(0, int(now - seen))
                 nodes[name] = {
                     "online": age is not None and age <= NODE_ONLINE_SECONDS,
@@ -391,6 +413,33 @@ class Handler(BaseHTTPRequestHandler):
                 if field in up:
                     body[field] = up[field]
             return self._send(200 if ok else 503, body)
+
+        if p == "/v1/telemetry":
+            if not self._auth(RELAY_TOKEN):
+                return self._send(401, {"error": "unauthorized"})
+            with _db() as conn:
+                per_node = {
+                    str(row[0]): int(row[1])
+                    for row in conn.execute(
+                        "SELECT node, COUNT(*) FROM jobs WHERE status='running'"
+                        " AND node IS NOT NULL AND node != '' GROUP BY node")
+                }
+            now = _now()
+            nodes = {}
+            for name in set(per_node) | set(_LAST_CLAIM) | set(_LAST_HEARTBEAT):
+                seen = _LAST_HEARTBEAT.get(name, _LAST_CLAIM.get(name))
+                age = None if seen is None else max(0, int(now - seen))
+                node = {
+                    "online": age is not None and age <= NODE_ONLINE_SECONDS,
+                    "last_seen_seconds": age,
+                    "running": per_node.get(name, 0),
+                }
+                gpu = dict(_NODE_GPU.get(name) or {})
+                if gpu:
+                    gpu["sample_age_seconds"] = max(0, int(now - gpu["sampled_at"]))
+                    node["gpu"] = gpu
+                nodes[name] = node
+            return self._send(200, {"ok": True, "nodes": nodes})
 
         if p.startswith("/v1/jobs/"):
             jid = p[len("/v1/jobs/"):].strip()
@@ -562,6 +611,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # ---- 节点侧 ----
+        if p == "/v1/heartbeat":
+            if not self._auth(NODE_TOKEN):
+                return self._send(401, {"error": "unauthorized"})
+            body = self._body() or {}
+            node = str(body.get("node") or "").strip()[:64]
+            if not node:
+                return self._send(400, {"error": "invalid_request"})
+            _LAST_HEARTBEAT[node] = _now()
+            gpu = _clean_gpu(body.get("gpu"))
+            if gpu is not None:
+                _NODE_GPU[node] = gpu
+            return self._send(200, {"ok": True})
+
         if p == "/v1/claim":
             if not self._auth(NODE_TOKEN):
                 return self._send(401, {"error": "unauthorized"})
@@ -573,6 +635,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"job": None, "deferred": "node_cooldown"})
             # 先记时间戳（被拒也要记，否则高优先级节点的「还在轮询」永远学不到）
             _LAST_CLAIM[node] = now
+            _LAST_HEARTBEAT[node] = now
             if node not in PRIORITY_NODES and _priority_has_room(now):
                 # 高优先级线路还有空位：本节点这次不领，让给它。
                 # 返回 200 + job=None（与「暂时没活」同形），轮询器会照常隔几秒再来问。
