@@ -148,10 +148,10 @@
       const management=item?.management;if(!management?.uid)return '';
       if(management.kind==='managed_channel'){
         const id=management.uid.replace(/^managed:/,'');
-        return '<button type="button" class="mini primary" data-edit="'+esc(id)+'">修改 API Key 与 Base URL</button>';
+        return '<button type="button" class="mini primary" data-cm-managed-edit="'+esc(id)+'">修改 API Key 与 Base URL</button>';
       }
       const label=management.kind==='provider_pool'?'修改 API Key 与 Base URL':'查看服务器托管凭据';
-      return '<button type="button" class="mini" data-cm-inline-route="'+esc(management.uid)+'">'+esc(label)+'</button>';
+      return '<button type="button" class="mini" data-cm-inline-route="'+esc(management.uid)+'" data-cm-inline-kind="'+esc(management.kind)+'">'+esc(label)+'</button>';
     }
     function channelDetail(item,prefix){
       if(!item)return '<div class="cm-route"><strong>'+esc(prefix+'：未配置')+'</strong></div>';
@@ -171,13 +171,13 @@
       const product=(page?.products||[]).find(item=>item.key===productKey);
       const model=(product?.models||[]).find(item=>item.key===modelKey);
       if(!page||!product||!model)return;
-      env.closeLegacy();closeGuard=null;selected=null;shell(product.label+' · '+model.label);
+      if(!closeLegacy())return;closeGuard=null;selected=null;shell(product.label+' · '+model.label);
       const status=modelStatus(product,model);
       const managers=modelManagers(model),legacyManagers=managers.map(item=>({item,target:rows.find(row=>row.uid===item.management.uid)})).filter(entry=>entry.target?.source==='legacy');
       const routes=(model.routes||[]).map(route=>'<section class="cm-model-route-detail"><h4>'+esc((route.capability||'生成')+' · '+({legacy:'现有线路',managed:'统一托管',shadow:'现有线路运行 / 影子观察',paused:'已暂停'}[route.control_state]||route.control_state))+'</h4>'
         +channelDetail(route.primary,'主渠道')+(route.backup?channelDetail(route.backup,'备用渠道'):'')+(route.candidate?channelDetail(route.candidate,'影子候选'):'')
         +(route.reason?'<p class="cm-matrix-detail-warning">'+esc(route.reason)+'</p>':'')+'</section>').join('');
-      const managedActions=managers.filter(item=>item.management.kind==='managed_channel').map(item=>'<button type="button" class="primary" data-edit="'+esc(item.management.uid.replace(/^managed:/,''))+'">修改 '+esc(item.name)+' 的 Key / Base URL</button>').join('');
+      const managedActions=managers.filter(item=>item.management.kind==='managed_channel').map(item=>'<button type="button" class="primary" data-cm-managed-edit="'+esc(item.management.uid.replace(/^managed:/,''))+'">修改 '+esc(item.name)+' 的 Key / Base URL</button>').join('');
       const legacySwitch=legacyManagers.map((entry,index)=>'<button type="button" class="'+(index?'':'active')+'" data-cm-inline-route="'+esc(entry.item.management.uid)+'" data-cm-inline-kind="'+esc(entry.item.management.kind)+'" aria-pressed="'+String(!index)+'">'+esc(entry.item.name)+'</button>').join('');
       const inline='<section class="cm-model-inline-config"><div class="cm-model-inline-head"><div><h3>直接配置当前模型</h3><p>只显示这个前端模型实际使用的线路。更换密钥会先鉴权，通过后再加入新线路。</p></div>'+managedActions+'</div>'
         +(legacySwitch?'<nav class="cm-model-inline-tabs" aria-label="选择要配置的底层线路">'+legacySwitch+'</nav><div id="cmLegacyEditorHost"></div><div id="cmLegacyKeys"></div><details class="cm-model-inline-journeys"><summary>查看关联功能与测试入口</summary><div id="cmLegacyJourneys"></div></details>':'')
@@ -244,11 +244,12 @@
       if(selected?.source==='managed'&&!el('cmDrawer').hidden&&el('cmEditor').hidden&&el('cmMappingEditor').hidden)open(selected.uid,true);
     }
     let closeGuard=null;
-    function close(){if(closeGuard&&!closeGuard())return;if(!el('cmDrawer').hidden){closeGuard=null;env.closeLegacy();el('cmEditor').innerHTML='';el('cmMappingEditor').innerHTML='';el('cmDrawer').hidden=true;document.body.classList.remove('cm-drawer-open');selected=null;if(returnFocus?.isConnected)returnFocus.focus()}}
+    const closeLegacy=()=>env.closeLegacy()!==false;
+    function close(){if(closeGuard&&!closeGuard())return;if(!el('cmDrawer').hidden){if(!closeLegacy())return;closeGuard=null;el('cmEditor').innerHTML='';el('cmMappingEditor').innerHTML='';el('cmDrawer').hidden=true;document.body.classList.remove('cm-drawer-open');selected=null;if(returnFocus?.isConnected)returnFocus.focus()}}
     function shell(title){returnFocus=document.activeElement;el('cmDrawer').hidden=false;document.body.classList.add('cm-drawer-open');el('cmDrawerTitle').textContent=title;el('cmDetail').hidden=false;el('cmEditor').hidden=true;el('cmMappingEditor').hidden=true;el('cmDrawerClose').focus()}
     function open(uid,refresh=false){
       const c=rows.find(r=>r.uid===uid);if(!c)return;
-      if(!refresh){env.closeLegacy();shell(c.name)}selected=c;
+      if(!refresh){if(!closeLegacy())return;shell(c.name)}selected=c;
       let body='<p class="muted">'+esc(c.categories.map(k=>C.categories.find(x=>x[0]===k)[1]).join(' / '))+' · '+esc(c.source==='managed'?'可配置渠道':'现有供应商线路')+'</p>';
       body+='<h3>功能与调用关系</h3><div class="cm-flow">'+esc((c.features||[]).join('、')||'尚未配置功能映射')+' → '+esc(c.name)+' → '+esc(c.model||'模型按功能配置')+'</div>';
       if(c.deleted){
@@ -287,7 +288,8 @@
       if(b.dataset.cmMatrixPage){matrixPage=b.dataset.cmMatrixPage;renderMatrix();return}
       if(b.dataset.cmMatrixHidden!=null){matrixShowHidden=!matrixShowHidden;renderMatrix();return}
       if(b.dataset.cmModelKey){openMatrixModel(b.dataset.cmModelPage,b.dataset.cmModelProduct,b.dataset.cmModelKey);return}
-      if(b.dataset.cmInlineRoute){const target=rows.find(c=>c.uid===b.dataset.cmInlineRoute);if(!target){toast('没有找到对应的渠道配置');return}env.closeLegacy();el('cmDetail').querySelectorAll('[data-cm-inline-route]').forEach(item=>{const active=item.dataset.cmInlineRoute===b.dataset.cmInlineRoute&&item.dataset.cmInlineKind===b.dataset.cmInlineKind;item.classList.toggle('active',active);item.setAttribute('aria-pressed',String(active))});env.detail(target,{managementKind:b.dataset.cmInlineKind||''});return}
+      if(b.dataset.cmManagedEdit){if(!closeLegacy())return;env.editChannel?.(b.dataset.cmManagedEdit);return}
+      if(b.dataset.cmInlineRoute){const target=rows.find(c=>c.uid===b.dataset.cmInlineRoute);if(!target){toast('没有找到对应的渠道配置');return}if(!closeLegacy())return;el('cmDetail').querySelectorAll('[data-cm-inline-route]').forEach(item=>{const active=item.dataset.cmInlineRoute===b.dataset.cmInlineRoute&&item.dataset.cmInlineKind===b.dataset.cmInlineKind;item.classList.toggle('active',active);item.setAttribute('aria-pressed',String(active))});env.detail(target,{managementKind:b.dataset.cmInlineKind||''});return}
       if(b.dataset.cmCategory){filters.category=b.dataset.cmCategory;list()}
       if(b.dataset.cmDetail)open(b.dataset.cmDetail);
       if(b.dataset.cmAction)env.lifecycle(rows.find(c=>c.uid===b.dataset.cmUid),b.dataset.cmAction);

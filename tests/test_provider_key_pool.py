@@ -630,6 +630,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
 
     def test_admin_console_exposes_real_pool_controls_and_non_disruptive_refresh(self):
         html = (ROOT / "site" / "admin" / "index.html").read_text(encoding="utf-8")
+        channel_manager = (ROOT / "site" / "admin" / "channel-manager.js").read_text(encoding="utf-8")
         for text in (
             "state.module==='dashboard'", "xAI API · 果肉视频", "查看 5 秒",
             "DeepSeek API · 视频创作助手", "model_options",
@@ -638,9 +639,12 @@ class ProviderKeyPoolTests(unittest.TestCase):
             'data-credential-kind="server_env"',
             'data-credential-kind="provider_pool"',
             "options.managementKind",
+            "options.managementKind==='server_env'",
+            "当前 API Key / Base URL 表单尚未提交",
+            "没有找到对应的托管渠道，已取消编辑",
             "前端功能对应关系", "navigator.clipboard",
         ):
-            self.assertIn(text, html)
+            self.assertIn(text, html + channel_manager)
         self.assertNotIn("data-provider-key-rename", html)
         # 页面隐藏或号池敏感操作进行中不打接口。守卫原先挂在统一 15 秒定时器上，
         # 2026-09-12 后台刷新改分级调度后搬进了 scheduleNextPoll，语义必须保留。

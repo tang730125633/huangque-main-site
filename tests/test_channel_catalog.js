@@ -93,14 +93,15 @@ test('frontend function center uses model cards and keeps technical details in t
     {key:'gemini',name:'Google Gemini API',category:'图片生成',features:['纳米香蕉'],configured:true,accepts_new_jobs:true,env_base_url:'https://generativelanguage.googleapis.com',evidence:{state:'ok',label:'鉴权通过'}},
     {key:'cosyvoice',name:'阿里百炼 API',category:'音频生成',features:['AI 配音 → 公共音色'],configured:true,accepts_new_jobs:true,env_base_url:'https://dashscope.aliyuncs.com',evidence:{state:'ok',label:'鉴权通过'}}
   ];
-  const detailCalls=[];
-  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>legacyChannels,closeLegacy(){},lifecycle(){},detail(channel,options){detailCalls.push([channel.key,options.managementKind])},mapping(){},refresh(){},task(){},journey(){}});
+  const detailCalls=[],editCalls=[];
+  let allowLegacyClose=true;
+  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>legacyChannels,closeLegacy(){return allowLegacyClose},editChannel:id=>editCalls.push(id),lifecycle(){},detail(channel,options){detailCalls.push([channel.key,options.managementKind])},mapping(){},refresh(){},task(){},journey(){}});
   const workspaceData={items:[],mappings:[],legacy_controls:{},adapters:{},frontend_matrix:{page:'image',summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[{
     key:'banana',label:'纳米香蕉',description:'前台产品',visible:true,admitted:true,models:[{key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图','图生图'],admitted:true,routes:[{capability:'文生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}},backup:{id:'gemini-backup',name:'Google Gemini API · 兜底',supplier:'Google Gemini API',connection_type:'relay',base_host:'relay.example.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'ok',label:'鉴权通过'},full:{state:'unverified',label:'未建立模型级成品证据'}},candidate:{id:'gemini-shadow',name:'候选线路',supplier:'候选供应商',connection_type:'relay',base_host:'shadow.example.com',credential_source:'渠道密钥库',configured:true,enabled:false,auth:{state:'stale',label:'证据已过期'},full:{state:'unverified',label:'未建立模型级成品证据'}}},{capability:'图生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}}}]}]
   },{key:'xiaole',label:'果肉生图',description:'前台未开放',visible:false,admitted:false,models:[{key:'default',label:'GPT Image 2',actual_model:'gpt-image-2',visible:false,admitted:false,routes:[]}]}]}};
   const bananaModel=workspaceData.frontend_matrix.products[0].models[0];
   bananaModel.routes[0].primary.management={kind:'server_env',uid:'legacy:gemini'};
-  bananaModel.routes[0].backup.management={kind:'server_env',uid:'legacy:gemini'};
+  bananaModel.routes[0].backup.management={kind:'provider_pool',uid:'legacy:gemini'};
   bananaModel.routes[0].candidate.management={kind:'managed_channel',uid:'managed:shadow-channel'};
   bananaModel.routes[1].primary.management={kind:'server_env',uid:'legacy:gemini'};
   workspace.render(workspaceData);
@@ -197,14 +198,29 @@ test('frontend function center uses model cards and keeps technical details in t
   assert.match(elements.cmDetail.innerHTML,/cm-model-inline-config/);
   assert.match(elements.cmDetail.innerHTML,/id="cmLegacyEditorHost"/);
   assert.match(elements.cmDetail.innerHTML,/id="cmLegacyKeys"/);
-  assert.match(elements.cmDetail.innerHTML,/data-edit="shadow-channel"/);
+  assert.match(elements.cmDetail.innerHTML,/data-cm-managed-edit="shadow-channel"/);
+  assert.match(elements.cmDetail.innerHTML,/data-cm-inline-route="legacy:gemini" data-cm-inline-kind="provider_pool"/);
   assert.deepEqual(detailCalls,[['gemini','server_env']]);
+  const poolButton={dataset:{cmInlineRoute:'legacy:gemini',cmInlineKind:'provider_pool'},classList:{toggle(){}},setAttribute(){}};
+  allowLegacyClose=false;
+  root.listeners.click({target:{closest:()=>poolButton}});
+  assert.deepEqual(detailCalls,[['gemini','server_env']]);
+  allowLegacyClose=true;
+  root.listeners.click({target:{closest:()=>poolButton}});
+  assert.deepEqual(detailCalls,[['gemini','server_env'],['gemini','provider_pool']]);
+  allowLegacyClose=false;
+  root.listeners.click({target:{closest:()=>({dataset:{cmManagedEdit:'shadow-channel'}})}});
+  assert.deepEqual(editCalls,[]);
+  allowLegacyClose=true;
+  root.listeners.click({target:{closest:()=>({dataset:{cmManagedEdit:'shadow-channel'}})}});
+  assert.deepEqual(editCalls,['shadow-channel']);
   assert.match(source,/data-cm-matrix-page/);
   assert.match(source,/matrixPageMeta/);
   assert.match(source,/matrixPageGroups/);
   assert.match(source,/data-cm-matrix-select/);
   assert.match(source,/data-cm-matrix-hidden/);
   assert.match(source,/data-cm-inline-route/);
+  assert.match(source,/data-cm-managed-edit/);
   assert.match(source,/data-cm-view="layout">调整前台展示/);
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
   assert.doesNotMatch(html,/module-subnav[^>]*aria-label="渠道管理页面"/);

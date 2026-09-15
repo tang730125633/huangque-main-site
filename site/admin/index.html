@@ -834,8 +834,8 @@
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
 <script src="/admin/channel-parameters.js?v=a2c62bdb"></script>
 <script src="/admin/channel-catalog.js?v=8a856c90"></script>
-<script src="/admin/channel-workspace.js?v=59130e53"></script>
-<script src="/admin/channel-manager.js?v=582721f8"></script>
+<script src="/admin/channel-workspace.js?v=2d2037a5"></script>
+<script src="/admin/channel-manager.js?v=4bf5bc0f"></script>
 <script>
 (function(){
   var token = '__cookie__';
@@ -2396,11 +2396,14 @@
     var target=box.querySelector('tbody');
     Array.from(el('channelKeyBox').querySelectorAll('tr[data-channel]')).filter(function(row){return row.getAttribute('data-channel')===meta.key&&(!options.managementKind||row.getAttribute('data-credential-kind')===options.managementKind)}).forEach(function(row){target.appendChild(row.cloneNode(true))});
     bindPing('cmLegacyKeys','data-ping-key','key','key');bindProviderKeyActions('cmLegacyKeys','cmLegacyEditorHost');bindSecretRevealActions('cmLegacyKeys');
-    if(meta.key==='heygen'){el('cmLegacyEditorHost').appendChild(el('heygenOAuthBox'));loadHeygenOAuthStatus()}
+    if(meta.key==='heygen'&&(!options.managementKind||options.managementKind==='server_env')){el('cmLegacyEditorHost').appendChild(el('heygenOAuthBox'));loadHeygenOAuthStatus()}
     var entries=[];((state.data||{}).function_registry||[]).forEach(function(page){(page.functions||[]).forEach(function(feature){(feature.modes||[]).forEach(function(mode){if(registryActiveDependencies(feature,mode).some(function(dep){return dep.key===meta.key}))entries.push({page:page,feature:feature,mode:mode})})})});
     el('cmLegacyJourneys').innerHTML=entries.map(function(x){return '<div class="task-proof-line"><b>'+esc(x.page.name+' → '+x.feature.name+' → '+x.mode.name)+'</b><span>'+esc((x.mode.validation||{}).supported?'打开后可准备素材、检查旅程并发起测试':'完整测试尚未接入：'+((x.mode.validation||{}).blocked_reason||'未登记'))+'</span><button data-cm-journey="'+esc(x.mode.key)+'">查看旅程 / 准备素材 / 测试</button></div>'}).join('')||'<p class="muted">尚未登记关联旅程，不能推断功能已完成验收。</p>';
   }
-  function closeChannelLegacy(){clearSecretWindows();restoreProviderEditor();document.querySelector('[data-module="channels"]').appendChild(el('heygenOAuthBox'))}
+  function closeChannelLegacy(){
+    if(!el('providerKeyEditor').hidden&&!confirm('当前 API Key / Base URL 表单尚未提交，切换线路会清空已填写内容。确认继续吗？'))return false;
+    clearSecretWindows();restoreProviderEditor();document.querySelector('[data-module="channels"]').appendChild(el('heygenOAuthBox'));return true;
+  }
   var loadManagedChannels=window.initChannelManager({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'},legacy:channelLegacyCatalog,detail:channelLegacyDetail,closeLegacy:closeChannelLegacy,
     task:function(id){el('reqSearch').value=id;state.reqPage=1;switchModule('logs')},
     journey:function(key){var ctx=findOperationContext(key);if(ctx){state.operationsPage=ctx.page.key;state.operationsMode=key;switchModule('operations')}}});

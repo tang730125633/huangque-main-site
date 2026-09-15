@@ -28,7 +28,12 @@
         });
       }).catch(e=>toast(e.message));
     }
-    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle});
+    function editChannelById(id){
+      const channel=data.items.find(c=>c.id===id);
+      if(!channel){toast('没有找到对应的托管渠道，已取消编辑');return false}
+      edit(channel);return true;
+    }
+    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById});
     function routeMappings(){return [...(data.mappings||[]),...(data.operation_mappings||[])]}
     const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>routeMappings().filter(m=>m.channel===id||m.backup===id)});
     window.closeChannelWorkspace=workspace.close;
@@ -101,7 +106,7 @@
         if(b.dataset.editPane){el('cmEditor').querySelectorAll('[data-cm-edit-pane]').forEach(n=>n.hidden=n.dataset.cmEditPane!==b.dataset.editPane);el('cmEditor').querySelectorAll('[data-edit-pane]').forEach(n=>n.classList.toggle('active',n===b));return}
         if(b.id==='cmReload')return load();if(b.id==='cmNew')return edit();if(b.id==='cmCancel'){workspace.close();return}
         if(b.id==='cmMapNew')return editMap();if(b.id==='cmAllRuns')return renderRuns();
-        if(b.dataset.edit)return edit(data.items.find(c=>c.id===b.dataset.edit));
+        if(b.dataset.edit)return editChannelById(b.dataset.edit);
         if(b.dataset.parameters)return parameterEditor.open(data.items.find(c=>c.id===b.dataset.parameters));
         if(b.dataset.addModel){toast('先保存独立模型连接配置，再设置参数和功能映射；原内置线路保留。');return edit({name:b.dataset.supplier+' · 模型配置',supplier:b.dataset.supplier,adapter:b.dataset.addModel,enabled:false})}
         if(b.dataset.legacyUnmap!=null){const m=data.mappings[Number(b.dataset.legacyUnmap)];if(!confirm('删除兼容期旧映射 '+m.kind+' / '+m.front+'？\n未发布 operation 映射的请求将恢复原有默认线路；已有任务不受影响。'))return;b.disabled=true;await post('unmap',{selector:m.kind+':'+m.front,expected:m});await load();return}
