@@ -13,7 +13,7 @@ except ImportError:
 API_URL = "https://api.weixin.qq.com/cgi-bin/message/subscribe/send"
 EVENT_TYPE = "work_complete"
 ANNOUNCEMENT_EVENT_TYPE = "announcement"
-PAGE = "pages/assets/assets"
+PAGE = "paper/pages/works/index"
 ANNOUNCEMENT_PAGE = "pages/notifications/notifications"
 
 
