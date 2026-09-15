@@ -30,12 +30,16 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         self.keys = [
             {'key': 'gemini', 'name': 'Google Gemini API', 'configured': True,
              'required_env': ['GEMINI_API_KEY'],
+             'image_primary_base_url': 'https://generativelanguage.googleapis.com',
+             'image_fallback_base_url': 'https://gemini-relay.example.com/google',
              'image_primary_base_host': 'generativelanguage.googleapis.com',
              'image_fallback_base_host': 'gemini-relay.example.com',
              'image_probe_base_host': 'gemini-relay.example.com',
              'image_primary_active': True},
             {'key': 'openai', 'name': 'OpenAI API', 'configured': True,
              'required_env': ['OPENAI_API_KEY'],
+             'image_primary_base_url': 'https://api.openai.com',
+             'image_fallback_base_url': 'https://relay.example.com/v1',
              'image_primary_base_host': 'api.openai.com',
              'image_fallback_base_host': 'relay.example.com',
              'image_probe_base_host': 'relay.example.com',
@@ -129,6 +133,9 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         self.assertEqual(openai['name'], 'OpenAI API')
         self.assertEqual(openai['connection_type'], 'official')
         self.assertEqual(openai['credential_source'], '服务器环境变量 · OPENAI_API_KEY')
+        self.assertEqual(openai['base_urls'], ['https://api.openai.com'])
+        self.assertEqual(openai['management'],
+                         {'kind': 'server_env', 'uid': 'legacy:openai'})
         self.assertEqual(products['openai']['models'][0]['routes'][0]['backup']['base_host'],
                          'relay.example.com')
         self.assertEqual(openai['auth']['state'], 'unverified')
@@ -145,6 +152,10 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         lechuang = products['lechuang']['models'][0]
         self.assertEqual(lechuang['actual_model'], 'gpt-image-2.5-flare')
         self.assertEqual(lechuang['routes'][0]['primary']['connection_type'], 'relay')
+        self.assertEqual(lechuang['routes'][0]['primary']['base_urls'],
+                         ['https://api.lechuang.chat/api/v1'])
+        self.assertEqual(lechuang['routes'][0]['primary']['management']['kind'],
+                         'managed_channel')
         self.assertNotIn('secret', json.dumps(result).lower())
 
     def test_operation_mapping_can_split_one_model_by_capability(self):
@@ -225,6 +236,14 @@ class FrontendChannelMatrixTests(unittest.TestCase):
             1,
         )
         self.assertEqual(
+            products['grok']['models'][0]['routes'][0]['primary']['base_urls'],
+            ['https://api.x.ai/v1'],
+        )
+        self.assertEqual(
+            products['grok']['models'][0]['routes'][0]['primary']['management'],
+            {'kind': 'provider_pool', 'uid': 'legacy:xai', 'provider': 'xai'},
+        )
+        self.assertEqual(
             products['grok']['models'][0]['routes'][0]['primary']['connection_type'],
             'official',
         )
@@ -233,6 +252,7 @@ class FrontendChannelMatrixTests(unittest.TestCase):
             'api.wavespeed.ai',
         )
         self.assertFalse(products['seedance']['models'][1]['admitted'])
+        self.assertFalse(products['seedance']['models'][1]['visible'])
         self.assertIn('前台当前未开放', products['seedance']['models'][1]['reason'])
 
     def test_video_pool_health_and_operation_mapping_stay_secret_free(self):

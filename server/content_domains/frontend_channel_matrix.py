@@ -152,11 +152,13 @@ def _managed_channel(cid, workspace, now):
         'id': item.get('id'), 'name': item.get('name') or item.get('id'),
         'supplier': item.get('supplier') or '未标注供应商',
         'connection_type': _transport(host, item.get('connection_type')),
-        'base_host': host, 'model': item.get('model') or '',
+        'base_host': host, 'base_urls': [item.get('base_url')] if item.get('base_url') else [],
+        'model': item.get('model') or '',
         'credential_source': '渠道密钥库', 'configured': bool(item.get('configured')),
         'enabled': bool(item.get('enabled')) and not bool((item.get('_lifecycle') or {}).get('deleted')),
         'auth': _check(checks.get('auth'), now), 'full': _check(checks.get('full'), now),
         'source': 'managed',
+        'management': {'kind': 'managed_channel', 'uid': 'managed:' + str(item.get('id') or '')},
     }
 
 
@@ -164,6 +166,9 @@ def _legacy_channel(key, credentials, probes, controls, now, route='primary'):
     item = credentials.get(key) or {}
     host = item.get('image_' + route + '_base_host') or (
         item.get('env_base_host') or item.get('pool_base_host') or ''
+    )
+    base_url = item.get('image_' + route + '_base_url') or (
+        item.get('env_base_url') or item.get('pool_base_url') or ''
     )
     probe = probes.get(key)
     probe_host = item.get('image_probe_base_host') or host
@@ -174,6 +179,7 @@ def _legacy_channel(key, credentials, probes, controls, now, route='primary'):
         'name': (item.get('name') or key) + (' · 兜底' if route == 'fallback' else ''),
         'supplier': item.get('name') or key,
         'connection_type': _transport(host), 'base_host': host,
+        'base_urls': [base_url] if base_url else [],
         'model': item.get('model') or '',
         'credential_source': '服务器环境变量 · ' + ' / '.join(item.get('required_env') or []),
         'configured': bool(item.get('configured')),
@@ -182,6 +188,7 @@ def _legacy_channel(key, credentials, probes, controls, now, route='primary'):
         'auth': _check(route_probe, now),
         'full': {'state': 'unverified', 'label': '未建立模型级成品证据', 'checked_at': None},
         'source': 'legacy',
+        'management': {'kind': 'server_env', 'uid': 'legacy:' + str(key or '')},
     }
 
 
@@ -200,11 +207,13 @@ def _legacy_backup(key, credentials, probes, controls, now):
 def _video_environment_channel(key, credentials, probes, controls, now):
     item = credentials.get(key) or {}
     host = item.get('video_base_host') or item.get('env_base_host') or _VIDEO_LEGACY_HOSTS.get(key, '')
+    base_url = item.get('video_base_url') or item.get('env_base_url') or ''
     control = controls.get(key) or {}
     channel = {
         'id': 'legacy:' + key + ':video', 'name': item.get('name') or key,
         'supplier': item.get('name') or key, 'connection_type': _transport(host),
-        'base_host': host, 'model': item.get('video_model') or '',
+        'base_host': host, 'base_urls': [base_url] if base_url else [],
+        'model': item.get('video_model') or '',
         'credential_source': item.get('video_credential_source')
                              or '服务器环境变量 · ' + ' / '.join(item.get('required_env') or []),
         'configured': bool(item.get('video_configured', item.get('configured'))),
@@ -213,6 +222,7 @@ def _video_environment_channel(key, credentials, probes, controls, now):
         'auth': _check((probes or {}).get(key), now),
         'full': {'state': 'unverified', 'label': '未建立模型级成品证据', 'checked_at': None},
         'source': 'legacy',
+        'management': {'kind': 'server_env', 'uid': 'legacy:' + str(key or '')},
     }
     return channel
 
@@ -223,7 +233,9 @@ def _pool_channel(provider, key, credentials, pool_keys, controls, now):
             if x.get('provider') == provider and x.get('managed') is not False]
     active = [x for x in keys if x.get('state') == 'active']
     usable = [x for x in active if x.get('health_status') != 'unhealthy']
-    hosts = list(dict.fromkeys(_host(x.get('base_url')) for x in keys if _host(x.get('base_url'))))
+    base_urls = list(dict.fromkeys(str(x.get('base_url') or '').strip() for x in active
+                                  if str(x.get('base_url') or '').strip()))
+    hosts = list(dict.fromkeys(_host(value) for value in base_urls if _host(value)))
     transports = {_transport(host) for host in hosts}
     healthy = [x for x in usable if x.get('health_status') == 'healthy']
     if healthy:
@@ -242,13 +254,15 @@ def _pool_channel(provider, key, credentials, pool_keys, controls, now):
         'id': 'pool:' + provider, 'name': (item.get('name') or provider) + ' 号池',
         'supplier': item.get('name') or provider,
         'connection_type': next(iter(transports)) if len(transports) == 1 else 'unknown',
-        'base_host': ' / '.join(hosts), 'model': '',
+        'base_host': ' / '.join(hosts), 'base_urls': base_urls, 'model': '',
         'credential_source': '后台密钥号池 · %d 个密钥，%d 个可轮转' % (len(keys), len(usable)),
         'pool_size': len(keys), 'pool_usable': len(usable),
         'configured': bool(keys), 'enabled': bool(usable) and control.get('enabled') is not False,
         'auth': auth,
         'full': {'state': 'unverified', 'label': '未建立模型级成品证据', 'checked_at': None},
         'source': 'pool',
+        'management': {'kind': 'provider_pool', 'uid': 'legacy:' + str(key or ''),
+                       'provider': provider},
     }
 
 
@@ -522,6 +536,7 @@ def _video_model(product, spec, workspace, credentials, probes, pool_keys,
         'capabilities': [x['capability'] for x in routes], 'routes': routes,
         'admitted': admitted, 'reason': '；'.join(dict.fromkeys(reasons)),
         'warnings': list(dict.fromkeys(warnings)), 'attention': bool(warnings),
+        'visible': frontend_enabled,
     }
 
 

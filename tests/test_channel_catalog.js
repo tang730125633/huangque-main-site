@@ -80,7 +80,7 @@ test('admin scripts parse together and channel entry is unique',()=>{
   assert.equal((html.match(/data-module-tab="channels"/g)||[]).length,0);
 });
 
-test('frontend model matrix is the default read-only channel view',()=>{
+test('frontend function center uses model cards and keeps technical details in the drawer',()=>{
   const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-workspace.js'),'utf8');
   const element=id=>({id,hidden:false,innerHTML:'',textContent:'',value:'',checked:false,
     isConnected:true,listeners:{},focus(){},classList:{toggle(){}},addEventListener(type,fn){this.listeners[type]=fn},setAttribute(){},querySelector(){return null},querySelectorAll(){return[]}});
@@ -88,14 +88,15 @@ test('frontend model matrix is the default read-only channel view',()=>{
   const elements=Object.fromEntries(ids.map(id=>[id,element(id)])),root=element('root');
   const context={window:null,ChannelCatalog:C,document:{activeElement:element('active'),querySelector:()=>root,querySelectorAll:()=>[],body:{classList:{add(){},remove(){}}}}};context.window=context;
   vm.createContext(context);vm.runInContext(source,context);
-  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>[],closeLegacy(){},lifecycle(){},detail(){},mapping(){},refresh(){},task(){},journey(){}});
+  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>[{key:'cosyvoice',name:'阿里百炼 API',category:'音频生成',features:['AI 配音 → 公共音色'],configured:true,accepts_new_jobs:true,env_base_url:'https://dashscope.aliyuncs.com',evidence:{state:'ok',label:'鉴权通过'}}],closeLegacy(){},lifecycle(){},detail(){},mapping(){},refresh(){},task(){},journey(){}});
   workspace.render({items:[],mappings:[],legacy_controls:{},adapters:{},frontend_matrix:{page:'image',summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[{
     key:'banana',label:'纳米香蕉',description:'前台产品',visible:true,admitted:true,models:[{key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图','图生图'],admitted:true,routes:[{capability:'文生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}},backup:{id:'gemini-backup',name:'Google Gemini API · 兜底',supplier:'Google Gemini API',connection_type:'relay',base_host:'relay.example.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'ok',label:'鉴权通过'},full:{state:'unverified',label:'未建立模型级成品证据'}},candidate:{id:'gemini-shadow',name:'候选线路',supplier:'候选供应商',connection_type:'relay',base_host:'shadow.example.com',credential_source:'渠道密钥库',configured:true,enabled:false,auth:{state:'stale',label:'证据已过期'},full:{state:'unverified',label:'未建立模型级成品证据'}}},{capability:'图生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}}}]}]
-  }]}});
-  assert.match(elements.cmMatrix.innerHTML,/前端模型与渠道/);
-  assert.match(elements.cmMatrix.innerHTML,/前端入口/);
-  assert.match(elements.cmMatrix.innerHTML,/模型档位/);
-  assert.match(elements.cmMatrix.innerHTML,/当前主渠道/);
+  },{key:'xiaole',label:'果肉生图',description:'前台未开放',visible:false,admitted:false,models:[{key:'default',label:'GPT Image 2',actual_model:'gpt-image-2',visible:false,admitted:false,routes:[]}]}]}});
+  assert.match(elements.cmMatrix.innerHTML,/前端功能与渠道/);
+  for(const label of ['生图','生视频','数字人','音频与配音','文本与助手','采集与解析','视频处理','其他服务'])assert.match(elements.cmMatrix.innerHTML,new RegExp(label));
+  assert.match(elements.cmMatrix.innerHTML,/cm-switch-product/);
+  assert.match(elements.cmMatrix.innerHTML,/cm-switch-model/);
+  assert.match(elements.cmMatrix.innerHTML,/主渠道/);
   assert.match(elements.cmMatrix.innerHTML,/纳米香蕉 2/);
   assert.match(elements.cmMatrix.innerHTML,/Google Gemini API/);
   assert.match(elements.cmMatrix.innerHTML,/官方直连/);
@@ -103,6 +104,17 @@ test('frontend model matrix is the default read-only channel view',()=>{
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/generativelanguage\.googleapis\.com/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/服务器环境变量/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/证据已过期/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/果肉生图/);
+  const hiddenButton={dataset:{cmMatrixHidden:''}};
+  root.listeners.click({target:{closest:()=>hiddenButton}});
+  assert.match(elements.cmMatrix.innerHTML,/果肉生图/);
+  assert.match(elements.cmMatrix.innerHTML,/前台隐藏/);
+  root.listeners.click({target:{closest:()=>hiddenButton}});
+  const audioButton={dataset:{cmMatrixPage:'audio'}};
+  root.listeners.click({target:{closest:()=>audioButton}});
+  assert.match(elements.cmMatrix.innerHTML,/阿里百炼 API/);
+  assert.match(elements.cmMatrix.innerHTML,/服务配置/);
+  assert.match(elements.cmMatrix.innerHTML,/已登记的真实前端功能与依赖服务/);
   const modelButton={dataset:{cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
   root.listeners.click({target:{closest:()=>modelButton}});
   assert.equal(elements.cmDrawer.hidden,false);
@@ -113,7 +125,9 @@ test('frontend model matrix is the default read-only channel view',()=>{
   assert.match(elements.cmDetail.innerHTML,/证据已过期/);
   assert.match(elements.cmDetail.innerHTML,/未建立模型级成品证据/);
   assert.match(source,/data-cm-matrix-page/);
-  assert.match(source,/page\.page==='video'\?'视频':'作图'/);
+  assert.match(source,/matrixPageMeta/);
+  assert.match(source,/data-cm-matrix-hidden/);
+  assert.match(source,/data-cm-route-manage/);
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
   assert.match(html,/data-cm-tab="matrix" class="active">前台模型与渠道/);
   assert.match(html,/data-cm-tab="catalog">底层渠道与密钥/);

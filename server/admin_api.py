@@ -2045,7 +2045,7 @@ def _key_group_values(item, sources=None):
     return found
 
 
-def _key_group_base_host(item, prefix, sources):
+def _key_group_base_url(item, prefix, sources):
     value = ""
     for env_name in item.get(prefix + "_base_env", []):
         for src in sources:
@@ -2061,6 +2061,24 @@ def _key_group_base_host(item, prefix, sources):
         parsed = urllib.parse.urlsplit(
             value if "://" in value else "https://" + value
         )
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return ""
+        if parsed.username or parsed.password:
+            return ""
+        return urllib.parse.urlunsplit((
+            parsed.scheme.lower(), parsed.netloc,
+            parsed.path.rstrip("/"), "", "",
+        ))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _key_group_base_host(item, prefix, sources):
+    value = _key_group_base_url(item, prefix, sources)
+    if not value:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(value)
         host = parsed.hostname or ""
         return host + ((":" + str(parsed.port)) if parsed.port else "")
     except (TypeError, ValueError):
@@ -2145,6 +2163,8 @@ def key_status():
             video_runtime = {
                 "video_base_host": "mcp.heygen.com" if subscription
                                    else _key_group_base_host(item, "env", sources),
+                "video_base_url": "https://mcp.heygen.com" if subscription
+                                  else _key_group_base_url(item, "env", sources),
                 "video_configured": mcp_configured if subscription else configured,
                 "video_credential_source": (
                     "服务器 OAuth 凭据 · HEYGEN_MCP_CREDENTIALS" if subscription
@@ -2156,6 +2176,7 @@ def key_status():
             video_runtime = {
                 "video_configured": bool(source_value("RUNNINGHUB_API_KEY")),
                 "video_credential_source": "服务器环境变量 · RUNNINGHUB_API_KEY",
+                "video_base_url": "https://www.runninghub.cn",
             }
         items.append(
             {
@@ -2170,6 +2191,10 @@ def key_status():
                 "image_primary_base_host": _key_group_base_host(item, "image_primary", sources),
                 "image_fallback_base_host": _key_group_base_host(item, "image_fallback", sources),
                 "image_probe_base_host": _key_group_base_host(item, "image_probe", sources),
+                "env_base_url": _key_group_base_url(item, "env", sources),
+                "pool_base_url": _key_group_base_url(item, "pool", sources),
+                "image_primary_base_url": _key_group_base_url(item, "image_primary", sources),
+                "image_fallback_base_url": _key_group_base_url(item, "image_fallback", sources),
                 "image_primary_active": (
                     not item.get("image_primary_requires_egress")
                     or bool(egress.EGRESS_PRIMARY or egress.EGRESS_FALLBACK)

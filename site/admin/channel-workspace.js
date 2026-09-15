@@ -1,7 +1,7 @@
 (function(){
   window.initChannelWorkspace=function(env){
-    const {el,esc}=env,C=window.ChannelCatalog,api=env.api;
-    let data={},rows=[],tab='matrix',matrixPage='image',selected=null,returnFocus=null;
+    const {el,esc,toast}=env,C=window.ChannelCatalog,api=env.api;
+    let data={},rows=[],tab='matrix',matrixPage='image',matrixShowHidden=false,selected=null,returnFocus=null;
     let layoutLoading=false;
     const filters={category:'all',q:'',supplier:'',transport:'',status:'',history:false};
     const date=n=>n?new Date(n*1000).toLocaleString():'未采集';
@@ -68,9 +68,24 @@
       }catch(error){renderLayoutError(error)}
       finally{layoutLoading=false}
     }
+    const matrixPageMeta=[['image','生图'],['video','生视频'],['avatar','数字人'],['audio','音频与配音'],['text','文本与助手'],['collect','采集与解析'],['process','视频处理'],['other','其他服务']];
+    function catalogRoute(c){
+      const baseUrls=unique([c.base_url,c.env_base_url,c.pool_base_url,c.image_primary_base_url,c.image_fallback_base_url]);
+      const management={kind:c.source==='managed'?'managed_channel':(c.pool_provider?'provider_pool':'server_env'),uid:c.uid,provider:c.pool_provider||''};
+      return {id:c.uid,name:c.name,supplier:c.supplier,connection_type:c.connection_type||'unknown',base_host:c.env_base_host||c.pool_base_host||'',base_urls:baseUrls,model:c.model||'',credential_source:c.source==='managed'?'渠道密钥库':(c.pool_provider?'后台密钥号池 / 服务器兼容线路':'服务器环境变量'),configured:c.configured!==false,enabled:!!c.enabled,auth:{state:c.attention?'unverified':'ok',label:c.health||'未验证'},full:{state:'unverified',label:'请进入测试与健康查看完整证据'},source:c.source,management};
+    }
+    function servicePage(key,label){
+      const services=rows.filter(c=>c.categories?.includes(key));
+      const products=services.map(c=>{
+        const route=catalogRoute(c),admitted=!!c.enabled&&c.configured!==false;
+        return {key:c.uid,label:c.name,description:(c.features||[]).join(' / ')||c.category||'底层服务',visible:!c.retired,visibility_reason:c.retired?'已停用或历史服务':'',admitted,attention:!!c.attention,models:[{key:c.uid,label:c.model&&c.model!=='按功能配置'?c.model:'服务配置',actual_model:c.model||'按前端功能选择',capabilities:c.features||[],visible:!c.retired,admitted,attention:!!c.attention,warnings:c.attention?[c.health||'需要检查']:[],routes:[{operation_id:'service:'+c.uid,capability:(c.features||[]).join(' / ')||label,control_state:c.source==='managed'?'managed':'legacy',primary:route,backup:null,candidate:null,admitted,reason:admitted?'':'服务未配置或未启用'}]}]};
+      });
+      return {page:key,label,read_only:false,precision:'service',summary:{page:key,products:products.length,models:products.length,visible_products:products.filter(x=>x.visible).length,admitted_models:products.filter(x=>x.admitted).length,attention_models:products.filter(x=>x.attention).length},products};
+    }
     function matrixPages(){
-      const root=data.frontend_matrix||{};
-      return Array.isArray(root.pages)&&root.pages.length?root.pages:[root];
+      const root=data.frontend_matrix||{},exact=Array.isArray(root.pages)&&root.pages.length?root.pages:[root];
+      const exactByPage=Object.fromEntries(exact.filter(Boolean).map(page=>[page.page,page]));
+      return matrixPageMeta.map(([key,label])=>exactByPage[key]?{...exactByPage[key],label}:servicePage(key,label));
     }
     const transportName=value=>({official:'官方直连',relay:'中转 API',unknown:'未标注'}[value]||'未标注');
     const unique=values=>[...new Set(values.filter(Boolean))];
@@ -91,7 +106,7 @@
       return compactValue((model.routes||[]).map(routeBackup),'无');
     }
     function modelStatus(product,model){
-      if(!product.visible)return {label:'前台隐藏',state:'muted'};
+      if(!product.visible||model.visible===false)return {label:'前台隐藏',state:'muted'};
       if(!model.admitted){
         return {label:String(model.reason||'').includes('前台当前未开放')?'暂未开放':'不可接单',state:'bad'};
       }
@@ -102,15 +117,23 @@
       if(authIssue||fullIssue)return {label:'未完整验证',state:'warn'};
       return {label:'可接单',state:'ok'};
     }
+    function manageAction(item){
+      const management=item?.management;if(!management?.uid)return '';
+      const label=management.kind==='managed_channel'?'配置渠道、Key 与 Base URL':management.kind==='provider_pool'?'管理 API Key 与 Base URL':'查看服务器托管凭据';
+      return '<button type="button" class="mini" data-cm-route-manage="'+esc(management.uid)+'">'+esc(label)+'</button>';
+    }
     function channelDetail(item,prefix){
       if(!item)return '<div class="cm-route"><strong>'+esc(prefix+'：未配置')+'</strong></div>';
+      const baseUrls=(item.base_urls||[]).filter(Boolean);
+      const base=baseUrls.length?baseUrls.map(value=>'<code>'+esc(value)+'</code>').join(''):item.base_host?'<code>https://'+esc(item.base_host)+'</code>':'<span>未配置</span>';
       return '<div class="cm-route"><strong>'+esc(prefix+'：'+item.name)+'</strong>'
         +'<small>'+esc((item.supplier||'未标注供应商')+' · '+transportName(item.connection_type)+(item.base_host?' · '+item.base_host:''))+'</small>'
+        +'<small class="cm-route-base"><span>Base URL</span>'+base+'</small>'
         +(item.model?'<small>实际模型：<code>'+esc(item.model)+'</code></small>':'')
         +'<small>凭据：'+esc(item.credential_source||'尚无凭据来源')+'</small>'
         +'<small>配置：'+esc(item.configured?'已配置':'未配置')+' · 渠道：'+esc(item.enabled?'已启用':'未启用')+'</small>'
         +'<small>鉴权：'+esc(item.auth?.label||'未验证')+'（'+esc(date(item.auth?.checked_at))+ '）</small>'
-        +'<small>成品：'+esc(item.full?.label||'未验证')+'（'+esc(date(item.full?.checked_at))+ '）</small></div>';
+        +'<small>成品：'+esc(item.full?.label||'未验证')+'（'+esc(date(item.full?.checked_at))+ '）</small>'+manageAction(item)+'</div>';
     }
     function openMatrixModel(pageKey,productKey,modelKey){
       const page=matrixPages().find(item=>item.page===pageKey);
@@ -123,32 +146,32 @@
         +channelDetail(route.primary,'主渠道')+(route.backup?channelDetail(route.backup,'备用渠道'):'')+(route.candidate?channelDetail(route.candidate,'影子候选'):'')
         +(route.reason?'<p class="cm-matrix-detail-warning">'+esc(route.reason)+'</p>':'')+'</section>').join('');
       el('cmDetail').innerHTML='<div class="cm-matrix-detail-head"><span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span>'
-        +'<p>'+esc(pageKey==='video'?'视频板块':'作图板块')+' · '+esc(product.visible?'前台显示':'前台隐藏')+'</p>'
+        +'<p>'+esc(page.label||matrixPageMeta.find(x=>x[0]===pageKey)?.[1]||pageKey)+' · '+esc(product.visible?'前台显示':'前台隐藏')+'</p>'
         +'<code>'+esc(model.actual_model||'实际模型待配置')+'</code>'
         +'<p>支持能力：'+esc((model.capabilities||[]).join(' / ')||'尚未登记')+'</p></div>'
-        +'<h3>真实渠道与验证证据</h3>'+(routes||'<p class="muted">尚无路由。</p>')
+        +'<h3>真实渠道与验证证据</h3><p class="muted">可在线更换的线路会进入加密号池或版本化渠道编辑器；服务器环境变量只允许查看与核对，避免浏览器直接改写部署配置。</p>'+(routes||'<p class="muted">尚无路由。</p>')
         +((model.warnings||[]).length?'<h3>需要处理</h3><div class="cm-matrix-detail-warning">'+esc(model.warnings.join('；'))+'</div>':'');
     }
     function renderMatrix(){
       const host=el('cmMatrix');if(!host)return;
       const pages=matrixPages();
       if(!pages.some(page=>page.page===matrixPage))matrixPage=pages[0]?.page||'image';
-      const matrix=pages.find(page=>page.page===matrixPage)||pages[0]||{},summary=matrix.summary||{},products=matrix.products||[];
-      const body=products.flatMap(product=>(product.models||[]).map(model=>{
+      const matrix=pages.find(page=>page.page===matrixPage)||pages[0]||{},summary=matrix.summary||{},allProducts=matrix.products||[];
+      const products=allProducts.map(product=>({...product,models:(product.models||[]).filter(model=>matrixShowHidden||(product.visible&&model.visible!==false))})).filter(product=>matrixShowHidden||product.visible).filter(product=>matrixShowHidden||product.models.length);
+      const productCards=products.map(product=>{
+        const cards=(product.models||[]).map(model=>{
         const routes=model.routes||[];
         const status=modelStatus(product,model);
-        return '<tr class="'+(status.state==='bad'?'attention':'')+'"><td>'+esc(product.label)+'</td>'
-          +'<td><button type="button" class="cm-matrix-model-link" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">'+esc(model.label)+'</button></td>'
-          +'<td>'+esc(compactValue(routes.map(route=>route.primary?.name||'未配置')))+'</td>'
-          +'<td>'+esc(compactValue(routes.map(route=>route.primary?transportName(route.primary.connection_type):'未标注')))+'</td>'
-          +'<td>'+esc(backupSummary(model))+'</td>'
-          +'<td><span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span></td></tr>';
-      }));
-      const pageTabs=pages.length>1?'<div class="cm-matrix-pages" role="tablist">'+pages.map(page=>'<button type="button" role="tab" data-cm-matrix-page="'+esc(page.page)+'" aria-selected="'+String(page.page===matrixPage)+'" class="'+(page.page===matrixPage?'active':'')+'">'+esc(page.page==='video'?'视频':'作图')+'</button>').join('')+'</div>':'';
-      host.innerHTML='<div class="section-head"><div><h3>前端模型与渠道</h3><p class="muted">默认只看模型与当前渠道；点击具体模型查看 Base Host、凭据和验证证据。</p></div>'+pageTabs+'</div>'
-        +'<p class="cm-matrix-overview">'+Number(summary.products||0)+' 个前台入口 · '+Number(summary.models||0)+' 个模型档位 · '+Number(summary.admitted_models||0)+' 个允许接单</p>'
-        +'<div class="cm-matrix-table"><table><thead><tr><th>前端入口</th><th>模型档位</th><th>当前主渠道</th><th>接入方式</th><th>备用渠道</th><th>状态</th></tr></thead><tbody>'
-        +(body.join('')||'<tr><td colspan="6" class="muted">当前板块没有模型。</td></tr>')+'</tbody></table></div>';
+        return '<button type="button" class="cm-switch-model '+(status.state==='bad'?'attention':'')+'" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'"><span class="cm-switch-model-head"><b>'+esc(model.label)+'</b><span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span></span><code>'+esc(model.actual_model||'实际模型待配置')+'</code><span class="cm-switch-fact"><em>主渠道</em><strong>'+esc(compactValue(routes.map(route=>route.primary?.name||'未配置')))+'</strong></span><span class="cm-switch-fact"><em>接入方式</em><strong>'+esc(compactValue(routes.map(route=>route.primary?transportName(route.primary.connection_type):'未标注')))+'</strong></span><span class="cm-switch-fact"><em>备用渠道</em><strong>'+esc(backupSummary(model))+'</strong></span></button>';
+        }).join('');
+        const state=product.visible?'前台显示':'前台隐藏';
+        return '<section class="cm-switch-product '+(product.attention?'attention':'')+'"><div class="cm-switch-product-head"><div><h4>'+esc(product.label)+'</h4><p>'+esc(product.description||product.visibility_reason||'前端产品')+'</p></div><span class="cm-matrix-pill '+(product.visible?'ok':'')+'">'+esc(state)+'</span></div><div class="cm-switch-models">'+(cards||'<p class="cm-matrix-empty">'+esc(product.warning||'当前没有已登记模型。')+'</p>')+'</div></section>';
+      }).join('');
+      const pageTabs='<div class="cm-function-tabs" role="tablist">'+pages.map(page=>'<button type="button" role="tab" data-cm-matrix-page="'+esc(page.page)+'" aria-selected="'+String(page.page===matrixPage)+'" class="'+(page.page===matrixPage?'active':'')+'">'+esc(page.label||page.page)+'</button>').join('')+'</div>';
+      host.innerHTML='<div class="section-head"><div><h3>前端功能与渠道</h3><p class="muted">先选前端功能，再点具体模型查看并管理渠道、API Key、Base URL 与验证证据。</p></div><button type="button" class="cm-hidden-toggle '+(matrixShowHidden?'active':'')+'" data-cm-matrix-hidden aria-pressed="'+String(matrixShowHidden)+'">'+(matrixShowHidden?'隐藏停用项':'显示前台隐藏 / 停用项')+'</button></div>'+pageTabs
+        +'<div class="cm-matrix-summary"><div><span>前端产品</span><b>'+Number(summary.products||0)+'</b></div><div><span>模型 / 服务</span><b>'+Number(summary.models||0)+'</b></div><div><span>允许接单</span><b>'+Number(summary.admitted_models||0)+'</b></div><div><span>需要处理</span><b>'+Number(summary.attention_models||0)+'</b></div></div>'
+        +(matrix.precision==='service'?'<p class="cm-precision-note">本板块按已登记的真实前端功能与依赖服务展示；尚未建立独立模型档位的功能会标为“服务配置”。</p>':'')
+        +'<div class="cm-switch-products">'+(productCards||'<div class="empty">当前板块没有'+(matrixShowHidden?'已登记':'前台显示')+'的模型或服务。</div>')+'</div>';
     }
     function list(){
       const visible=C.filter(rows,filters);
@@ -210,7 +233,9 @@
       }
       if(b.dataset.cmTab)showTab(b.dataset.cmTab);
       if(b.dataset.cmMatrixPage){matrixPage=b.dataset.cmMatrixPage;renderMatrix();return}
+      if(b.dataset.cmMatrixHidden!=null){matrixShowHidden=!matrixShowHidden;renderMatrix();return}
       if(b.dataset.cmModelKey){openMatrixModel(b.dataset.cmModelPage,b.dataset.cmModelProduct,b.dataset.cmModelKey);return}
+      if(b.dataset.cmRouteManage){const target=rows.find(c=>c.uid===b.dataset.cmRouteManage);if(target)open(target.uid);else toast('没有找到对应的渠道配置');return}
       if(b.dataset.cmCategory){filters.category=b.dataset.cmCategory;list()}
       if(b.dataset.cmDetail)open(b.dataset.cmDetail);
       if(b.dataset.cmAction)env.lifecycle(rows.find(c=>c.uid===b.dataset.cmUid),b.dataset.cmAction);
