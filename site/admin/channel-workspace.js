@@ -125,6 +125,9 @@
       if(!model.admitted){
         return {label:String(model.reason||'').includes('前台当前未开放')?'暂未开放':'不可接单',state:'bad'};
       }
+      if((model.routes||[]).some(route=>route.admitted===false)){
+        return {label:'部分能力不可接单',state:'warn'};
+      }
       const primary=modelLegs(model,['primary']).map(([,item])=>item);
       const proofs=primary.flatMap(item=>[item.auth,item.full]);
       const issue=proofs.find(proof=>proof&&!['ok','unverified','pending'].includes(proof.state));
