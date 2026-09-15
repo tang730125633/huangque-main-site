@@ -9093,6 +9093,8 @@ class H(BaseHTTPRequestHandler):
             if int(self.headers.get('Content-Length') or 0) > 12*1024*1024:
                 return self._send(413, {'detail':'渠道配置与素材总大小不得超过12MB'})
             actions = {'save':channel_manager.save, 'mapping':channel_manager.save_mapping,
+                       'operation-mapping':channel_manager.save_operation_mapping,
+                       'operation-mapping-rollback':channel_manager.rollback_operation_mapping,
                        'rollback':channel_manager.rollback, 'test':channel_runtime.start_test,
                        'notifications':channel_manager.save_notifications,
                        'lifecycle':channel_lifecycle.mutate, 'legacy-lifecycle':channel_lifecycle.mutate_legacy,

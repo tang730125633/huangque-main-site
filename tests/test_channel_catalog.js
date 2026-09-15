@@ -21,6 +21,12 @@ test('lifecycle confirmation preserves input on failure, prevents duplicate requ
   assert.equal(reason.value,'维护测试');assert.equal(dialog.open,true);assert.match(error.textContent,/版本已变化/);
   const second=submit();requests[1].resolve({});await second;assert.equal(dialog.open,false);assert.equal(refreshes,1);
 });
+
+test('shadow observations have explicit run type and state labels',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-manager.js'),'utf8');
+  assert.match(source,/captured:'已记录'/);
+  assert.match(source,/shadow:'影子观察'/);
+});
 test('recycle bin is separate from history and excluded from mapping choices',()=>{
   const changed={...data,items:[...data.items,{id:'deleted',adapter:'image',enabled:false,_lifecycle:{deleted:true}}]};
   const catalog=C.catalog(changed,[]);

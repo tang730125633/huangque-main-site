@@ -2,9 +2,11 @@ import base64
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +14,8 @@ from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 
 from server.content_domains import channel_manager as cm, channel_runtime as runtime
 
@@ -30,10 +34,39 @@ class ChannelTests(unittest.TestCase):
     def mapping(self):
         return cm.save_mapping('admin',dict(kind='image',front='front-model',channel=self.ch['id'],enabled=True))
 
+    def job_db(self):
+        path = self.tmp.name + '/jobs.db'
+        connection = sqlite3.connect(path, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("""CREATE TABLE IF NOT EXISTS jobs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+            status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,
+            created_at INTEGER,updated_at INTEGER,owner TEXT,refunded INTEGER DEFAULT 0)""")
+        connection.commit()
+        return connection
+
     def test_vault_and_public_redaction(self):
         self.assertNotIn(b'private-secret',Path(self.tmp.name+'/channels.db').read_bytes())
         self.assertNotIn('private-secret',json.dumps(cm.overview()))
         self.assertEqual(cm.version(self.ch['id'],1,True)['secret'],'private-secret')
+
+    def test_schema_upgrade_is_additive_and_idempotent(self):
+        legacy_path = self.tmp.name + '/legacy-channels.db'
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            connection.execute('CREATE TABLE settings(id INTEGER PRIMARY KEY,value TEXT)')
+            connection.execute("INSERT INTO settings VALUES(9,'legacy-sentinel')")
+            connection.commit()
+        with patch.dict(os.environ, {'HQ_CHANNEL_DB':legacy_path}):
+            with closing(cm.db()):
+                pass
+            with closing(cm.db()) as connection:
+                tables = {row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                self.assertTrue({
+                    'operation_mappings', 'operation_mapping_versions', 'run_snapshots'
+                }.issubset(tables))
+                self.assertEqual('legacy-sentinel', connection.execute(
+                    'SELECT value FROM settings WHERE id=9').fetchone()[0])
 
     def test_supplier_classification_is_versioned_and_validated(self):
         changed=cm.save('admin',dict(self.body,**self.ch,supplier='中转供应商',connection_type='relay'))
@@ -84,6 +117,302 @@ class ChannelTests(unittest.TestCase):
             cm.capture('image',{'model':'front-model','prompt':'hello'})
         with self.assertRaisesRegex(ValueError,'刷新'):
             cm.save('admin',dict(self.body,**self.ch))
+
+    def test_operation_mapping_is_versioned_and_managed_route_is_fail_closed(self):
+        payload = {'source_page':'banana','provider':'xiaole','prompt':'hello'}
+        shadow = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        self.assertEqual(1, shadow['revision'])
+        shadowed = cm.capture('image', payload, invocation_source='agent')
+        self.assertNotIn('_channel_binding', shadowed)
+        self.assertEqual('image.xiaole.text', shadowed['_channel_shadow']['operation_id'])
+
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        managed = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':1,
+        })
+        captured = cm.capture('image', payload, invocation_source='agent')
+        binding = captured['_channel_binding']
+        self.assertEqual(2, managed['revision'])
+        self.assertEqual('image.xiaole.text', binding['operation_id'])
+        self.assertEqual(2, binding['mapping_revision'])
+        self.assertEqual('agent', binding['invocation_source'])
+        self.assertEqual('test-model', binding['model'])
+
+        cm.save('admin', dict(self.body, **self.ch, model='new-untested-model'))
+        with self.assertRaisesRegex(ValueError, '完整生成测试'):
+            cm.capture('image', payload)
+
+        paused = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'paused',
+            'expected_revision':2,
+        })
+        self.assertEqual(3, paused['revision'])
+        with self.assertRaises(ValueError):
+            cm.capture('image', payload)
+        with self.assertRaisesRegex(ValueError, '刷新'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.text', 'state':'legacy',
+                'expected_revision':2,
+            })
+        restored = cm.rollback_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'target_revision':1,
+            'expected_revision':3,
+        })
+        self.assertEqual('shadow', restored['state'])
+        self.assertEqual(4, restored['revision'])
+        self.assertEqual([4, 3, 2, 1], [
+            item['revision'] for item in cm.overview()['operation_mappings'][0]['history']
+        ])
+
+    def test_operation_publish_serializes_concurrent_channel_change(self):
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        validated = threading.Event()
+        release = threading.Event()
+        original = cm._mapping_channel
+
+        def pause_after_validation(*args, **kwargs):
+            result = original(*args, **kwargs)
+            validated.set()
+            release.wait(2)
+            return result
+
+        with patch.object(cm, '_mapping_channel', side_effect=pause_after_validation), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            publish = pool.submit(cm.save_operation_mapping, 'admin', {
+                'operation_id':'image.xiaole.text', 'state':'managed',
+                'channel':self.ch['id'], 'expected_revision':0,
+            })
+            self.assertTrue(validated.wait(1))
+            update = pool.submit(
+                cm.save, 'admin', dict(self.body, **self.ch, model='new-model'))
+            try:
+                time.sleep(.1)
+                self.assertFalse(update.done(), 'channel update crossed the publish transaction')
+            finally:
+                release.set()
+            self.assertEqual('managed', publish.result(timeout=2)['state'])
+            self.assertEqual(2, update.result(timeout=2)['version'])
+
+    def test_managed_acceptance_rechecks_after_charge_and_refunds_stale_route(self):
+        from server.content_domains import jobs_store
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        refunds = []
+
+        def change_channel(_connection, _job_id):
+            cm.save('admin', dict(self.body, **self.ch, model='untested-model'))
+
+        with self.assertRaises(jobs_store.PaidJobInsertError):
+            jobs_store.create_paid_job(
+                self.job_db, lambda *_args: 90,
+                lambda username, cost, *_args, **_kwargs: refunds.append((username, cost)) or True,
+                'image', 'u', 1,
+                {'source_page':'banana','provider':'xiaole','prompt':'hello'},
+                'content', before_commit=change_channel, invocation_source='web')
+        self.assertEqual([('u', 1)], refunds)
+        with closing(self.job_db()) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0])
+
+    def test_managed_acceptance_holds_channel_lock_through_job_commit(self):
+        from server.content_domains import jobs_store
+        full = cm.reserve(self.ch['id'], 'full')
+        cm.finish(full, 'passed', 'artifact checked')
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        with closing(self.job_db()):
+            pass
+        committing = threading.Event()
+        release = threading.Event()
+        path = self.tmp.name + '/jobs.db'
+
+        class BlockingConnection(sqlite3.Connection):
+            def commit(connection):
+                committing.set()
+                release.wait(2)
+                return super().commit()
+
+        def blocking_job_db():
+            connection = sqlite3.connect(
+                path, timeout=10, factory=BlockingConnection)
+            connection.row_factory = sqlite3.Row
+            return connection
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            submission = pool.submit(
+                jobs_store.create_paid_job,
+                blocking_job_db, lambda *_args: 90,
+                lambda *_args, **_kwargs: True, 'image', 'u', 1,
+                {'source_page':'banana','provider':'xiaole','prompt':'hello'},
+                'content', None, '', None, '', 'web')
+            self.assertTrue(committing.wait(1))
+            update = pool.submit(
+                cm.save, 'admin', dict(self.body, **self.ch, model='new-model'))
+            try:
+                time.sleep(.1)
+                self.assertFalse(update.done(), 'channel changed before job commit completed')
+            finally:
+                release.set()
+            self.assertGreater(submission.result(timeout=2)[0], 0)
+            self.assertEqual(2, update.result(timeout=2)['version'])
+
+    def test_shadow_job_persists_observable_server_snapshot(self):
+        from server.content_domains import jobs_store
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        job_id, _ = jobs_store.create_paid_job(
+            self.job_db, lambda *_args: 90, lambda *_args, **_kwargs: True,
+            'image', 'u', 1,
+            {'source_page':'banana','provider':'xiaole','prompt':'hello',
+             '_channel_shadow':{'operation_id':'forged','id':'attacker'}},
+            'content', invocation_source='agent')
+        evidence = cm.task_evidence(job_id)
+        self.assertEqual('captured', evidence['state'])
+        self.assertEqual('image.xiaole.text', evidence['operation_id'])
+        self.assertEqual('agent', evidence['invocation_source'])
+        self.assertEqual(self.ch['id'], evidence['execution_snapshot']['id'])
+        self.assertEqual({str(job_id)}, cm.search_task_ids('image.xiaole.text'))
+        with closing(self.job_db()) as connection:
+            payload = json.loads(connection.execute(
+                'SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()[0])
+        self.assertIn('_channel_shadow', payload)
+        self.assertNotIn('_channel_binding', payload)
+
+    def test_shadow_projection_recovers_after_post_commit_crash_gap(self):
+        from server.content_domains import jobs_store
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        with patch.object(cm, 'record_shadow', side_effect=RuntimeError('simulated crash gap')):
+            job_id, _ = jobs_store.create_paid_job(
+                self.job_db, lambda *_args: 90, lambda *_args, **_kwargs: True,
+                'image', 'u', 1,
+                {'source_page':'banana','provider':'xiaole','prompt':'hello'},
+                'content', invocation_source='web')
+        self.assertEqual({}, cm.task_evidence(job_id))
+        self.assertEqual(1, jobs_store.reconcile_shadow_observations(self.job_db))
+        evidence = cm.task_evidence(job_id)
+        self.assertEqual('image.xiaole.text', evidence['operation_id'])
+        observation_id = evidence['execution_snapshot']['observation_id']
+        with closing(self.job_db()) as connection:
+            stored_payload = json.loads(connection.execute(
+                'SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()[0])
+        self.assertEqual(observation_id, cm.record_shadow(
+            job_id, stored_payload['_channel_shadow']))
+        with closing(cm.db()) as connection:
+            self.assertEqual(1, connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE id=? AND kind='shadow'",
+                (observation_id,)).fetchone()[0])
+
+    def test_shadow_identity_does_not_alias_reused_job_id(self):
+        common = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'invocation_source':'web',
+        }
+        first = cm._seal_shadow(dict(common, observation_id='a' * 32))
+        second = cm._seal_shadow(dict(
+            common, observation_id='b' * 32, mapping_revision=2))
+        self.assertEqual('a' * 32, cm.record_shadow(7, first))
+        self.assertEqual('b' * 32, cm.record_shadow(7, second))
+        with closing(cm.db()) as connection:
+            self.assertEqual(2, connection.execute(
+                "SELECT COUNT(*) FROM runs WHERE job_id='7' AND kind='shadow'").fetchone()[0])
+        self.assertEqual('b' * 32,
+                         cm.task_evidence(7)['execution_snapshot']['observation_id'])
+
+    def test_shadow_projection_rejects_unsealed_job_payload(self):
+        from server.content_domains import jobs_store
+        with closing(self.job_db()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
+                "VALUES('image','u',0,?,1,1,'content')",
+                (json.dumps({'_channel_shadow': {
+                    'operation_id':'image.xiaole.text',
+                    'observation_id':'c' * 32,
+                    'id':self.ch['id'],
+                }}),))
+            job_id = cursor.lastrowid
+            connection.commit()
+        self.assertEqual(0, jobs_store.reconcile_shadow_observations(self.job_db))
+        self.assertEqual({}, cm.task_evidence(job_id))
+
+    def test_invocation_source_requires_matching_internal_token(self):
+        from server.content_domains import core
+        handler = types.SimpleNamespace(headers={})
+        with patch.object(core, 'AUTH_INTERNAL_TOKEN', 'trusted-token'):
+            self.assertEqual('web', core._invocation_source(handler))
+            handler.headers = {'X-HQ-Internal-Token':'wrong-token'}
+            self.assertEqual('web', core._invocation_source(handler))
+            handler.headers = {'X-HQ-Internal-Token':'trusted-token'}
+            self.assertEqual('agent', core._invocation_source(handler))
+
+    def test_managed_publish_requires_fresh_full_generation_evidence(self):
+        with self.assertRaisesRegex(ValueError, '完整生成测试'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.text', 'state':'managed',
+                'channel':self.ch['id'], 'expected_revision':0,
+            })
+
+    def test_operation_mapping_rejects_missing_reference_capability(self):
+        with self.assertRaisesRegex(ValueError, '参考图'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.reference', 'state':'shadow',
+                'channel':self.ch['id'], 'expected_revision':0,
+            })
+
+    def test_recycle_bin_blocks_operation_mapping_references(self):
+        from server.content_domains import channel_lifecycle
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        disabled = channel_lifecycle.mutate('admin', {
+            'id':self.ch['id'], 'version':1, 'action':'disable', 'reason':'maintenance',
+        })
+        with self.assertRaisesRegex(ValueError, '映射引用'):
+            channel_lifecycle.mutate('admin', {
+                'id':self.ch['id'], 'version':disabled['version'],
+                'action':'delete', 'reason':'retire',
+            })
+
+    def test_task_evidence_contains_immutable_operation_snapshot(self):
+        snapshot = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':4,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'invocation_source':'agent',
+        }
+        rid = cm.reserve(self.ch['id'], 'task', 'snapshot-92',
+                         execution_snapshot=snapshot)
+        cm.finish(rid, 'running', 'accepted', 'provider-92')
+        evidence = cm.task_evidence('snapshot-92')
+        self.assertEqual('image.xiaole.text', evidence['operation_id'])
+        self.assertEqual(4, evidence['mapping_revision'])
+        self.assertEqual('agent', evidence['invocation_source'])
+        self.assertEqual('test-model', evidence['execution_snapshot']['model'])
+        self.assertEqual({'snapshot-92'}, cm.search_task_ids('image.xiaole.text'))
+
+    def test_overview_exposes_shared_operation_catalog(self):
+        item = next(x for x in cm.overview()['operations']
+                    if x['operation_id'] == 'image.xiaole.text')
+        self.assertEqual('image', item['channel_kind'])
+        self.assertEqual(['image-generate'], item['agent_capabilities'])
+        self.assertIsNone(item['mapping'])
 
     def test_video_validation_retains_managed_snapshot(self):
         from server.content_domains import feature_flags, video

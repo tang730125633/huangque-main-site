@@ -30,6 +30,15 @@ AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 
 
+def _invocation_source(handler):
+    """Classify a request source only after authenticating the internal boundary."""
+    return (
+        "agent"
+        if cli_gateway._internal_auth(handler, AUTH_INTERNAL_TOKEN)
+        else "web"
+    )
+
+
 def _local_file_signing_secret(environment):
     """Load the dedicated public-file signing key without crossing trust domains."""
     return str(environment.get("HQ_LOCAL_FILE_SIGNING_SECRET", "") or "").strip()
@@ -2100,6 +2109,11 @@ def _requeue_running_job(job_id):
     return startup_recovery.requeue_running_job(jdb, job_id)
 
 def reclaim_orphaned_running():
+    try:
+        jobs_store.reconcile_shadow_observations(jdb)
+    except (OSError, sqlite3.Error) as exc:
+        print('[channel-shadow] startup projection deferred: %s' %
+              type(exc).__name__, flush=True)
     return startup_recovery.reclaim_orphaned_running(
         jdb=jdb,
         service_owner=SERVICE_OWNER,
@@ -4529,7 +4543,10 @@ class H(BaseHTTPRequestHandler):
                         and not digital_human_paid_child):
                     try:
                         from . import channel_manager
-                        body = channel_manager.capture(kind, body)
+                        body = channel_manager.capture(
+                            kind, body,
+                            invocation_source=_invocation_source(self),
+                        )
                     except ValueError as error:
                         _idempotency_abort(user["username"], p, idem_key)
                         _short_drama_domain()._http_error(self, error)
@@ -4680,7 +4697,8 @@ class H(BaseHTTPRequestHandler):
                             before_commit=(lambda connection, job_id: video_domain.link_staged_seedance_references(connection, staged_ref_keys, job_id, user["username"], p, idem_key)) if staged_ref_keys else paid_association,
                             charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key)) if idem_key else "",
                             before_charge=(lambda: video_domain.mark_seedance_reference_charging(user["username"], p, idem_key, kind, cost, body, SERVICE_OWNER, "job-charge:%s:%s:%s" % (user["username"], p, idem_key))) if staged_ref_keys else None,
-                            submission_key=idem_key or "")
+                            submission_key=idem_key or "",
+                            invocation_source=_invocation_source(self))
                 except matrix_template_submission.AttemptInProgress:
                     return self._send(409, {
                         "detail": "相同模板成片请求正在恢复，请稍后查询",

@@ -19,6 +19,7 @@ content_jobs.db 的 jobs 表被三个进程共写：
 """
 import hashlib
 import json
+import sqlite3
 import time
 import uuid
 from contextlib import closing
@@ -316,11 +317,15 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
 
 def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind="",
                      before_commit=None, charge_transaction_key="", before_charge=None,
-                     submission_key=""):
+                     submission_key="", invocation_source="internal"):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
-    from .channel_manager import capture
+    from . import channel_manager
     try:
-        items = [(int(cost or 0), capture(kind, payload)) for cost, payload in items]
+        items = [(int(cost or 0), (
+            channel_manager.capture(kind, payload)
+            if invocation_source == 'internal'
+            else channel_manager.capture(kind, payload, invocation_source=invocation_source)
+        )) for cost, payload in items]
         from .channel_parameters import quote
         for cost,payload in items:
             expected=quote(kind,payload)
@@ -358,8 +363,8 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
                     job_ids.append(cur.lastrowid)
                 if before_commit is not None:
                     before_commit(c, tuple(job_ids))
-                c.commit()
-                return job_ids, points_left
+                with channel_manager.acceptance_guard(payload for _, payload in items):
+                    c.commit()
             except Exception:
                 c.rollback()
                 raise
@@ -368,18 +373,26 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
             jdb, refund, username, total, kind, submission_ref, error, owner,
             charge_transaction_key=charge_transaction_key)
         raise PaidJobInsertError(state, submission_ref) from error
+    for job_id, (_, payload) in zip(job_ids, items):
+        try:
+            channel_manager.record_shadow(job_id, payload.get('_channel_shadow'))
+        except Exception as exc:
+            print('[channel-shadow] projection pending job=%s error=%s' % (
+                job_id, type(exc).__name__), flush=True)
+    return job_ids, points_left
 
 
 def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
                     before_commit=None, charge_transaction_key="", before_charge=None,
-                    submission_key=""):
+                    submission_key="", invocation_source="internal"):
     batch_callback = None
     if before_commit is not None:
         batch_callback = lambda connection, job_ids: before_commit(connection, job_ids[0])
     job_ids, points_left = create_paid_jobs(
         jdb, deduct, refund, kind, username, [(cost, payload)], owner,
         before_commit=batch_callback, charge_transaction_key=charge_transaction_key,
-        before_charge=before_charge, submission_key=submission_key)
+        before_charge=before_charge, submission_key=submission_key,
+        invocation_source=invocation_source)
     return job_ids[0], points_left
 
 
@@ -389,8 +402,8 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
     This intentionally has no billing side effect.  Its caller owns the persisted
     compensation state and must record refund intent before contacting Auth.
     """
-    from .channel_manager import capture
-    payload = capture(kind, payload)
+    from . import channel_manager
+    payload = channel_manager.capture(kind, payload)
     from .channel_parameters import quote
     expected=quote(kind,payload)
     if expected is not None and int(cost)!=expected:
@@ -407,8 +420,38 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
             job_id = int(cursor.lastrowid)
             if before_commit is not None:
                 before_commit(connection, job_id)
-            connection.commit()
-            return job_id
+            with channel_manager.acceptance_guard([payload]):
+                connection.commit()
         except Exception:
             connection.rollback()
             raise
+    try:
+        channel_manager.record_shadow(job_id, payload.get('_channel_shadow'))
+    except Exception as exc:
+        print('[channel-shadow] projection pending job=%s error=%s' % (
+            job_id, type(exc).__name__), flush=True)
+    return job_id
+
+
+def reconcile_shadow_observations(jdb, limit=None):
+    """Replay durable shadow snapshots from committed jobs into channel evidence."""
+    from . import channel_manager
+    with closing(jdb()) as c:
+        sql = (
+            "SELECT id,payload FROM jobs WHERE payload LIKE '%\"_channel_shadow\"%' "
+            "ORDER BY id DESC"
+        )
+        if limit is None:
+            rows = c.execute(sql).fetchall()
+        else:
+            rows = c.execute(sql + " LIMIT ?", (max(1, int(limit)),)).fetchall()
+    projected = 0
+    for row in rows:
+        try:
+            payload = json.loads(row['payload'] or '{}')
+            snapshot = payload.get('_channel_shadow') if isinstance(payload, dict) else None
+            if channel_manager.record_shadow(row['id'], snapshot):
+                projected += 1
+        except (TypeError, ValueError, OSError, sqlite3.Error):
+            continue
+    return projected

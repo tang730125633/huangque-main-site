@@ -564,7 +564,12 @@ def _pending_job_scanner():
 
 def reclaim_orphaned_running():
     """Resolve imggen-owned workers interrupted by a service restart."""
-    from content_domains import startup_recovery
+    from content_domains import jobs_store, startup_recovery
+    try:
+        jobs_store.reconcile_shadow_observations(jdb)
+    except (OSError, sqlite3.Error) as exc:
+        print('[channel-shadow] startup projection deferred: %s' %
+              type(exc).__name__, flush=True)
     return startup_recovery.reclaim_orphaned_running(
         jdb=jdb,
         service_owner=SERVICE_OWNER,

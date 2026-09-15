@@ -107,6 +107,8 @@ def mutate(actor, body):
         if not deleted and action=='restore':
             raise ValueError('渠道不在回收站')
         mappings=[json.loads(r[0]) for r in c.execute('SELECT config FROM mappings')]
+        mappings.extend(json.loads(r[0]) for r in c.execute(
+            "SELECT config FROM operation_mappings WHERE state IN ('shadow','managed')"))
         references=[m for m in mappings if cid in {m.get('channel'),m.get('backup')}]
         if action=='delete':
             if row['enabled']:
