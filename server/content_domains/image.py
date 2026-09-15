@@ -15,6 +15,7 @@ from .core import (
     base64, json, public_url, urllib, uuid,
 )
 from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request
+from .image_model_catalog import OPENAI_IMAGE_MODEL, SEEDREAM_MODELS, XIAOLE_IMAGE_MODEL
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 
 # gpt 引擎出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。官方 OpenAI 直连地址：
@@ -42,10 +43,6 @@ XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES = max(IMAGE_REF_MAX_BYTES, int(os.environ.get(
 # 下面这些默认值全部由线上实测确认（见 tests/test_seedream.py 头注）：model id 取自本账号 /models。
 ARK_BASE = os.environ.get("ARK_BASE", "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
 ARK_API_KEY = os.environ.get("ARK_API_KEY", "")
-SEEDREAM_MODELS = {
-    "std": os.environ.get("ARK_SEEDREAM_MODEL", "doubao-seedream-5-0-260128"),
-    "pro": os.environ.get("ARK_SEEDREAM_PRO_MODEL", "doubao-seedream-5-0-pro-260628"),
-}
 SEEDREAM_MIN_PIXELS = 3686400   # 实测硬下限：低于此 Ark 返回 400「image size must be at least 3686400 pixels」
 SEEDREAM_HD_PIXELS = 9400000    # 高清档目标像素（标准版实测 4688x2000 / 4096x4096 均可）
 # 像素上限按型号不同 —— Pro 的窗口窄得多。线上实测：
@@ -290,7 +287,7 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
         attempts += 1
         try:
             create = _xiaole_request(
-                "POST", "/api/v1/generations", {"model": "gpt-image-2", "input": input_d},
+                "POST", "/api/v1/generations", {"model": XIAOLE_IMAGE_MODEL, "input": input_d},
                 retry_deadline=create_deadline,
             )
             if create.get("code") in (200, 0, None):
@@ -706,11 +703,11 @@ def gen_image(payload):
                  for index, ref in enumerate(refs)]
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
-        body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
+        body, ct = _multipart({"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
         d = _dispatch_gpt(provider, "/v1/images/edits", body, ct, base, key, proxy)
         mode = "inpaint" if mask else "img2img"
     else:
-        body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
+        body = json.dumps({"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
         d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json", base, key, proxy, streaming=True)
         mode = "text2img"
     files_out, urls = [], []

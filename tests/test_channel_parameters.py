@@ -273,6 +273,7 @@ class ParameterTests(unittest.TestCase):
         image={item['key']:item for item in state['entries']['image']}
         self.assertTrue(image['lechuang']['visible']);self.assertTrue(image['lechuang']['defaultable'])
         self.assertEqual(image['lechuang']['models'],['黄雀模型'])
+        self.assertEqual(image['lechuang']['model_keys'],['gpt-image-2'])
         self.assertFalse(image['xiaole']['visible']);self.assertIn('功能开关',image['xiaole']['reason'])
         self.assertFalse(image['zelong2']['visible']);self.assertIn('专属站点',image['zelong2']['reason'])
         self.assertTrue(image['gpt']['visible']);self.assertFalse(image['gpt']['defaultable'])

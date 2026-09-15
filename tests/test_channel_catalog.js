@@ -80,6 +80,32 @@ test('admin scripts parse together and channel entry is unique',()=>{
   assert.equal((html.match(/data-module-tab="channels"/g)||[]).length,0);
 });
 
+test('frontend model matrix is the default read-only channel view',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-workspace.js'),'utf8');
+  const element=id=>({id,hidden:false,innerHTML:'',textContent:'',value:'',checked:false,
+    classList:{toggle(){}},addEventListener(){},setAttribute(){},querySelector(){return null},querySelectorAll(){return[]}});
+  const ids=['cmMatrix','cmSearch','cmSupplier','cmTransport','cmState','cmHistory','cmDrawer','cmEditor','cmMappingEditor','cmCount','cmCategories','cmList','cmHealth'];
+  const elements=Object.fromEntries(ids.map(id=>[id,element(id)])),root=element('root');
+  const context={window:null,ChannelCatalog:C,document:{querySelector:()=>root,querySelectorAll:()=>[],body:{classList:{remove(){}}}}};context.window=context;
+  vm.createContext(context);vm.runInContext(source,context);
+  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>[],closeLegacy(){},lifecycle(){},detail(){},mapping(){},refresh(){},task(){},journey(){}});
+  workspace.render({items:[],mappings:[],legacy_controls:{},adapters:{},frontend_matrix:{summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[{
+    key:'banana',label:'纳米香蕉',description:'前台产品',visible:true,admitted:true,models:[{key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图'],admitted:true,routes:[{capability:'文生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}},backup:{id:'gemini-backup',name:'Google Gemini API · 兜底',supplier:'Google Gemini API',connection_type:'relay',base_host:'relay.example.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'ok',label:'鉴权通过'},full:{state:'unverified',label:'未建立模型级成品证据'}},candidate:{id:'gemini-shadow',name:'候选线路',supplier:'候选供应商',connection_type:'relay',base_host:'shadow.example.com',credential_source:'渠道密钥库',configured:true,enabled:false,auth:{state:'stale',label:'证据已过期'},full:{state:'unverified',label:'未建立模型级成品证据'}}}]}]
+  }]}});
+  assert.match(elements.cmMatrix.innerHTML,/图片页 · 前台模型与真实渠道/);
+  assert.match(elements.cmMatrix.innerHTML,/纳米香蕉 2/);
+  assert.match(elements.cmMatrix.innerHTML,/Google Gemini API/);
+  assert.match(elements.cmMatrix.innerHTML,/官方直连/);
+  assert.match(elements.cmMatrix.innerHTML,/备用渠道 · Google Gemini API · 兜底/);
+  assert.match(elements.cmMatrix.innerHTML,/影子候选 · 候选线路/);
+  assert.match(elements.cmMatrix.innerHTML,/渠道密钥库/);
+  assert.match(elements.cmMatrix.innerHTML,/证据已过期/);
+  assert.match(elements.cmMatrix.innerHTML,/未建立模型级成品证据/);
+  const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
+  assert.match(html,/data-cm-tab="matrix" class="active">前台模型与渠道/);
+  assert.match(html,/data-cm-tab="catalog">底层渠道与密钥/);
+});
+
 test('layout loader accepts wrapped and legacy contracts and exposes empty and retry states',async()=>{
   const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-workspace.js'),'utf8');
   const element=id=>({id,hidden:false,innerHTML:'',textContent:'',value:'',checked:false,

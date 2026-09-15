@@ -54,6 +54,7 @@ runtime_observability = import_module(_DOMAIN_PACKAGE + ".runtime_observability"
 channel_manager = import_module(_DOMAIN_PACKAGE + ".channel_manager")
 channel_lifecycle = import_module(_DOMAIN_PACKAGE + ".channel_lifecycle")
 channel_parameters = import_module(_DOMAIN_PACKAGE + ".channel_parameters")
+frontend_channel_matrix = import_module(_DOMAIN_PACKAGE + ".frontend_channel_matrix")
 task_termination = import_module(_DOMAIN_PACKAGE + ".task_termination")
 channel_runtime = import_module(_DOMAIN_PACKAGE + ".channel_runtime")
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
@@ -258,18 +259,28 @@ KEY_GROUPS = [
      "env_features": ["图片生成 → 黄雀引擎 2"], "pool_features": ["视频模块 → Sora 2"],
      "env_base_env": ["OPENAI_OFFICIAL_BASE"], "env_base_default": "https://api.openai.com",
      "pool_base_env": ["OPENAI_BASE"], "pool_base_default": "https://api.openai.com",
+     "image_primary_base_env": ["OPENAI_OFFICIAL_BASE"], "image_primary_base_default": "https://api.openai.com",
+     "image_fallback_base_env": ["OPENAI_BASE"], "image_fallback_base_default": "https://api.openai.com",
+     "image_probe_base_env": ["OPENAI_BASE"], "image_probe_base_default": "https://api.openai.com",
+     "image_primary_requires_egress": True,
      "env": ["OPENAI_API_KEY"], "pool_provider": "sora"},
     {"key": "gemini", "name": "Google Gemini API", "category": "图片生成 / 视频生成",
      "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频", "文案编导 → 链接提示词反推"],
      "env_features": ["图片生成 → 纳米香蕉"], "pool_features": ["视频模块 → Omni 视频"],
      "env_base_env": ["GEMINI_OFFICIAL_BASE"], "env_base_default": "https://generativelanguage.googleapis.com",
      "pool_base_env": ["GEMINI_OMNI_BASE", "GEMINI_BASE"], "pool_base_default": "https://generativelanguage.googleapis.com",
+     "image_primary_base_env": ["GEMINI_OFFICIAL_BASE"], "image_primary_base_default": "https://generativelanguage.googleapis.com",
+     "image_fallback_base_env": ["GEMINI_BASE"], "image_fallback_base_default": "https://generativelanguage.googleapis.com",
+     "image_probe_base_env": ["GEMINI_BASE"], "image_probe_base_default": "https://generativelanguage.googleapis.com",
+     "image_primary_requires_egress": True,
      "env": ["GEMINI_API_KEY"], "pool_provider": "omni"},
     {"key": "seedance", "name": "火山方舟 API", "category": "图片生成 / 视频生成",
      "features": ["图片生成 → 黄雀引擎 1（Seedream）", "视频模块 → Seedance 视频"],
      "env_features": ["图片生成 → 黄雀引擎 1（Seedream）"], "pool_features": ["视频模块 → Seedance 视频"],
      "env_base_env": ["ARK_BASE"], "env_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "pool_base_env": ["ARK_BASE"], "pool_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "image_primary_base_env": ["ARK_BASE"], "image_primary_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "image_probe_base_env": ["ARK_BASE"], "image_probe_base_default": "https://ark.cn-beijing.volces.com/api/v3",
      "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
     {"key": "minimax", "name": "MetaSo MiniMax API", "category": "视频生成",
      "features": ["视频模块 → 麦克视频"], "env_features": [],
@@ -292,6 +303,9 @@ KEY_GROUPS = [
      "env": ["HEYGEN_RELAY_TOKEN"]},
     {"key": "xiaolevideo", "name": "小乐视频 API", "category": "图片生成 / 视频生成",
      "features": ["历史图片 / 视频渠道"], "env": ["XIAOLEVIDEO_API_KEY"],
+     "image_primary_base_env": ["XIAOLEVIDEO_API_BASE"], "image_primary_base_default": "https://api.xiaolevideo.cn",
+     "image_probe_base_env": ["XIAOLEVIDEO_API_BASE"], "image_probe_base_default": "https://api.xiaolevideo.cn",
+     "image_accepts_new_jobs": True,
      "accepts_new_jobs": False, "replacement": "Seedream（图片）/ xAI（视频）"},
     {"key": "runninghub", "name": "RunningHub API", "category": "视频处理",
      "features": ["视频模块 → 换装换背景 · 线路一"], "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
@@ -2118,6 +2132,13 @@ def key_status():
                 "pool_features": list(item.get("pool_features", [])),
                 "env_base_host": _key_group_base_host(item, "env", sources),
                 "pool_base_host": _key_group_base_host(item, "pool", sources),
+                "image_primary_base_host": _key_group_base_host(item, "image_primary", sources),
+                "image_fallback_base_host": _key_group_base_host(item, "image_fallback", sources),
+                "image_probe_base_host": _key_group_base_host(item, "image_probe", sources),
+                "image_primary_active": (
+                    not item.get("image_primary_requires_egress")
+                    or bool(egress.EGRESS_PRIMARY or egress.EGRESS_FALLBACK)
+                ),
                 "pool_provider": item.get("pool_provider"),
                 "model_env": item.get("model_env"),
                 "model": _key_group_model(item, sources),
@@ -2133,6 +2154,9 @@ def key_status():
                 "probe_interval": AUTO_KEY_PING_INTERVALS.get(item["key"]),
                 "endpoints": ENDPOINT_CATALOG.get(item["key"], []),
                 "accepts_new_jobs": item.get("accepts_new_jobs", True),
+                "image_accepts_new_jobs": item.get(
+                    "image_accepts_new_jobs", item.get("accepts_new_jobs", True)
+                ),
                 "replacement": item.get("replacement", ""),
             }
         )
@@ -2850,6 +2874,13 @@ def provider_key_list():
 
 def channel_workspace_overview():
     result = channel_manager.overview()
+    result['frontend_matrix'] = frontend_channel_matrix.build(
+        result,
+        key_status(),
+        key_probe_status(),
+        channel_parameters.admin_layout_state(),
+        feature_flags.list_features(),
+    )
     try:
         with closing(db()) as connection:
             result['legacy_events'] = [dict(row) for row in connection.execute(

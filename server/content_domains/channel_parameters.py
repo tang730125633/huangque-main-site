@@ -101,13 +101,14 @@ def workbench_entries(published_items=None, hostname='huangquechuanmei.com'):
     for page,catalog in WORKBENCH_ENTRY_CATALOG.items():
         entries=[]
         for source in catalog:
-            item=dict(source);visible=True;defaultable=True;status='visible';reason='主站显示';models=[]
+            item=dict(source);visible=True;defaultable=True;status='visible';reason='主站显示';models=[];model_keys=[]
             provider=item.get('provider')
             if provider and legacy.get(provider,{}).get('enabled') is False:
                 defaultable=False;status='provider_off';reason='供应商已暂停新任务'
             if item.get('managed_group')=='lechuang':
                 matches=_lechuang_items(published_items)
                 models=[str(x.get('label') or x.get('front') or '') for x in matches]
+                model_keys=[str(x.get('front') or '') for x in matches]
                 visible=defaultable=bool(matches)
                 if not matches:status='unconfigured';reason='尚无已启用且已发布参数的渠道映射'
             if item.get('feature') and not feature_flags.is_enabled(item['feature']):
@@ -116,7 +117,8 @@ def workbench_entries(published_items=None, hostname='huangquechuanmei.com'):
             if required_host and hostname!=required_host:
                 visible=defaultable=False;status='site_only';reason='仅在专属站点 '+required_host+' 显示'
             entries.append(dict(key=item['key'],label=item['label'],visible=visible,
-                                defaultable=defaultable,status=status,reason=reason,models=models))
+                                defaultable=defaultable,status=status,reason=reason,
+                                models=models,model_keys=model_keys))
         result[page]=entries
     return result
 
