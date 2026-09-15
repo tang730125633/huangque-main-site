@@ -247,12 +247,13 @@ class PostgresModeTest(unittest.TestCase):
         with leads_store._pool_instance().connection() as conn:
             with conn.transaction():
                 conn.execute("DELETE FROM crm.leads WHERE username = %s", ("m3e_test_500",))
-                conn.executemany(
-                    "INSERT INTO crm.leads"
-                    "(username, lead_id, intent, follow_status, follow_note, updated_at) "
-                    "VALUES(%s,%s,%s,%s,%s,%s)",
-                    [("m3e_test_500", "%016x" % i, "高意向", "待跟进", "", i)
-                     for i in range(520)])
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "INSERT INTO crm.leads"
+                        "(username, lead_id, intent, follow_status, follow_note, updated_at) "
+                        "VALUES(%s,%s,%s,%s,%s,%s)",
+                        [("m3e_test_500", "%016x" % i, "高意向", "待跟进", "", i)
+                         for i in range(520)])
         try:
             rows = leads.list_crm("m3e_test_500")
             self.assertEqual(len(rows), 500)

@@ -19,6 +19,7 @@ if SERVER not in sys.path:
 
 import admin_api  # noqa: E402
 from content_domains import admin_config_store, provider_keys  # noqa: E402
+from content_domains import feature_flags, pricing  # noqa: E402
 
 PG_URL = os.environ.get("HQ_DATABASE_URL")
 MASTER_KEY = base64.urlsafe_b64encode(b"m" * 32).decode()
@@ -52,8 +53,17 @@ class SqliteModeTest(unittest.TestCase):
         self.db_path = Path(self.tmp) / "admin_config.db"
         self.old_provider_db = provider_keys.DB_PATH
         self.old_admin_db = admin_api.ADMIN_DB
+        # feature_flags/pricing 的 DB_PATH 是 import 时固定的模块常量，不随 env 变；
+        # SQLite 模式的审计用例会经 admin_api.save_feature 写它们，必须一并指向
+        # 本临时库并建表，否则在干净环境（服务器/CI）里会 no such table。
+        self.old_flags_path = feature_flags.DB_PATH
+        self.old_pricing_path = pricing.DB_PATH
         provider_keys.DB_PATH = self.db_path
         admin_api.ADMIN_DB = self.db_path
+        feature_flags.DB_PATH = self.db_path
+        pricing.DB_PATH = self.db_path
+        feature_flags.init_db()
+        pricing.init_db()
         self.env = patch.dict(
             os.environ,
             dict(_clean_env(), FEATURE_FLAGS_DB=str(self.db_path),
@@ -72,6 +82,10 @@ class SqliteModeTest(unittest.TestCase):
     def tearDown(self):
         provider_keys.DB_PATH = self.old_provider_db
         admin_api.ADMIN_DB = self.old_admin_db
+        feature_flags.DB_PATH = self.old_flags_path
+        pricing.DB_PATH = self.old_pricing_path
+        feature_flags.invalidate_cache()
+        pricing.invalidate_cache()
         provider_keys._LEGACY_IMPORT_PATHS.clear()
         for item in self.provider_patch:
             item.stop()
