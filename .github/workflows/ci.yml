@@ -82,6 +82,7 @@ jobs:
         run: |
           alembic upgrade head
           python -m unittest discover -s tests -p 'test_postgres_foundation.py' -v
+          python -m unittest discover -s tests -p 'test_ip_agent_session_migration.py' -v
           python -m unittest discover -s tests -p 'test_sqlite_inventory.py' -v
           python scripts/sqlite_inventory.py --check
 
