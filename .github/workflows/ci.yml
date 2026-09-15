@@ -85,6 +85,13 @@ jobs:
           python -m unittest discover -s tests -p 'test_ip_agent_session_migration.py' -v
           python -m unittest discover -s tests -p 'test_ip_agent_aux_migration.py' -v
           python -m unittest discover -s tests -p 'test_flags_store.py' -v
+          python -m unittest discover -s tests -p 'test_observability_store.py' -v
+          python -m unittest discover -s tests -p 'test_channel_store.py' -v
+          python -m unittest discover -s tests -p 'test_channel_runtime_store.py' -v
+          python -m unittest discover -s tests -p 'test_admin_config_store.py' -v
+          python -m unittest discover -s tests -p 'test_leads_store.py' -v
+          python -m unittest discover -s tests -p 'test_tikhub_cache.py' -v
+          python -m unittest discover -s tests -p 'test_creator_pg_store.py' -v
           python -m unittest discover -s tests -p 'test_sqlite_inventory.py' -v
           python scripts/sqlite_inventory.py --check
           sh -n deploy/postgres/backup.sh

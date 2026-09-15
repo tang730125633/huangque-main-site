@@ -43,11 +43,26 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # 内容(详情)发布即固定→缓存靠谱；评论/搜索会变→短存；play_url 带时效→跟详情 1h 内安全。
 _CACHE_DB = os.environ.get("TIKHUB_CACHE_DB", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tikhub_cache.db"))
 _CACHE_LOCK = threading.Lock()
+# 缓存后端（M3F）：默认 sqlite（与迁移前逐字节一致）；HQ_TIKHUB_CACHE=redis 时读写全转到
+# content_domains/tikhub_cache_redis.py（Redis TTL，键 = hq:tikhub:cache:<原主键>）。
+# 懒加载：sqlite 模式不产生额外依赖；模式校验的唯一权威在 tikhub_cache_redis.mode()。
+_REDIS_CACHE = None
+def _cache_redis():
+    global _REDIS_CACHE
+    if _REDIS_CACHE is None:
+        try:
+            from content_domains import tikhub_cache_redis as module
+        except ImportError:  # 以 server.* 包布局导入本模块时（CI 包布局）
+            from server.content_domains import tikhub_cache_redis as module
+        _REDIS_CACHE = module
+    return _REDIS_CACHE
 def _cache_conn():
     c = sqlite3.connect(_CACHE_DB, timeout=5)
     c.execute("CREATE TABLE IF NOT EXISTS cache(k TEXT PRIMARY KEY, v TEXT, exp INTEGER)")
     return c
 def _cache_get(key):
+    if _cache_redis().enabled():   # redis 模式：失败语义由后端模块降级为「未命中」
+        return _cache_redis().get(key)
     try:
         with _CACHE_LOCK, closing(_cache_conn()) as c:
             r = c.execute("SELECT v, exp FROM cache WHERE k=?", (key,)).fetchone()
@@ -57,6 +72,8 @@ def _cache_get(key):
         pass
     return None
 def _cache_set(key, val, ttl):
+    if _cache_redis().enabled():   # redis 模式：失败语义由后端模块降级为「丢弃本次写入」
+        return _cache_redis().set(key, val, ttl)
     try:
         with _CACHE_LOCK, closing(_cache_conn()) as c:
             c.execute("INSERT OR REPLACE INTO cache(k, v, exp) VALUES(?,?,?)",

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Encrypted provider API-key pool shared by admin and content services."""
+"""Encrypted provider API-key pool shared by admin and content services.
+
+存储层：HQ_ADMIN_CONFIG_STORE=sqlite（默认，现状）走本模块 SQLite 路径；
+postgres 走 ``admin_config_store``（ops.admin_provider_api_keys）。两个服务
+（admin 与 content）都会读写密钥池，切换时必须同一开关一起切，禁止双权威。
+"""
 
 import base64
 import os
@@ -12,6 +17,8 @@ from contextlib import closing
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from . import admin_config_store
 
 
 PROVIDERS = {"xai", "deepseek", "sora", "seedance", "omni", "minimax"}
@@ -141,6 +148,12 @@ def _connect():
 
 
 def init_db():
+    if admin_config_store.enabled():
+        # PostgreSQL 模式的表结构由 Alembic 迁移（ops.admin_provider_api_keys）负责，
+        # 这里不建表、不改列、不冻结 base_url（回填器负责），只保留与 SQLite 模式
+        # 相同的启动副作用：把环境变量里的密钥一次性托管。
+        _snapshot_legacy_env_keys()
+        return
     with closing(_connect()) as conn:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS provider_api_keys(
@@ -250,39 +263,64 @@ def _snapshot_legacy_env_keys():
             _LEGACY_IMPORT_PATHS.add(path)
             return
         now = int(time.time())
-        with closing(_connect()) as conn:
-            conn.execute("BEGIN IMMEDIATE")
+        if admin_config_store.enabled():
             for provider, secret in values.items():
-                if not secret or conn.execute(
-                    """SELECT 1 FROM provider_api_keys
-                       WHERE provider=? AND created_by='system-env-migration'
-                       LIMIT 1""",
-                    (provider,),
-                ).fetchone():
+                if not secret:
                     continue
                 key_id = secrets.token_urlsafe(12)
                 ciphertext, nonce = _encrypt(provider, key_id, secret)
-                base_url = normalize_base_url(provider)
-                conn.execute(
-                    """INSERT INTO provider_api_keys(
-                        id,provider,label,last4,ciphertext,nonce,base_url,priority,state,
-                        health_status,last_checked_at,last_latency_ms,last_error,
-                        created_by,created_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,0,'active','unknown',NULL,NULL,'',?,?,?)""",
-                    (
-                        key_id,
-                        provider,
-                        "服务器环境变量（已加密托管）",
-                        secret[-4:],
-                        ciphertext,
-                        nonce,
-                        base_url,
-                        "system-env-migration",
-                        now,
-                        now,
-                    ),
+                # 「同渠道只托管一次」由目标库的 NOT EXISTS 守卫保证（等价于
+                # SQLite 侧的排他写事务 + 存在性检查）。
+                admin_config_store.insert_env_key_once(
+                    key_id,
+                    provider,
+                    "服务器环境变量（已加密托管）",
+                    secret[-4:],
+                    ciphertext,
+                    nonce,
+                    normalize_base_url(provider),
+                    0,
+                    "unknown",
+                    None,
+                    None,
+                    "",
+                    "system-env-migration",
+                    now,
                 )
-            conn.commit()
+        else:
+            with closing(_connect()) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for provider, secret in values.items():
+                    if not secret or conn.execute(
+                        """SELECT 1 FROM provider_api_keys
+                           WHERE provider=? AND created_by='system-env-migration'
+                           LIMIT 1""",
+                        (provider,),
+                    ).fetchone():
+                        continue
+                    key_id = secrets.token_urlsafe(12)
+                    ciphertext, nonce = _encrypt(provider, key_id, secret)
+                    base_url = normalize_base_url(provider)
+                    conn.execute(
+                        """INSERT INTO provider_api_keys(
+                            id,provider,label,last4,ciphertext,nonce,base_url,priority,state,
+                            health_status,last_checked_at,last_latency_ms,last_error,
+                            created_by,created_at,updated_at
+                        ) VALUES(?,?,?,?,?,?,?,0,'active','unknown',NULL,NULL,'',?,?,?)""",
+                        (
+                            key_id,
+                            provider,
+                            "服务器环境变量（已加密托管）",
+                            secret[-4:],
+                            ciphertext,
+                            nonce,
+                            base_url,
+                            "system-env-migration",
+                            now,
+                            now,
+                        ),
+                    )
+                conn.commit()
         _LEGACY_IMPORT_PATHS.add(path)
 
 
@@ -314,6 +352,46 @@ def add_key(provider, label, secret, actor, health=None, base_url=None):
     now = int(time.time())
     health = health or {}
     restored_id = None
+    if admin_config_store.enabled():
+        rows = [
+            row for row in admin_config_store.fetch_keys().values()
+            if row["provider"] == provider
+        ]
+        priority = 1 + max([int(row["priority"]) for row in rows] or [0])
+        for row in rows:
+            if _decrypt(row) == secret:
+                if row["state"] != "retired":
+                    raise ValueError("该 API 密钥已经添加")
+                restored_id = row["id"]
+                admin_config_store.reactivate_key(
+                    restored_id,
+                    label,
+                    base_url,
+                    priority,
+                    "healthy" if health.get("ok") else "unknown",
+                    now if health else None,
+                    health.get("latency_ms"),
+                    now,
+                )
+                break
+        if restored_id is None:
+            admin_config_store.insert_key(
+                key_id,
+                provider,
+                label,
+                secret[-4:],
+                ciphertext,
+                nonce,
+                base_url,
+                priority,
+                "healthy" if health.get("ok") else "unknown",
+                now if health else None,
+                health.get("latency_ms"),
+                str(health.get("error") or "")[:180],
+                actor,
+                now,
+            )
+        return public_key(restored_id or key_id)
     with closing(_connect()) as conn:
         rows = conn.execute(
             "SELECT * FROM provider_api_keys WHERE provider=?", (provider,)
@@ -396,10 +474,13 @@ def _public(row):
 
 def public_key(key_id):
     init_db()
-    with closing(_connect()) as conn:
-        row = conn.execute(
-            "SELECT * FROM provider_api_keys WHERE id=?", (str(key_id),)
-        ).fetchone()
+    if admin_config_store.enabled():
+        row = admin_config_store.fetch_key(key_id)
+    else:
+        with closing(_connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM provider_api_keys WHERE id=?", (str(key_id),)
+            ).fetchone()
     if not row:
         raise ValueError("API 密钥不存在")
     return _public(row)
@@ -407,17 +488,29 @@ def public_key(key_id):
 
 def list_public():
     init_db()
-    with closing(_connect()) as conn:
-        rows = conn.execute(
-            "SELECT * FROM provider_api_keys WHERE state!='retired' "
-            "ORDER BY provider,priority,id"
-        ).fetchall()
-        counts = {
-            row["provider"]: row["n"]
-            for row in conn.execute(
-                "SELECT provider,COUNT(*) AS n FROM provider_api_keys GROUP BY provider"
+    if admin_config_store.enabled():
+        # SQLite 侧是 ORDER BY provider,priority,id；在内存里用同样的排序键，
+        # 保证后台列表顺序与迁移前一致。
+        rows = sorted(
+            (
+                row for row in admin_config_store.fetch_keys().values()
+                if row["state"] != "retired"
+            ),
+            key=lambda row: (row["provider"], row["priority"], row["id"]),
+        )
+        counts = admin_config_store.count_by_provider()
+    else:
+        with closing(_connect()) as conn:
+            rows = conn.execute(
+                "SELECT * FROM provider_api_keys WHERE state!='retired' "
+                "ORDER BY provider,priority,id"
             ).fetchall()
-        }
+            counts = {
+                row["provider"]: row["n"]
+                for row in conn.execute(
+                    "SELECT provider,COUNT(*) AS n FROM provider_api_keys GROUP BY provider"
+                ).fetchall()
+            }
     items = [_public(row) for row in rows]
     for provider in sorted(PROVIDERS):
         value = str(os.environ.get(ENV_KEYS[provider]) or "").strip()
@@ -472,29 +565,57 @@ def candidates(provider, preferred_id=None):
     """Return decrypted candidates; a preferred id is also allowed after retirement."""
     provider = _provider(provider)
     init_db()
-    with closing(_connect()) as conn:
+    if admin_config_store.enabled():
+        keys = list(admin_config_store.fetch_keys().values())
         if preferred_id and str(preferred_id) != "env":
-            rows = conn.execute(
-                "SELECT * FROM provider_api_keys WHERE id=? AND provider=?",
-                (str(preferred_id), provider),
-            ).fetchall()
+            rows = [
+                row for row in keys
+                if str(row["id"]) == str(preferred_id) and row["provider"] == provider
+            ]
         elif preferred_id == "env":
-            rows = conn.execute(
-                """SELECT * FROM provider_api_keys
-                   WHERE provider=? AND created_by='system-env-migration'
-                   ORDER BY created_at,id LIMIT 1""",
-                (provider,),
-            ).fetchall()
+            rows = sorted(
+                (
+                    row for row in keys
+                    if row["provider"] == provider
+                    and row["created_by"] == "system-env-migration"
+                ),
+                key=lambda row: (row["created_at"], row["id"]),
+            )[:1]
         else:
-            rows = conn.execute(
-                """SELECT * FROM provider_api_keys
-                   WHERE provider=? AND state='active' AND health_status!='unhealthy'
-                   ORDER BY use_count,priority,id""",
-                (provider,),
-            ).fetchall()
-        total = conn.execute(
-            "SELECT COUNT(*) FROM provider_api_keys WHERE provider=?", (provider,)
-        ).fetchone()[0]
+            rows = sorted(
+                (
+                    row for row in keys
+                    if row["provider"] == provider
+                    and row["state"] == "active"
+                    and row["health_status"] != "unhealthy"
+                ),
+                key=lambda row: (row["use_count"], row["priority"], row["id"]),
+            )
+        total = admin_config_store.count_by_provider().get(provider, 0)
+    else:
+        with closing(_connect()) as conn:
+            if preferred_id and str(preferred_id) != "env":
+                rows = conn.execute(
+                    "SELECT * FROM provider_api_keys WHERE id=? AND provider=?",
+                    (str(preferred_id), provider),
+                ).fetchall()
+            elif preferred_id == "env":
+                rows = conn.execute(
+                    """SELECT * FROM provider_api_keys
+                       WHERE provider=? AND created_by='system-env-migration'
+                       ORDER BY created_at,id LIMIT 1""",
+                    (provider,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT * FROM provider_api_keys
+                       WHERE provider=? AND state='active' AND health_status!='unhealthy'
+                       ORDER BY use_count,priority,id""",
+                    (provider,),
+                ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) FROM provider_api_keys WHERE provider=?", (provider,)
+            ).fetchone()[0]
     if preferred_id and str(preferred_id) != "env" and not rows:
         raise KeyStoreUnavailable("任务绑定的 API 密钥已不存在")
     if rows and not preferred_id:
@@ -542,6 +663,19 @@ def claim_candidate(provider):
     init_db()
     blocked = _runtime_blocked_ids()
     now = int(time.time())
+    if admin_config_store.enabled():
+        row = admin_config_store.claim_key(provider, blocked, now)
+        if not row:
+            value = str(os.environ.get(ENV_KEYS[provider]) or "").strip()
+            if not admin_config_store.count_by_provider().get(provider, 0) and value:
+                raise KeyStoreUnavailable("视频密钥保险箱未配置，已停止新付费任务")
+            return None
+        return {
+            "id": row["id"],
+            "provider": provider,
+            "secret": _decrypt(row),
+            "base_url": row["base_url"] or normalize_base_url(provider),
+        }
     with closing(_connect()) as conn:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
@@ -577,11 +711,16 @@ def claim_candidate(provider):
 
 def reveal_key(key_id):
     init_db()
-    with closing(_connect()) as conn:
-        row = conn.execute(
-            "SELECT * FROM provider_api_keys WHERE id=? AND state!='retired'",
-            (str(key_id),),
-        ).fetchone()
+    if admin_config_store.enabled():
+        row = admin_config_store.fetch_key(key_id)
+        if row is not None and row["state"] == "retired":
+            row = None
+    else:
+        with closing(_connect()) as conn:
+            row = conn.execute(
+                "SELECT * FROM provider_api_keys WHERE id=? AND state!='retired'",
+                (str(key_id),),
+            ).fetchone()
     if not row:
         raise ValueError("API 密钥不存在")
     return _decrypt(row)
@@ -598,6 +737,10 @@ def set_health(key_id, ok, latency_ms=None, error=""):
                 time.monotonic() + _RUNTIME_UNHEALTHY_SECONDS
             )
     now = int(time.time())
+    if admin_config_store.enabled():
+        if not admin_config_store.write_health(key_id, ok, latency_ms, error, now):
+            return None
+        return public_key(key_id)
     with closing(_connect()) as conn:
         cur = conn.execute(
             """UPDATE provider_api_keys
@@ -620,6 +763,10 @@ def retire_key(key_id):
     if str(key_id) == "env":
         raise ValueError("服务器环境变量不能在网页中删除")
     now = int(time.time())
+    if admin_config_store.enabled():
+        if not admin_config_store.retire_key(key_id, now):
+            raise ValueError("API 密钥不存在")
+        return True
     with closing(_connect()) as conn:
         cur = conn.execute(
             "UPDATE provider_api_keys SET state='retired',updated_at=? WHERE id=? AND state!='retired'",

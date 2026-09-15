@@ -1,4 +1,14 @@
-"""Versioned channel routing. No credentials or mutable configuration in jobs."""
+"""Versioned channel routing. No credentials or mutable configuration in jobs.
+
+存储层：HQ_CHANNEL_STORE=sqlite（默认，现状）走本模块 SQLite 路径
+（HQ_CHANNEL_DB 指向的 channel_management.db）；postgres 走 ``channel_store``
+（routing schema 的 11 张表）。切换时所有读方（content / imggen / admin）必须同一
+开关一起切，禁止双权威。
+
+PG 模式下本模块的公开读写函数自动分发到 ``channel_store``；``db()`` 是给 SQLite
+原生 SQL 调用方用的（channel_runtime / channel_parameters），PG 模式下直接抛错，
+它们必须先完成迁移（见 docs/runbooks/postgresql-routing-channels-m3c.md）。
+"""
 import base64
 import hashlib
 import hmac
@@ -11,6 +21,8 @@ import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
 
+from . import channel_store
+
 ADAPTERS = {
     'openai_image': {'name': 'OpenAI 兼容文生图', 'kind': 'image', 'references': False},
     'minimax_h3': {'name': 'MiniMax H3 视频协议', 'kind': 'xiaole_video', 'references': True},
@@ -22,6 +34,14 @@ ADAPTERS = {
 
 
 def db():
+    if channel_store.enabled():
+        # PG 模式下 SQLite 不再是权威：绝不返回旧库连接，避免「配置读 PG、证据写 SQLite」
+        # 的双权威。仍直连本函数的模块必须先迁移（见 M3C runbook 的切换前置条件）。
+        raise RuntimeError(
+            'HQ_CHANNEL_STORE=postgres：channel_management.db 已停用，db() 不再提供连接；'
+            '本模块公开 API 已自动分发到 channel_store，'
+            'channel_runtime / channel_parameters 必须先完成迁移再切换'
+        )
     path = Path(os.environ.get('HQ_CHANNEL_DB', str(Path(__file__).resolve().parents[1] / 'channel_management.db')))
     path.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(path), timeout=15)
@@ -90,7 +110,8 @@ def _number(body, key, default, low, high):
     return value
 
 
-def save(actor, body):
+def _channel_config(body):
+    """构造并校验渠道配置；SQLite 与 PostgreSQL 两条路径共用这一份，报错逐字一致。"""
     cid = str(body.get('id') or uuid.uuid4().hex)
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', cid):
         raise ValueError('渠道编号格式无效')
@@ -124,6 +145,13 @@ def save(actor, body):
         raise ValueError('测试素材格式或大小无效')
     if config['daily_test'] and (not config['daily_limit'] or not config['test_cost'] or config['test_cost'] > config['daily_budget']):
         raise ValueError('定时生成测试须配置次数、单次预算和每日预算')
+    return cid, config
+
+
+def save(actor, body):
+    if channel_store.enabled():
+        return channel_store.save(actor, body)
+    cid, config = _channel_config(body)
     with closing(db()) as c:
         c.execute('BEGIN IMMEDIATE')
         old = c.execute('SELECT * FROM channels WHERE id=?', (cid,)).fetchone()
@@ -141,7 +169,7 @@ def save(actor, body):
             for mapping_row in c.execute('SELECT config FROM mappings'):
                 mapping = json.loads(mapping_row['config'])
                 if (mapping.get('enabled') and cid in {mapping.get('channel'), mapping.get('backup')}
-                        and mapping.get('kind') != ADAPTERS[adapter]['kind']):
+                        and mapping.get('kind') != ADAPTERS[config['adapter']]['kind']):
                     raise ValueError('该渠道仍被已启用映射使用，不能更改为不兼容协议；请先调整映射')
             for mapping_row in c.execute('SELECT operation_id,state,config FROM operation_mappings'):
                 mapping = json.loads(mapping_row['config'])
@@ -186,6 +214,8 @@ def _audit(c, action, target, actor):
 
 
 def version(cid, rev=None, with_secret=False):
+    if channel_store.enabled():
+        return channel_store.version(cid, rev, with_secret)
     with closing(db()) as c:
         if rev is None:
             row = c.execute('SELECT version FROM channels WHERE id=?', (cid,)).fetchone()
@@ -205,6 +235,8 @@ MAPPING_STATES = {'legacy', 'shadow', 'managed', 'paused'}
 
 
 def operation_mapping(operation_id, revision=None, connection=None):
+    if channel_store.enabled():
+        return channel_store.operation_mapping(operation_id, revision, connection)
     operation_id = str(operation_id or '').strip()
     owns_connection = connection is None
     c = connection or db()
@@ -249,6 +281,9 @@ def _validate_operation_config(cfg, contract):
 
 
 def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None):
+    if channel_store.enabled():
+        return channel_store._mapping_channel(
+            cid, contract_or_kind, require_ready=require_ready, connection=connection)
     contract = contract_or_kind if isinstance(contract_or_kind, dict) else None
     kind = contract['channel_kind'] if contract else str(contract_or_kind)
     cid = str(cid or '').strip()
@@ -290,6 +325,8 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
 
 def save_operation_mapping(actor, body):
     """Publish one immutable operation mapping revision with optimistic locking."""
+    if channel_store.enabled():
+        return channel_store.save_operation_mapping(actor, body)
     from .function_registry import operation
     operation_id = str(body.get('operation_id') or '').strip()
     contract = operation(operation_id)
@@ -355,6 +392,8 @@ def rollback_operation_mapping(actor, body):
 
 
 def save_mapping(actor, body):
+    if channel_store.enabled():
+        return channel_store.save_mapping(actor, body)
     kind, front = str(body.get('kind') or ''), str(body.get('front') or '').strip()
     cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
     if kind == 'xiaole_video' and front not in {'grok','grok15','minimax','omni','micro'}:
@@ -479,6 +518,10 @@ def _confirm_acceptance(connection, payload):
 @contextmanager
 def acceptance_guard(payloads):
     """Keep channel state immutable until the corresponding job commit finishes."""
+    if channel_store.enabled():
+        with channel_store.acceptance_guard(payloads):
+            yield
+        return
     payloads = list(payloads)
     managed = [payload for payload in payloads
                if isinstance(payload, dict)
@@ -500,6 +543,8 @@ def acceptance_guard(payloads):
 
 
 def capture(kind, payload, preparation=False, invocation_source='web'):
+    if channel_store.enabled():
+        return channel_store.capture(kind, payload, preparation, invocation_source)
     clean = dict(payload)
     clean.pop('_channel_binding', None)  # Never trust a client supplied private snapshot.
     clean.pop('_channel_shadow', None)
@@ -548,6 +593,8 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
 
 def record_shadow(job_id, snapshot):
     """Persist a server-owned shadow observation without making a provider call."""
+    if channel_store.enabled():
+        return channel_store.record_shadow(job_id, snapshot)
     if (not _valid_shadow(snapshot) or not snapshot.get('operation_id')
             or not re.fullmatch(r'[0-9a-f]{32}', str(snapshot.get('observation_id') or ''))):
         return None
@@ -586,6 +633,8 @@ def record_shadow(job_id, snapshot):
 
 
 def rollback(actor, body):
+    if channel_store.enabled():
+        return channel_store.rollback(actor, body)
     old = version(str(body.get('id')), int(body.get('target_version')))
     secret = version(old['id'], old['version'], True)['secret']
     current = version(old['id'])
@@ -593,6 +642,8 @@ def rollback(actor, body):
 
 
 def overview():
+    if channel_store.enabled():
+        return channel_store.overview()
     from .channel_lifecycle import legacy_states, LEGACY_SCOPES
     now = time.time()
     with closing(db()) as c:
@@ -643,6 +694,8 @@ def overview():
 
 
 def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
+    if channel_store.enabled():
+        return channel_store.reserve(cid, kind, job_id, snapshot, execution_snapshot)
     cfg = snapshot or version(cid)
     now, rid = time.time(), uuid.uuid4().hex
     with closing(db()) as c:
@@ -688,6 +741,8 @@ def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
 
 
 def finish(rid, state, detail, provider_id=''):
+    if channel_store.enabled():
+        return channel_store.finish(rid, state, detail, provider_id)
     with closing(db()) as c:
         c.execute('UPDATE runs SET state=?,detail=?,updated=?,duration=?-started,provider_id=CASE WHEN ?!=\'\' THEN ? ELSE provider_id END WHERE id=?',
                   (state, detail[:300], time.time(), time.time(), provider_id, provider_id, rid))
@@ -695,18 +750,21 @@ def finish(rid, state, detail, provider_id=''):
 
 
 def notification_settings(private=False):
+    if channel_store.enabled():
+        return channel_store.notification_settings(private)
     with closing(db()) as c:
         row = c.execute('SELECT value FROM settings WHERE id=1').fetchone()
     value = json.loads(row[0]) if row else {'enabled':False}
     if value.get('endpoint'):
         value['endpoint'] = _crypt(value['endpoint'], True) if private else '已配置（隐藏）'
     from . import runtime_observability
-    with closing(runtime_observability.database()) as c:
-        value['delivery'] = {r['state']:r['n'] for r in c.execute("SELECT state,COUNT(*) n FROM alert_outbox WHERE event_id LIKE 'channel.%' GROUP BY state")}
+    value['delivery'] = runtime_observability.alert_counts('channel.%')
     return value
 
 
 def task_evidence(job_id):
+    if channel_store.enabled():
+        return channel_store.task_evidence(job_id)
     with closing(db()) as c:
         row = c.execute(
             "SELECT r.channel,r.version,r.state,r.provider_id,s.operation_id,s.mapping_revision,"
@@ -727,6 +785,8 @@ def task_evidence(job_id):
 
 def task_recovery_state(job_id):
     """Conservative paid-task recovery state; unreadable evidence is never failure."""
+    if channel_store.enabled():
+        return channel_store.task_recovery_state(job_id)
     try:
         evidence = task_evidence(job_id)
         return evidence.get('state') or 'absent'
@@ -736,6 +796,8 @@ def task_recovery_state(job_id):
 
 def mark_interrupted_task_unknown(job_id, detail):
     """Atomically preserve an interrupted provider submission for reconciliation."""
+    if channel_store.enabled():
+        return channel_store.mark_interrupted_task_unknown(job_id, detail)
     try:
         with closing(db()) as c:
             c.execute('BEGIN IMMEDIATE')
@@ -764,6 +826,8 @@ def mark_interrupted_task_unknown(job_id, detail):
 
 def search_task_ids(query):
     """Find managed tasks by durable provider/channel/version evidence."""
+    if channel_store.enabled():
+        return channel_store.search_task_ids(query)
     needle = '%' + str(query or '').lower() + '%'
     if needle == '%%':
         return set()
@@ -785,6 +849,8 @@ def search_task_ids(query):
 
 
 def save_notifications(actor, body):
+    if channel_store.enabled():
+        return channel_store.save_notifications(actor, body)
     from .runtime_observability import valid_endpoint
     old = notification_settings(True)
     endpoint = body.get('endpoint') or old.get('endpoint', '')
