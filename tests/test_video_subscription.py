@@ -34,6 +34,16 @@ class VideoSubscriptionTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM video_notification_outbox WHERE job_id=1").fetchone()[0], 1)
             self.assertFalse(jobs_store.set_done_with_video_outbox(jdb, 1, "alice", "video", {"url": "/again.mp4"}))
 
+    def test_long_form_video_kinds_enqueue_completion_notifications(self):
+        from server.content_domains import jobs_store
+        from server import wechat_subscribe
+
+        self.assertIn("script_to_video", jobs_store.VIDEO_NOTIFICATION_KINDS)
+        self.assertIn("matrix_template_video", jobs_store.VIDEO_NOTIFICATION_KINDS)
+        self.assertIn("script_to_video", self.auth.VIDEO_SUBSCRIPTION_KINDS)
+        self.assertIn("matrix_template_video", self.auth.VIDEO_SUBSCRIPTION_KINDS)
+        self.assertEqual(wechat_subscribe.PAGE, "paper/pages/works/index")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_template = os.environ.get("WX_SUBSCRIBE_WORK_COMPLETE_TEMPLATE_ID")
