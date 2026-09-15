@@ -329,7 +329,7 @@ _PROBE_CONFIG_ENVS = {
     "xai": ["XAI_API_BASE"],
     "deepseek": ["DEEPSEEK_API_BASE", "VIDEO_AGENT_MODEL"],
     "gemini": ["GEMINI_BASE"],
-    "heygen": ["HEYGEN_MCP_CREDENTIALS"],
+    "heygen": ["HEYGEN_MCP_CREDENTIALS", "HEYGEN_BILLING_MODE"],
     "tikhub": ["TIKHUB_BASE"],
     "heygen_relay": ["HEYGEN_RELAY_BASE"],
     "xiaolevideo": ["XIAOLEVIDEO_API_BASE"],
@@ -2109,8 +2109,24 @@ def _credential_version(key):
     return _key_group_version(item) if item else ""
 
 
+def _heygen_subscription_mode(value_getter=None):
+    value_getter = value_getter or (lambda name: _env_value([name]))
+    billing_mode = (value_getter("HEYGEN_BILLING_MODE") or "auto").lower()
+    if billing_mode in {"subscription", "plan", "mcp"}:
+        return True
+    if billing_mode in {"api", "wallet", "api_wallet"}:
+        return False
+    return bool(value_getter("HEYGEN_MCP_CREDENTIALS"))
+
+
 def key_status():
     sources = env_sources()
+    def source_value(name):
+        return next(
+            ((src["values"].get(name) or "").strip() for src in sources
+             if (src["values"].get(name) or "").strip()),
+            "",
+        )
     items = []
     for item in KEY_GROUPS:
         values = _key_group_values(item, sources)
@@ -2122,6 +2138,25 @@ def key_status():
         configured = len(found) == len(item["env"])
         if item["key"] in {"runninghub", "tikhub", "heygen_relay"}:
             configured = bool(found)
+        video_runtime = {}
+        if item["key"] == "heygen":
+            mcp_configured = bool(source_value("HEYGEN_MCP_CREDENTIALS"))
+            subscription = _heygen_subscription_mode(source_value)
+            video_runtime = {
+                "video_base_host": "mcp.heygen.com" if subscription
+                                   else _key_group_base_host(item, "env", sources),
+                "video_configured": mcp_configured if subscription else configured,
+                "video_credential_source": (
+                    "服务器 OAuth 凭据 · HEYGEN_MCP_CREDENTIALS" if subscription
+                    else "服务器环境变量 · HEYGEN_API_KEY"
+                ),
+                "video_model": "heygen_mcp_subscription" if subscription else "heygen_api",
+            }
+        elif item["key"] == "runninghub":
+            video_runtime = {
+                "video_configured": bool(source_value("RUNNINGHUB_API_KEY")),
+                "video_credential_source": "服务器环境变量 · RUNNINGHUB_API_KEY",
+            }
         items.append(
             {
                 "key": item["key"],
@@ -2158,6 +2193,7 @@ def key_status():
                     "image_accepts_new_jobs", item.get("accepts_new_jobs", True)
                 ),
                 "replacement": item.get("replacement", ""),
+                **video_runtime,
             }
         )
     return items
@@ -2369,13 +2405,15 @@ def _key_ping_heygen_mcp():
         if os.name != "nt" and path.stat().st_mode & 0o077:
             return {"ok": False, "status": "credential_rejected", "mode": "auth"}
         credentials = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(credentials.get("oauth"), dict):
+            credentials = credentials["oauth"]
         token = str(credentials.get("access_token") or "").strip()
-        expires_at = float(credentials.get("expires_at") or 0)
+        expires_at = heygen_oauth._expiry_timestamp(credentials.get("expires_at"))
     except Exception:
         return {"ok": False, "status": "credential_rejected", "mode": "auth"}
     if not token:
         return {"ok": False, "status": "credential_rejected", "mode": "auth"}
-    if expires_at <= time.time() + 60:
+    if expires_at and expires_at <= time.time() + 60:
         status = "credential_refresh_pending" if credentials.get("refresh_token") else "credential_rejected"
         return {"ok": False, "status": status, "mode": "auth"}
     return _ping_upstream(
@@ -2395,7 +2433,7 @@ def _key_ping_heygen_mcp():
 
 
 def _key_ping_heygen():
-    if _env_value(["HEYGEN_MCP_CREDENTIALS"]):
+    if _heygen_subscription_mode():
         result = _key_ping_heygen_mcp()
         result["components"] = "MCP OAuth · 网页套餐"
         return result
@@ -2709,7 +2747,10 @@ def probe_key(key, force=False):
 
 
 def probe_configured_keys():
-    configured = {item["key"] for item in key_status() if item["configured"]}
+    configured = {
+        item["key"] for item in key_status()
+        if item["configured"] or item.get("video_configured")
+    }
     for key in AUTO_KEY_PING_INTERVALS:
         if key in configured:
             try:
@@ -2874,12 +2915,20 @@ def provider_key_list():
 
 def channel_workspace_overview():
     result = channel_manager.overview()
+    provider_key_state = provider_key_list()
+    content_health = next(
+        (item.get("detail") or {} for item in service_status()
+         if item.get("key") == "content"),
+        {},
+    )
     result['frontend_matrix'] = frontend_channel_matrix.build(
         result,
         key_status(),
         key_probe_status(),
         channel_parameters.admin_layout_state(),
         feature_flags.list_features(),
+        provider_key_rows=provider_key_state.get('items') or [],
+        runtime_health=content_health,
     )
     try:
         with closing(db()) as connection:

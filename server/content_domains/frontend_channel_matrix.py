@@ -8,7 +8,7 @@ import time
 import urllib.parse
 
 from . import banana_provider
-from .function_registry import IMAGE_FUNCTIONS
+from .function_registry import IMAGE_FUNCTIONS, VIDEO_FUNCTIONS
 from .image_model_catalog import OPENAI_IMAGE_MODEL, SEEDREAM_MODELS, XIAOLE_IMAGE_MODEL
 
 
@@ -32,6 +32,67 @@ _RETIRED = {}
 _OFFICIAL_HOSTS = {
     'api.openai.com', 'generativelanguage.googleapis.com',
     'ark.cn-beijing.volces.com', 'api.xiaolevideo.cn',
+    'api.x.ai', 'api.heygen.com', 'mcp.heygen.com',
+    'www.runninghub.cn', 'api.wavespeed.ai',
+}
+_VIDEO_ENTRY_KEYS = {
+    'digital_ip': 'talking', 'cinematic': 'cinematic', 'tryon': 'tryon',
+    'grok': 'grok', 'sora': 'sora', 'minimax': 'minimax',
+    'omni': 'omni', 'seedance': 'micro',
+}
+_VIDEO_FEATURE_KEYS = {
+    'digital_ip': 'video', 'cinematic': 'cinematic', 'tryon': 'tryon',
+    'grok': 'grok_video', 'sora': 'sora_video',
+    'minimax': 'minimax_h3_video', 'omni': 'omni_video',
+    'seedance': 'seedance_video',
+}
+_VIDEO_LEGACY_HOSTS = {
+    'heygen': 'api.heygen.com', 'runninghub': 'www.runninghub.cn',
+    'wavespeed': 'api.wavespeed.ai',
+}
+_VIDEO_MODELS = {
+    'digital_ip': [
+        {'key': 'default', 'label': 'HeyGen 数字人口播',
+         'model': 'heygen_mcp_subscription / HeyGen API', 'dependency': 'heygen'},
+    ],
+    'cinematic': [
+        {'key': 'default', 'label': 'HeyGen 电影化身',
+         'model': 'HeyGen Cinematic Avatar', 'dependency': 'heygen'},
+    ],
+    'tryon': [
+        {'key': 'fast', 'label': '线路二 · 极速', 'model': 'WaveSpeed 换装',
+         'dependency': 'wavespeed', 'operations': ['video.tryon.fast']},
+        {'key': 'classic', 'label': '线路一 · 经典', 'model': 'RunningHub 换装工作流',
+         'dependency': 'runninghub', 'operations': ['video.tryon.classic']},
+    ],
+    'grok': [
+        {'key': 'standard', 'label': '通用版 · 文生/图生',
+         'model': 'grok-imagine-video', 'dependency': 'xai', 'provider': 'xai'},
+        {'key': '1.5', 'label': '1.5 · 高质量图生',
+         'model': 'grok-imagine-video-1.5', 'dependency': 'xai', 'provider': 'xai',
+         'operations': ['video.grok.image']},
+    ],
+    'sora': [
+        {'key': 'standard', 'label': 'Sora 2 · 标准',
+         'model': 'sora-2', 'dependency': 'openai', 'provider': 'sora'},
+        {'key': 'pro', 'label': 'Sora 2 Pro · 高画质',
+         'model': 'sora-2-pro', 'dependency': 'openai', 'provider': 'sora'},
+    ],
+    'minimax': [
+        {'key': 'default', 'label': 'MiniMax H3 · 2K',
+         'model': 'MiniMax-H3', 'dependency': 'minimax', 'provider': 'minimax'},
+    ],
+    'omni': [
+        {'key': 'default', 'label': 'Omni 视频',
+         'model': 'gemini-omni-flash-preview', 'dependency': 'gemini', 'provider': 'omni'},
+    ],
+    'seedance': [
+        {'key': 'standard', 'label': 'Seedance 2.0 · 标准',
+         'model': 'doubao-seedance-2-0-260128', 'dependency': 'seedance', 'provider': 'seedance'},
+        {'key': 'fast', 'label': 'Seedance 2.0 · Fast（暂未开通）',
+         'model': 'doubao-seedance-2-0-fast-260128', 'dependency': 'seedance',
+         'provider': 'seedance', 'frontend_enabled': False},
+    ],
 }
 
 
@@ -134,6 +195,61 @@ def _legacy_backup(key, credentials, probes, controls, now):
     if not fallback_host or fallback_host == primary_host:
         return None
     return _legacy_channel(key, credentials, probes, controls, now, route='fallback')
+
+
+def _video_environment_channel(key, credentials, probes, controls, now):
+    item = credentials.get(key) or {}
+    host = item.get('video_base_host') or item.get('env_base_host') or _VIDEO_LEGACY_HOSTS.get(key, '')
+    control = controls.get(key) or {}
+    channel = {
+        'id': 'legacy:' + key + ':video', 'name': item.get('name') or key,
+        'supplier': item.get('name') or key, 'connection_type': _transport(host),
+        'base_host': host, 'model': item.get('video_model') or '',
+        'credential_source': item.get('video_credential_source')
+                             or '服务器环境变量 · ' + ' / '.join(item.get('required_env') or []),
+        'configured': bool(item.get('video_configured', item.get('configured'))),
+        'enabled': item.get('accepts_new_jobs', True) is not False
+                   and control.get('enabled') is not False,
+        'auth': _check((probes or {}).get(key), now),
+        'full': {'state': 'unverified', 'label': '未建立模型级成品证据', 'checked_at': None},
+        'source': 'legacy',
+    }
+    return channel
+
+
+def _pool_channel(provider, key, credentials, pool_keys, controls, now):
+    item = credentials.get(key) or {}
+    keys = [x for x in (pool_keys or [])
+            if x.get('provider') == provider and x.get('managed') is not False]
+    active = [x for x in keys if x.get('state') == 'active']
+    usable = [x for x in active if x.get('health_status') != 'unhealthy']
+    hosts = list(dict.fromkeys(_host(x.get('base_url')) for x in keys if _host(x.get('base_url'))))
+    transports = {_transport(host) for host in hosts}
+    healthy = [x for x in usable if x.get('health_status') == 'healthy']
+    if healthy:
+        checked = max((int(x.get('last_checked_at') or 0) for x in healthy), default=0)
+        auth = (_check({'status': 'auth_ok', 'checked_at': checked}, now) if checked else
+                {'state': 'unverified', 'label': '号池密钥尚未鉴权通过', 'checked_at': None})
+        if auth['state'] == 'ok':
+            auth['label'] = '号池有鉴权通过的密钥'
+    elif keys:
+        checked = max((int(x.get('last_checked_at') or 0) for x in keys), default=0)
+        auth = {'state': 'unverified', 'label': '号池密钥尚未鉴权通过', 'checked_at': checked or None}
+    else:
+        auth = {'state': 'unverified', 'label': '号池未配置', 'checked_at': None}
+    control = controls.get(key) or {}
+    return {
+        'id': 'pool:' + provider, 'name': (item.get('name') or provider) + ' 号池',
+        'supplier': item.get('name') or provider,
+        'connection_type': next(iter(transports)) if len(transports) == 1 else 'unknown',
+        'base_host': ' / '.join(hosts), 'model': '',
+        'credential_source': '后台密钥号池 · %d 个密钥，%d 个可轮转' % (len(keys), len(usable)),
+        'pool_size': len(keys), 'pool_usable': len(usable),
+        'configured': bool(keys), 'enabled': bool(usable) and control.get('enabled') is not False,
+        'auth': auth,
+        'full': {'state': 'unverified', 'label': '未建立模型级成品证据', 'checked_at': None},
+        'source': 'pool',
+    }
 
 
 def _tier(product_key, mode):
@@ -282,11 +398,17 @@ def _lechuang_product(workspace, layout_entry, feature_enabled, now):
     }
 
 
-def build(workspace, key_rows, probes, layout_state, feature_rows, now=None):
-    """Return a secret-free matrix grouped exactly as the image workbench is grouped."""
-    now = int(time.time() if now is None else now)
-    credentials = {x.get('key'): x for x in key_rows or []}
-    features = {x.get('key'): bool(x.get('enabled')) for x in feature_rows or []}
+def _summary(page, products):
+    models = [model for product in products for model in product['models']]
+    return {
+        'page': page, 'products': len(products), 'models': len(models),
+        'visible_products': sum(1 for x in products if x['visible']),
+        'admitted_models': sum(1 for x in models if x['admitted']),
+        'attention_models': sum(1 for x in models if x.get('attention')),
+    }
+
+
+def _image_matrix(workspace, credentials, probes, layout_state, features, now):
     image_entries = {x.get('key'): x for x in (layout_state.get('entries', {}).get('image') or [])}
     products = []
     for product in IMAGE_FUNCTIONS:
@@ -317,12 +439,157 @@ def build(workspace, key_rows, probes, layout_state, feature_rows, now=None):
                         'lechuang': 'lechuang', 'xiaole': 'xiaole', 'zelong2': 'zelong2'}
     product_position = {entry_to_product.get(key, key): index for key, index in position.items()}
     products.sort(key=lambda x: product_position.get(x['key'], 999))
-    models = [model for product in products for model in product['models']]
     return {
         'page': 'image', 'label': '图片生成', 'read_only': True,
-        'summary': {'products': len(products), 'models': len(models),
-                    'visible_products': sum(1 for x in products if x['visible']),
-                    'admitted_models': sum(1 for x in models if x['admitted']),
-                    'attention_models': sum(1 for x in models if x.get('attention'))},
+        'summary': _summary('image', products),
         'products': products,
     }
+
+
+def _video_route(operation_id, capability, model, dependency, provider,
+                 workspace, credentials, probes, pool_keys, now):
+    mapping = next((x for x in workspace.get('operation_mappings', [])
+                    if x.get('operation_id') == operation_id), None)
+    if provider:
+        legacy = _pool_channel(provider, dependency, credentials, pool_keys,
+                               workspace.get('legacy_controls') or {}, now)
+    else:
+        legacy = _video_environment_channel(
+            dependency, credentials, probes, workspace.get('legacy_controls') or {}, now)
+    legacy['model'] = legacy.get('model') or model
+    state = str((mapping or {}).get('state') or 'legacy')
+    primary, backup, candidate = legacy, None, None
+    if state == 'managed':
+        primary = _managed_channel(mapping.get('channel'), workspace, now)
+        backup = _managed_channel(mapping.get('backup'), workspace, now)
+    elif state == 'shadow':
+        candidate = _managed_channel(mapping.get('channel'), workspace, now)
+    elif state == 'paused':
+        primary = None
+    admitted = state != 'paused' and bool(
+        primary and primary.get('enabled') and primary.get('configured')
+    )
+    return {
+        'operation_id': operation_id, 'capability': capability,
+        'control_state': state, 'primary': primary, 'backup': backup,
+        'candidate': candidate, 'admitted': admitted,
+        'reason': ('管理员已暂停该操作' if state == 'paused' else
+                   '主渠道未配置、未启用或不存在' if not admitted else ''),
+    }
+
+
+def _video_model(product, spec, workspace, credentials, probes, pool_keys,
+                 feature_enabled, now, unavailable_reason='功能开关未开启'):
+    operations = set(spec.get('operations') or [])
+    modes = [mode for mode in (product.get('modes') or [])
+             if not operations or mode.get('key') in operations]
+    routes = [
+        _video_route(
+            mode['key'], _capability_name(product['name'], mode.get('name')),
+            spec['model'], spec['dependency'], spec.get('provider'),
+            workspace, credentials, probes, pool_keys, now,
+        )
+        for mode in modes
+    ]
+    route_models = list(dict.fromkeys(
+        route['primary'].get('model') for route in routes
+        if route.get('primary') and route['primary'].get('model')
+    ))
+    actual_model = route_models[0] if len(route_models) == 1 else (
+        '按能力分流：' + ' / '.join(route_models) if route_models else spec['model']
+    )
+    frontend_enabled = spec.get('frontend_enabled', True) is not False
+    admitted = feature_enabled and frontend_enabled and any(x['admitted'] for x in routes)
+    reasons = []
+    if not feature_enabled:
+        reasons.append(unavailable_reason)
+    if not frontend_enabled:
+        reasons.append('前台当前未开放该模型')
+    reasons.extend(route['reason'] for route in routes if route['reason'])
+    warnings = list(reasons)
+    for route in routes:
+        primary = route.get('primary')
+        if not primary:
+            continue
+        if not primary.get('configured'):
+            warnings.append(route['capability'] + '：凭据未配置')
+        if primary.get('auth', {}).get('state') != 'ok':
+            warnings.append(route['capability'] + '：' + primary.get('auth', {}).get('label', '鉴权未验证'))
+        if primary.get('full', {}).get('state') != 'ok':
+            warnings.append(route['capability'] + '：' + primary.get('full', {}).get('label', '成品未验证'))
+    return {
+        'key': spec['key'], 'label': spec['label'], 'actual_model': actual_model,
+        'capabilities': [x['capability'] for x in routes], 'routes': routes,
+        'admitted': admitted, 'reason': '；'.join(dict.fromkeys(reasons)),
+        'warnings': list(dict.fromkeys(warnings)), 'attention': bool(warnings),
+    }
+
+
+def _video_matrix(workspace, credentials, probes, pool_keys, layout_state,
+                  features, runtime_health, now):
+    entries = {x.get('key'): x for x in (layout_state.get('entries', {}).get('video') or [])}
+    products = []
+    for product in VIDEO_FUNCTIONS:
+        specs = _VIDEO_MODELS.get(product['key'])
+        if not specs:
+            continue
+        entry = entries.get(_VIDEO_ENTRY_KEYS.get(product['key']), {})
+        enabled = features.get(_VIDEO_FEATURE_KEYS.get(product['key']), True)
+        health_key = (product.get('surface_visibility_key')
+                      or product.get('acceptance_health_key'))
+        runtime_available = (
+            runtime_health.get(health_key) is True
+            if health_key and runtime_health is not None else True
+        )
+        admission_enabled = enabled and runtime_available
+        unavailable_reason = (
+            '功能开关未开启' if not enabled else '前台运行时当前未开放'
+        )
+        models = [
+            _video_model(product, spec, workspace, credentials, probes,
+                         pool_keys, admission_enabled, now, unavailable_reason)
+            for spec in specs
+        ]
+        # The four legacy tabs are always rendered by video.html; their feature
+        # flags gate submission, not visibility.  Newer provider-backed tabs
+        # expose a runtime health key that the browser itself uses to hide them.
+        visible = bool(entry.get('visible')) and runtime_available
+        products.append({
+            'key': product['key'], 'label': entry.get('label') or product['name'],
+            'description': product.get('desc') or '',
+            'visible': visible,
+            'visibility_reason': (unavailable_reason if not runtime_available
+                                  else entry.get('reason') or ''),
+            'admitted': any(x['admitted'] for x in models),
+            'attention': any(x['attention'] for x in models),
+            'models': models, 'warning': '',
+        })
+    order = layout_state.get('layout', {}).get('video', {}).get('order') or []
+    position = {key: index for index, key in enumerate(order)}
+    product_position = {
+        product: position.get(entry, 999)
+        for product, entry in _VIDEO_ENTRY_KEYS.items()
+    }
+    products.sort(key=lambda x: product_position.get(x['key'], 999))
+    return {
+        'page': 'video', 'label': '视频生成', 'read_only': True,
+        'summary': _summary('video', products), 'products': products,
+    }
+
+
+def build(workspace, key_rows, probes, layout_state, feature_rows, now=None,
+          provider_key_rows=None, runtime_health=None):
+    """Return one secret-free operator matrix spanning the image and video workbenches."""
+    now = int(time.time() if now is None else now)
+    credentials = {x.get('key'): x for x in key_rows or []}
+    features = {x.get('key'): bool(x.get('enabled')) for x in feature_rows or []}
+    image = _image_matrix(workspace, credentials, probes or {}, layout_state, features, now)
+    video = _video_matrix(
+        workspace, credentials, probes or {}, provider_key_rows or [],
+        layout_state, features, runtime_health, now,
+    )
+    # Keep the original image fields at the top level for clients deployed before
+    # the multi-page view, while the admin UI consumes the explicit pages list.
+    result = dict(image)
+    result['pages'] = [image, video]
+    return result
