@@ -36,6 +36,7 @@ SQLite 源             PostgreSQL 目标
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -50,11 +51,35 @@ _pool_lock = threading.Lock()
 # 咨询锁命名空间（固定常量，避免与其它域串锁）；第二个键用 hashtext(名称)。
 _ADVISORY_NAMESPACE = 0x48514331  # 'HQC1'
 
+_log = logging.getLogger("hq.channel_store")
+_MODE_ANNOUNCED = False
+
+
+def _announce_mode(env_name: str, value: str) -> None:
+    """进程内一次性权威声明：第一次解析出模式时留一条日志。
+
+    环境变量缺失/为空 = 静默退回默认旧存储，是切写后最危险的情形，
+    用 WARNING 保证默认日志级别可见；显式配置用 INFO。
+    """
+    global _MODE_ANNOUNCED
+    if _MODE_ANNOUNCED:
+        return
+    _MODE_ANNOUNCED = True
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        _log.warning(
+            "%s not set, falling back to default %r (legacy storage)",
+            env_name, value,
+        )
+    else:
+        _log.info("%s authority announced: mode=%s", env_name, value)
+
 
 def mode() -> str:
     value = (os.environ.get("HQ_CHANNEL_STORE") or "sqlite").strip().lower()
     if value not in _MODES:
         raise RuntimeError("HQ_CHANNEL_STORE must be sqlite or postgres")
+    _announce_mode("HQ_CHANNEL_STORE", value)
     return value
 
 

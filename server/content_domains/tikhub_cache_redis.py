@@ -53,12 +53,35 @@ _client = None
 _lock = threading.Lock()
 _warned = set()  # 同类降级告警每次进程只打一次，避免刷爆 journal
 
+_MODE_ANNOUNCED = False
+
+
+def _announce_mode(env_name: str, value: str) -> None:
+    """进程内一次性权威声明：第一次解析出模式时留一条日志。
+
+    环境变量缺失/为空 = 静默退回默认旧存储，是切写后最危险的情形，
+    用 WARNING 保证默认日志级别可见；显式配置用 INFO。
+    """
+    global _MODE_ANNOUNCED
+    if _MODE_ANNOUNCED:
+        return
+    _MODE_ANNOUNCED = True
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        log.warning(
+            "%s not set, falling back to default %r (legacy storage)",
+            env_name, value,
+        )
+    else:
+        log.info("%s authority announced: mode=%s", env_name, value)
+
 
 def mode() -> str:
     """``sqlite``（默认）/ ``redis``；非法值直接抛错（配置错误必须立刻可见）。"""
     value = (os.environ.get("HQ_TIKHUB_CACHE") or "sqlite").strip().lower()
     if value not in _MODES:
         raise RuntimeError("HQ_TIKHUB_CACHE must be sqlite or redis")
+    _announce_mode("HQ_TIKHUB_CACHE", value)
     return value
 
 

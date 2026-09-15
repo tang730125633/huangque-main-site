@@ -80,10 +80,16 @@ python scripts/migrate_ops_flags_pricing.py \
    - 密码只落在服务器受保护 env 文件，不进 git、不进聊天。
 4. 同时重启 `huangque-content` 与 `huangque-auth`（其余读方服务同版本同开关一起切）。
    启动即检查日志无 `HQ_FLAGS_STORE` / import 报错。
-5. 后台开关验证：admin 改一个开关 → 5 秒内 content 侧生效 → `psql` 查 `ops.feature_flags`
+5. **权威校验门禁**：sudo 跑 `scripts/check_store_authority.py --expect postgres`
+   必须全绿（任一 ERROR 立即回滚），并确认启动日志里是 INFO
+   `authority announced: mode=postgres` 而非 WARNING「not set, falling back」
+   （见 `postgresql-cutover-authority-guard.md`）。
+6. 后台开关验证：admin 改一个开关 → 5 秒内 content 侧生效 → `psql` 查 `ops.feature_flags`
    新值落库且 `updated_at` 秒级时间戳正确；再改回。
-6. 观察 48 小时：接单、报价、管理员操作无异常；`ops.data_migration_runs` 无新失败。
-7. SQLite 归档：`feature_flags.db` 改名保留（不删除），`FEATURE_FLAGS_DB` 指向失效后
+7. 观察 48 小时：接单、报价、管理员操作无异常；`ops.data_migration_runs` 无新失败。
+8. SQLite 冰冻监控：切写后 1 小时每 10 分钟查 `feature_flags.db` mtime/行数必须
+   「冻住」（见 `postgresql-cutover-authority-guard.md`），然后才准归档。
+9. SQLite 归档：`feature_flags.db` 改名保留（不删除），`FEATURE_FLAGS_DB` 指向失效后
    确认无进程再打开（`lsof`）。
 
 ## 回滚
@@ -97,6 +103,8 @@ python scripts/migrate_ops_flags_pricing.py \
 ## 停止条件（任一触发立即停并向老板报告）
 
 - 影子核对任何一行不一致；行数/主键集合不一致。
-- 切换期间 SQLite 出现新的 `updated_at`（说明仍有进程在写旧库）。
+- 切换期间 SQLite 出现新的 `updated_at`（说明仍有进程在写旧库）；SQLite 冰冻监控
+  1 小时内 mtime 前进或行数增长（见 `postgresql-cutover-authority-guard.md`）。
+- 权威校验器 `--expect postgres` 非全绿（进程与配置不一致 = 双权威风险）。
 - 回填或运行时报错无法解释；锁等待影响用户请求。
 - 备份不可恢复；双权威并存（同一时刻两处 `HQ_FLAGS_STORE` 不一致）。

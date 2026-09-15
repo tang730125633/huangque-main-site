@@ -88,7 +88,10 @@ Redis 侧等价地删除该键（绝不写 0/负 TTL，Redis 会直接报错）�
 4. **回读进程环境**（不能只看 env 文件）：
    ```bash
    tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value huangque-content)/environ | grep HQ_TIKHUB_CACHE
+   sudo /usr/bin/python3 /home/ubuntu/m3a-verify-full/scripts/check_store_authority.py
    ```
+   校验器里 `HQ_TIKHUB_CACHE` 相关行必须 `env=redis proc=redis OK`（其余域仍
+   sqlite 属正常）；任何 ERROR 立即回滚（见 `postgresql-cutover-authority-guard.md`）。
 5. 启动即自检：
    ```bash
    cd /home/ubuntu/content-api
@@ -128,6 +131,9 @@ sudo systemctl restart huangque-content huangque-leadgen-api
 - `hq:tikhub:cache:*` 键数单调增长（TTL 未生效）。
 - Redis OOM / 被其他业务挤掉（`maxmemory` 打满、evicted_keys 激增）。
 - 同一时刻出现「一半进程 redis、一半 sqlite」的双权威（只影响命中率，仍要求收敛）。
+- 权威校验器对 `HQ_TIKHUB_CACHE` 报 ERROR（进程与配置不一致 = 双权威风险）；
+  SQLite 冰冻监控 1 小时内 `tikhub` 旧缓存 mtime 前进或行数增长（见
+  `postgresql-cutover-authority-guard.md`）。
 
 ## 附：egress-router 的 cache.db（**建议，未实施**）
 

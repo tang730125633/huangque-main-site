@@ -116,11 +116,16 @@ python -m unittest discover -s tests -p 'test_leads_store.py' -v   # PG 段不�
 4. **同时**重启 `huangque-content` 与 `huangque-leadgen-api`。启动即检查日志无
    `HQ_LEADS_STORE` / import 报错；`journalctl -u huangque-leadgen-api -n 50` 确认
    leadgen 加载的是新代码。
-5. 端到端验证：小程序/工作台对某条线索保存跟进状态 → `psql` 查 `crm.leads` 新值落库、
+5. **权威校验门禁**：sudo 跑 `scripts/check_store_authority.py --expect postgres`
+   必须全绿（任一 ERROR 立即回滚），启动日志应是 INFO
+   `authority announced: mode=postgres`（见 `postgresql-cutover-authority-guard.md`）。
+6. 端到端验证：小程序/工作台对某条线索保存跟进状态 → `psql` 查 `crm.leads` 新值落库、
    `updated_at` 是秒级时间戳 → 重新采集同关键词，列表里跟进状态仍在该线索上（证明
    leadgen-api 也走 PG）→ 删除该线索并确认 PG 行消失。
-6. 观察 48 小时：CRM 保存/删除/合并回显无异常；`ops.data_migration_runs` 无新失败。
-7. SQLite 归档：`leads_crm.db` 改名保留（不删除），确认无进程再打开（`lsof`）。
+7. 观察 48 小时：CRM 保存/删除/合并回显无异常；`ops.data_migration_runs` 无新失败。
+8. SQLite 冰冻监控：切写后 1 小时每 10 分钟查 `leads_crm.db` mtime/行数必须
+   「冻住」（见 `postgresql-cutover-authority-guard.md`），然后才准归档。
+9. SQLite 归档：`leads_crm.db` 改名保留（不删除），确认无进程再打开（`lsof`）。
 
 ## 回滚
 
@@ -134,6 +139,8 @@ python -m unittest discover -s tests -p 'test_leads_store.py' -v   # PG 段不�
 
 - 影子核对任何一行不一致；行数或主键集合不一致。
 - 切换期间 SQLite 出现新的 `updated_at`（说明仍有进程在写旧库，通常是漏重启
-  `huangque-leadgen-api`）。
+  `huangque-leadgen-api`）；SQLite 冰冻监控 1 小时内 mtime 前进或行数增长
+  （见 `postgresql-cutover-authority-guard.md`）。
+- 权威校验器 `--expect postgres` 非全绿（进程与配置不一致 = 双权威风险）。
 - 回填或运行时报错无法解释；锁等待影响用户请求。
 - 备份不可恢复；双权威并存（两个单元读到不同的 `HQ_LEADS_STORE`）。

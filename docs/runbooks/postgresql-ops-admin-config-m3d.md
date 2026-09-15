@@ -126,15 +126,20 @@ HQ_DATABASE_URL=… python -m unittest discover -s tests -p 'test_admin_config_s
    密码只落在服务器受保护 env 文件，不进 git、不进聊天。
 4. 同时重启 admin 与 content（密钥池两个写者必须同版本同开关），启动即检查日志无
    `HQ_ADMIN_CONFIG_STORE` / import 报错。
-5. 功能验证（逐项）：
+5. **权威校验门禁**：sudo 跑 `scripts/check_store_authority.py --expect postgres`
+   必须全绿（任一 ERROR 立即回滚），启动日志应是 INFO
+   `authority announced: mode=postgres`（见 `postgresql-cutover-authority-guard.md`）。
+6. 功能验证（逐项）：
    - 后台密钥池：加一把测试密钥 → `psql` 查 `ops.admin_provider_api_keys` 有行、
      `ciphertext` 是密文、`base_url` 已冻结；再下架该密钥。
    - 派单：`provider_keys.claim_candidate()` 走 PG 时 `use_count` 累加，任务能正常取到密钥。
    - 渠道开关：改一个渠道 → 5 秒内生效 → `ops.admin_channel_config` 有行且同一事务里
      `ops.admin_audit` 有 `channel.save` 行。
    - 审计读回：后台运行历史页能看到新审计行。
-6. 观察 48 小时：付费任务取密钥、轮转、后台操作无异常；`ops.data_migration_runs` 无新失败。
-7. SQLite 归档：`admin_config.db` 改名保留（**不删除**，未接线的四张表仍在用），
+7. 观察 48 小时：付费任务取密钥、轮转、后台操作无异常；`ops.data_migration_runs` 无新失败。
+8. SQLite 冰冻监控：切写后 1 小时每 10 分钟查 `admin_config.db` mtime/行数必须
+   「冻住」（见 `postgresql-cutover-authority-guard.md`），然后才准归档。
+9. SQLite 归档：`admin_config.db` 改名保留（**不删除**，未接线的四张表仍在用），
    确认没有进程打开已归档文件（`lsof`）。
 
 ## 回滚
@@ -168,7 +173,9 @@ HQ_DATABASE_URL=… python -m unittest discover -s tests -p 'test_admin_config_s
 ## 停止条件（任一触发立即停并向老板报告）
 
 - 影子核对任何一行不一致；行数/主键集合不一致。
-- 切换期间 SQLite 出现新的 `updated_at`（说明仍有进程在写旧库）。
+- 切换期间 SQLite 出现新的 `updated_at`（说明仍有进程在写旧库）；SQLite 冰冻监控
+  1 小时内 mtime 前进或行数增长（见 `postgresql-cutover-authority-guard.md`）。
+- 权威校验器 `--expect postgres` 非全绿（进程与配置不一致 = 双权威风险）。
 - 密钥池出现「同明文重复添加」「同一把密钥被两个服务重复记账」或任务取不到密钥。
 - 回填或运行时报错无法解释；锁等待影响付费任务接单。
 - 备份不可恢复；admin 与 content 两处 `HQ_ADMIN_CONFIG_STORE` 不一致（双权威）。

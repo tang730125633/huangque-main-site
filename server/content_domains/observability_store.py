@@ -19,6 +19,7 @@ import ``server.db.postgres``；只在这里懒加载 ``psycopg_pool.ConnectionP
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 
@@ -26,11 +27,35 @@ _MODES = {"sqlite", "postgres"}
 _pool = None
 _pool_lock = threading.Lock()
 
+_log = logging.getLogger("hq.observability_store")
+_MODE_ANNOUNCED = False
+
+
+def _announce_mode(env_name: str, value: str) -> None:
+    """进程内一次性权威声明：第一次解析出模式时留一条日志。
+
+    环境变量缺失/为空 = 静默退回默认旧存储，是切写后最危险的情形，
+    用 WARNING 保证默认日志级别可见；显式配置用 INFO。
+    """
+    global _MODE_ANNOUNCED
+    if _MODE_ANNOUNCED:
+        return
+    _MODE_ANNOUNCED = True
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        _log.warning(
+            "%s not set, falling back to default %r (legacy storage)",
+            env_name, value,
+        )
+    else:
+        _log.info("%s authority announced: mode=%s", env_name, value)
+
 
 def mode() -> str:
     value = (os.environ.get("HQ_OBS_STORE") or "sqlite").strip().lower()
     if value not in _MODES:
         raise RuntimeError("HQ_OBS_STORE must be sqlite or postgres")
+    _announce_mode("HQ_OBS_STORE", value)
     return value
 
 
