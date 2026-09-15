@@ -1053,6 +1053,25 @@ class KeyPingTests(unittest.TestCase):
         mcp.assert_not_called()
         self.assertEqual(ping.call_args.args[1], "https://api.heygen.com/v2/user/remaining_quota")
 
+    def test_heygen_mcp_ping_accepts_official_cli_nested_oauth_credentials(self):
+        import unittest.mock as mock
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        credentials = pathlib.Path(directory.name) / "heygen-mcp.json"
+        credentials.write_text(json.dumps({"oauth": {
+            "access_token": "nested-token", "refresh_token": "refresh-token",
+            "expires_at": 4102444800,
+        }}), encoding="utf-8")
+        credentials.chmod(0o600)
+
+        with mock.patch.object(admin_api, "_env_value", return_value=str(credentials)), \
+                mock.patch.object(admin_api, "_heygen_proxy_url", return_value=""), \
+                mock.patch.object(admin_api, "_ping_upstream", return_value={"ok": True}) as ping:
+            result = admin_api._key_ping_heygen_mcp()
+        self.assertTrue(result["ok"])
+        self.assertEqual(ping.call_args.kwargs["headers"]["Authorization"], "Bearer nested-token")
+
     def test_heygen_probe_version_tracks_billing_mode(self):
         self.assertIn("HEYGEN_BILLING_MODE", admin_api._PROBE_CONFIG_ENVS["heygen"])
 

@@ -2405,6 +2405,8 @@ def _key_ping_heygen_mcp():
         if os.name != "nt" and path.stat().st_mode & 0o077:
             return {"ok": False, "status": "credential_rejected", "mode": "auth"}
         credentials = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(credentials.get("oauth"), dict):
+            credentials = credentials["oauth"]
         token = str(credentials.get("access_token") or "").strip()
         expires_at = float(credentials.get("expires_at") or 0)
     except Exception:

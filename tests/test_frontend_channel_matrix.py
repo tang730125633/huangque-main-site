@@ -292,6 +292,15 @@ class FrontendChannelMatrixTests(unittest.TestCase):
             self.assertFalse(products[key]['admitted'])
             self.assertIn('前台运行时当前未开放', products[key]['visibility_reason'])
 
+    def test_legacy_video_tab_stays_visible_when_submission_flag_is_off(self):
+        next(item for item in self.features if item['key'] == 'grok_video')['enabled'] = False
+        video = next(page for page in self.build()['pages'] if page['page'] == 'video')
+        grok = next(item for item in video['products'] if item['key'] == 'grok')
+        self.assertTrue(grok['visible'])
+        self.assertFalse(grok['admitted'])
+        self.assertTrue(all(not model['admitted'] for model in grok['models']))
+        self.assertTrue(all('功能开关未开启' in model['reason'] for model in grok['models']))
+
 
 if __name__ == '__main__':
     unittest.main()

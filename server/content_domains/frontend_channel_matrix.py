@@ -550,12 +550,15 @@ def _video_matrix(workspace, credentials, probes, pool_keys, layout_state,
                          pool_keys, admission_enabled, now, unavailable_reason)
             for spec in specs
         ]
-        visible = bool(entry.get('visible')) and admission_enabled
+        # The four legacy tabs are always rendered by video.html; their feature
+        # flags gate submission, not visibility.  Newer provider-backed tabs
+        # expose a runtime health key that the browser itself uses to hide them.
+        visible = bool(entry.get('visible')) and runtime_available
         products.append({
             'key': product['key'], 'label': entry.get('label') or product['name'],
             'description': product.get('desc') or '',
             'visible': visible,
-            'visibility_reason': (unavailable_reason if not admission_enabled
+            'visibility_reason': (unavailable_reason if not runtime_available
                                   else entry.get('reason') or ''),
             'admitted': any(x['admitted'] for x in models),
             'attention': any(x['attention'] for x in models),
