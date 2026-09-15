@@ -1061,7 +1061,7 @@ class KeyPingTests(unittest.TestCase):
         credentials = pathlib.Path(directory.name) / "heygen-mcp.json"
         credentials.write_text(json.dumps({"oauth": {
             "access_token": "nested-token", "refresh_token": "refresh-token",
-            "expires_at": 4102444800,
+            "expires_at": "2099-12-31T23:59:59Z",
         }}), encoding="utf-8")
         credentials.chmod(0o600)
 
@@ -1069,8 +1069,14 @@ class KeyPingTests(unittest.TestCase):
                 mock.patch.object(admin_api, "_heygen_proxy_url", return_value=""), \
                 mock.patch.object(admin_api, "_ping_upstream", return_value={"ok": True}) as ping:
             result = admin_api._key_ping_heygen_mcp()
+            credentials.write_text(json.dumps({
+                "oauth": {"access_token": "non-expiring-token"},
+            }), encoding="utf-8")
+            non_expiring = admin_api._key_ping_heygen_mcp()
         self.assertTrue(result["ok"])
-        self.assertEqual(ping.call_args.kwargs["headers"]["Authorization"], "Bearer nested-token")
+        self.assertEqual(ping.call_args_list[0].kwargs["headers"]["Authorization"], "Bearer nested-token")
+        self.assertTrue(non_expiring["ok"])
+        self.assertEqual(ping.call_count, 2)
 
     def test_heygen_probe_version_tracks_billing_mode(self):
         self.assertIn("HEYGEN_BILLING_MODE", admin_api._PROBE_CONFIG_ENVS["heygen"])

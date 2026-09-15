@@ -2408,12 +2408,12 @@ def _key_ping_heygen_mcp():
         if isinstance(credentials.get("oauth"), dict):
             credentials = credentials["oauth"]
         token = str(credentials.get("access_token") or "").strip()
-        expires_at = float(credentials.get("expires_at") or 0)
+        expires_at = heygen_oauth._expiry_timestamp(credentials.get("expires_at"))
     except Exception:
         return {"ok": False, "status": "credential_rejected", "mode": "auth"}
     if not token:
         return {"ok": False, "status": "credential_rejected", "mode": "auth"}
-    if expires_at <= time.time() + 60:
+    if expires_at and expires_at <= time.time() + 60:
         status = "credential_refresh_pending" if credentials.get("refresh_token") else "credential_rejected"
         return {"ok": False, "status": status, "mode": "auth"}
     return _ping_upstream(
