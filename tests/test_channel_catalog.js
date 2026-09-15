@@ -96,6 +96,13 @@ test('frontend function center uses model cards and keeps technical details in t
   assert.match(elements.cmMatrix.innerHTML,/cm-function-workspace/);
   for(const group of ['内容创作','人物与声音','智能工具','基础服务'])assert.match(elements.cmMatrix.innerHTML,new RegExp(group));
   for(const label of ['生图','生视频','数字人','音频与配音','文本与助手','采集与解析','视频处理','系统依赖'])assert.match(elements.cmMatrix.innerHTML,new RegExp(label));
+  const sidebarHtml=elements.cmMatrix.innerHTML.match(/<aside class="cm-function-sidebar"[^>]*>([\s\S]*?)<\/aside>/)[1];
+  assert.equal((sidebarHtml.match(/data-cm-matrix-group=/g)||[]).length,4);
+  assert.doesNotMatch(sidebarHtml,/生图|生视频|数字人|音频与配音/);
+  assert.doesNotMatch(sidebarHtml,/项异常/);
+  assert.match(elements.cmMatrix.innerHTML,/cm-subfunction-tabs/);
+  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status neutral">待验证/);
+  assert.match(elements.cmMatrix.innerHTML,/<span>异常<\/span><b>0<\/b>/);
   assert.match(elements.cmMatrix.innerHTML,/cm-switch-product/);
   assert.match(elements.cmMatrix.innerHTML,/cm-switch-model/);
   assert.match(elements.cmMatrix.innerHTML,/主渠道/);
@@ -112,6 +119,9 @@ test('frontend function center uses model cards and keeps technical details in t
   assert.match(elements.cmMatrix.innerHTML,/果肉生图/);
   assert.match(elements.cmMatrix.innerHTML,/前台隐藏/);
   root.listeners.click({target:{closest:()=>hiddenButton}});
+  const peopleButton={dataset:{cmMatrixGroup:'people'}};
+  root.listeners.click({target:{closest:()=>peopleButton}});
+  assert.match(elements.cmMatrix.innerHTML,/<h3>数字人<\/h3>/);
   const audioButton={dataset:{cmMatrixPage:'audio'}};
   root.listeners.click({target:{closest:()=>audioButton}});
   assert.match(elements.cmMatrix.innerHTML,/阿里百炼 API/);
