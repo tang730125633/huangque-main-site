@@ -54,6 +54,7 @@ runtime_observability = import_module(_DOMAIN_PACKAGE + ".runtime_observability"
 channel_manager = import_module(_DOMAIN_PACKAGE + ".channel_manager")
 channel_lifecycle = import_module(_DOMAIN_PACKAGE + ".channel_lifecycle")
 channel_parameters = import_module(_DOMAIN_PACKAGE + ".channel_parameters")
+frontend_channel_matrix = import_module(_DOMAIN_PACKAGE + ".frontend_channel_matrix")
 task_termination = import_module(_DOMAIN_PACKAGE + ".task_termination")
 channel_runtime = import_module(_DOMAIN_PACKAGE + ".channel_runtime")
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
@@ -262,7 +263,7 @@ KEY_GROUPS = [
     {"key": "gemini", "name": "Google Gemini API", "category": "图片生成 / 视频生成",
      "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频", "文案编导 → 链接提示词反推"],
      "env_features": ["图片生成 → 纳米香蕉"], "pool_features": ["视频模块 → Omni 视频"],
-     "env_base_env": ["GEMINI_OFFICIAL_BASE"], "env_base_default": "https://generativelanguage.googleapis.com",
+     "env_base_env": ["GEMINI_BASE", "GEMINI_OFFICIAL_BASE"], "env_base_default": "https://generativelanguage.googleapis.com",
      "pool_base_env": ["GEMINI_OMNI_BASE", "GEMINI_BASE"], "pool_base_default": "https://generativelanguage.googleapis.com",
      "env": ["GEMINI_API_KEY"], "pool_provider": "omni"},
     {"key": "seedance", "name": "火山方舟 API", "category": "图片生成 / 视频生成",
@@ -2850,6 +2851,13 @@ def provider_key_list():
 
 def channel_workspace_overview():
     result = channel_manager.overview()
+    result['frontend_matrix'] = frontend_channel_matrix.build(
+        result,
+        key_status(),
+        key_probe_status(),
+        channel_parameters.admin_layout_state(),
+        feature_flags.list_features(),
+    )
     try:
         with closing(db()) as connection:
             result['legacy_events'] = [dict(row) for row in connection.execute(
