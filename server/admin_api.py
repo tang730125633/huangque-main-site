@@ -2111,6 +2111,12 @@ def _credential_version(key):
 
 def key_status():
     sources = env_sources()
+    def source_value(name):
+        return next(
+            ((src["values"].get(name) or "").strip() for src in sources
+             if (src["values"].get(name) or "").strip()),
+            "",
+        )
     items = []
     for item in KEY_GROUPS:
         values = _key_group_values(item, sources)
@@ -2122,6 +2128,29 @@ def key_status():
         configured = len(found) == len(item["env"])
         if item["key"] in {"runninghub", "tikhub", "heygen_relay"}:
             configured = bool(found)
+        video_runtime = {}
+        if item["key"] == "heygen":
+            billing_mode = (source_value("HEYGEN_BILLING_MODE") or "auto").lower()
+            mcp_configured = bool(source_value("HEYGEN_MCP_CREDENTIALS"))
+            subscription = (
+                billing_mode in {"subscription", "plan", "mcp"}
+                or billing_mode not in {"api", "wallet", "api_wallet"} and mcp_configured
+            )
+            video_runtime = {
+                "video_base_host": "mcp.heygen.com" if subscription
+                                   else _key_group_base_host(item, "env", sources),
+                "video_configured": mcp_configured if subscription else configured,
+                "video_credential_source": (
+                    "服务器 OAuth 凭据 · HEYGEN_MCP_CREDENTIALS" if subscription
+                    else "服务器环境变量 · HEYGEN_API_KEY"
+                ),
+                "video_model": "heygen_mcp_subscription" if subscription else "heygen_api",
+            }
+        elif item["key"] == "runninghub":
+            video_runtime = {
+                "video_configured": bool(source_value("RUNNINGHUB_API_KEY")),
+                "video_credential_source": "服务器环境变量 · RUNNINGHUB_API_KEY",
+            }
         items.append(
             {
                 "key": item["key"],
@@ -2158,6 +2187,7 @@ def key_status():
                     "image_accepts_new_jobs", item.get("accepts_new_jobs", True)
                 ),
                 "replacement": item.get("replacement", ""),
+                **video_runtime,
             }
         )
     return items
@@ -2874,12 +2904,14 @@ def provider_key_list():
 
 def channel_workspace_overview():
     result = channel_manager.overview()
+    provider_key_state = provider_key_list()
     result['frontend_matrix'] = frontend_channel_matrix.build(
         result,
         key_status(),
         key_probe_status(),
         channel_parameters.admin_layout_state(),
         feature_flags.list_features(),
+        provider_key_rows=provider_key_state.get('items') or [],
     )
     try:
         with closing(db()) as connection:

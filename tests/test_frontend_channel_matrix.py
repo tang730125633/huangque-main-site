@@ -52,18 +52,46 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         ]
         order = ['gpt', 'banana', 'seedream', 'lechuang', 'xiaole', 'zelong2']
         self.layout = {
-            'layout': {'image': {'order': order, 'default': 'gpt'}},
+            'layout': {
+                'image': {'order': order, 'default': 'gpt'},
+                'video': {'order': ['grok', 'talking', 'cinematic', 'tryon',
+                                    'minimax', 'micro', 'sora', 'omni'],
+                          'default': 'grok'},
+            },
             'entries': {'image': [
                 {'key': key, 'label': key, 'visible': key not in {'xiaole', 'zelong2'},
                  'models': ['GPT Image 2.5'] if key == 'lechuang' else [],
                  'model_keys': ['gpt-image-2.5-flare'] if key == 'lechuang' else [],
                  'reason': '主站显示' if key not in {'xiaole', 'zelong2'} else '用户页隐藏'}
                 for key in order
+            ], 'video': [
+                {'key': key, 'label': label, 'visible': True, 'reason': '主站显示'}
+                for key, label in [
+                    ('grok', '果肉视频生成'), ('talking', '数字化 IP'),
+                    ('cinematic', '电影化身'), ('tryon', '换装换背景'),
+                    ('minimax', '麦克视频'), ('micro', 'Seedance 视频'),
+                    ('sora', 'Sora 2'), ('omni', 'Omni 视频'),
+                ]
             ]},
         }
         self.features = [
             {'key': 'image', 'enabled': True}, {'key': 'banana', 'enabled': True},
             {'key': 'image_xiaole', 'enabled': True},
+        ] + [
+            {'key': key, 'enabled': True}
+            for key in ['video', 'cinematic', 'tryon', 'grok_video', 'sora_video',
+                        'minimax_h3_video', 'omni_video', 'seedance_video']
+        ]
+        self.provider_keys = [
+            {'id': provider + '-1', 'provider': provider, 'label': provider + ' 主线',
+             'base_url': base, 'state': 'active', 'health_status': 'healthy',
+             'last_checked_at': 999}
+            for provider, base in [
+                ('xai', 'https://api.x.ai/v1'), ('sora', 'https://api.openai.com'),
+                ('seedance', 'https://ark.cn-beijing.volces.com/api/v3'),
+                ('omni', 'https://generativelanguage.googleapis.com'),
+                ('minimax', 'https://metaso.cn/api/minimax'),
+            ]
         ]
 
     def build(self):
@@ -72,6 +100,7 @@ class FrontendChannelMatrixTests(unittest.TestCase):
             {'openai': {'status': 'auth_ok', 'checked_at': 998},
              'gemini': {'status': 'auth_ok', 'checked_at': 998}},
             self.layout, self.features, now=1000,
+            provider_key_rows=self.provider_keys,
         )
 
     def test_groups_frontend_products_into_model_tiers(self):
@@ -131,7 +160,7 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         self.assertEqual(products['xiaole']['warning'], '')
         self.assertFalse(products['zelong2']['admitted'])
 
-        self.features[-1]['enabled'] = False
+        next(item for item in self.features if item['key'] == 'image_xiaole')['enabled'] = False
         products = {item['key']: item for item in self.build()['products']}
         self.assertFalse(products['xiaole']['admitted'])
         self.assertIn('功能开关未开启', products['xiaole']['models'][0]['reason'])
@@ -170,6 +199,45 @@ class FrontendChannelMatrixTests(unittest.TestCase):
 
     def test_official_host_with_standard_port_is_not_mislabeled_as_relay(self):
         self.assertEqual(matrix._transport('api.openai.com:443'), 'official')
+
+    def test_video_page_matches_frontend_products_models_and_pool_routes(self):
+        result = self.build()
+        video = next(page for page in result['pages'] if page['page'] == 'video')
+        products = {item['key']: item for item in video['products']}
+        self.assertEqual(len(products), 8)
+        self.assertEqual([x['label'] for x in products['grok']['models']],
+                         ['通用版 · 文生/图生', '1.5 · 高质量图生'])
+        self.assertEqual([x['actual_model'] for x in products['sora']['models']],
+                         ['sora-2', 'sora-2-pro'])
+        self.assertEqual(
+            products['grok']['models'][0]['routes'][0]['primary']['credential_source'],
+            '后台密钥号池 · 1 个密钥，1 个可轮转',
+        )
+        self.assertEqual(
+            products['grok']['models'][0]['routes'][0]['primary']['connection_type'],
+            'official',
+        )
+        self.assertEqual(
+            products['tryon']['models'][0]['routes'][0]['primary']['base_host'],
+            'api.wavespeed.ai',
+        )
+        self.assertFalse(products['seedance']['models'][1]['admitted'])
+        self.assertIn('前台当前未开放', products['seedance']['models'][1]['reason'])
+
+    def test_video_pool_health_and_operation_mapping_stay_secret_free(self):
+        self.provider_keys[0]['health_status'] = 'unhealthy'
+        self.workspace['operation_mappings'] = [{
+            'operation_id': 'video.sora.text', 'state': 'managed',
+            'channel': 'managed-image', 'backup': '',
+        }]
+        video = next(page for page in self.build()['pages'] if page['page'] == 'video')
+        products = {item['key']: item for item in video['products']}
+        grok = products['grok']['models'][0]['routes'][0]['primary']
+        self.assertFalse(grok['enabled'])
+        sora = products['sora']['models'][0]['routes'][0]
+        self.assertEqual(sora['control_state'], 'managed')
+        self.assertEqual(sora['primary']['name'], '乐创图片主线')
+        self.assertNotIn('last4', json.dumps(video).lower())
 
 
 if __name__ == '__main__':

@@ -101,6 +101,8 @@ test('frontend model matrix is the default read-only channel view',()=>{
   assert.match(elements.cmMatrix.innerHTML,/渠道密钥库/);
   assert.match(elements.cmMatrix.innerHTML,/证据已过期/);
   assert.match(elements.cmMatrix.innerHTML,/未建立模型级成品证据/);
+  assert.match(source,/data-cm-matrix-page/);
+  assert.match(source,/matrix\.page==='video'\?'视频页':'图片页'/);
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
   assert.match(html,/data-cm-tab="matrix" class="active">前台模型与渠道/);
   assert.match(html,/data-cm-tab="catalog">底层渠道与密钥/);
