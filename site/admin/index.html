@@ -833,7 +833,7 @@
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
 <script src="/admin/channel-parameters.js?v=a2c62bdb"></script>
 <script src="/admin/channel-catalog.js?v=8a856c90"></script>
-<script src="/admin/channel-workspace.js?v=7f9a5b05"></script>
+<script src="/admin/channel-workspace.js?v=099b20d0"></script>
 <script src="/admin/channel-manager.js?v=582721f8"></script>
 <script>
 (function(){
@@ -2003,41 +2003,41 @@
     return {accepting:true,status:'enabled',html:'<span class="pill neutral">接单开关已开启</span><div>'+esc(keys.join('、'))+' · 仅表示当前允许接单</div>'};
   }
   function registryRouteEvidence(dependency,data){
-    var route=(data.keys||[]).find(function(item){return item.key===dependency.key}),pools=[],tone='fail',label='未配置',source=dependency.credential_source||'auto';
+    var route=(data.keys||[]).find(function(item){return item.key===dependency.key}),pools=[],tone='fail',label='未配置',verification='attention',source=dependency.credential_source||'auto';
     if(route&&source!=='env'&&route.pool_provider)pools=((data.provider_keys||{}).items||[]).filter(function(item){return item.provider===route.pool_provider&&item.state!=='retired'&&item.managed!==false});
     if(pools.length){
       var cutoff=Math.floor(Date.now()/1000)-300,fresh=pools.filter(function(item){return Number(item.last_checked_at||0)>=cutoff});
       var healthy=fresh.filter(function(item){return item.health_status==='healthy'}).length;
       var unhealthy=fresh.filter(function(item){return item.health_status==='unhealthy'}).length;
       var unknown=pools.length-healthy-unhealthy,latest=Math.max.apply(null,pools.map(function(item){return Number(item.last_checked_at||0)}));
-      if(healthy){tone='ok';label='鉴权探针通过 '+healthy+' / '+pools.length+(unhealthy?' · 异常 '+unhealthy:'')+(unknown?' · 待检测 '+unknown:'')}
+      if(healthy){tone='ok';verification='ok';label='鉴权探针通过 '+healthy+' / '+pools.length+(unhealthy?' · 异常 '+unhealthy:'')+(unknown?' · 待检测 '+unknown:'')}
       else if(unhealthy){tone='fail';label='号池无可用线路 · 异常 '+unhealthy+' / '+pools.length}
-      else if(latest){tone='warn';label='号池鉴权证据已过期 · 上次 '+fmtTime(latest)}
-      else if(unknown){tone='warn';label='号池待检测 '+unknown+' / '+pools.length}
+      else if(latest){tone='warn';verification='stale';label='号池鉴权证据已过期 · 上次 '+fmtTime(latest)}
+      else if(unknown){tone='warn';verification='pending';label='号池待检测 '+unknown+' / '+pools.length}
     }else if(source==='pool'){tone='fail';label='加密号池未配置'}
     else if(route&&route.configured){
       var signature=String(route.credential_version||''),probe=state.keyProbes[route.key],result=probe&&probe.signature===signature&&probe.result;
-      if(probe&&probe.signature===signature&&probe.loading&&!result){tone='neutral';label='正在获取最新鉴权…'}
+      if(probe&&probe.signature===signature&&probe.loading&&!result){tone='neutral';verification='pending';label='正在获取最新鉴权…'}
       else if(result){
         var checked=Number(result.checked_at||0),maxAge=Math.max(300,Number(route.probe_interval||300)*2),age=Math.floor(Date.now()/1000)-checked;
         var latency=result.latency_ms==null?'':(' · '+Number(result.latency_ms)+'ms'),when=checked?(' · '+fmtTime(checked)):'';
         var components=result.components?(' · '+result.components):'';
         var balance=result.plan_credit!=null?(' · 套餐额度 '+Number(result.plan_credit).toLocaleString()+(result.api_wallet!=null?' · API 钱包 '+Number(result.api_wallet).toLocaleString():'')):(result.balance==null?'':(' · 余额 '+Number(result.balance).toLocaleString()));
-        if(!checked||age>maxAge){tone='warn';label='探针数据已过期'+when}
-        else if(result.status==='auth_ok'){tone='ok';label='最近鉴权通过'+components+latency+balance+when}
-        else if(result.status==='reachable_only'){tone='warn';label='最近连通 · 未验证凭据'+latency+when}
+        if(!checked||age>maxAge){tone='warn';verification='stale';label='探针数据已过期'+when}
+        else if(result.status==='auth_ok'){tone='ok';verification='ok';label='最近鉴权通过'+components+latency+balance+when}
+        else if(result.status==='reachable_only'){tone='warn';verification='pending';label='最近连通 · 未验证凭据'+latency+when}
         else if(result.status==='credential_rejected'){tone='fail';label='凭据已失效'+components+when}
         else if(result.status==='quota_or_plan'){tone='fail';label=String(result.message||'额度或套餐不足')+components+balance+when}
         else if(result.status==='permission_denied'){tone='fail';label='权限或模型未开通'+components+when}
         else if(result.status==='not_configured'){tone='fail';label='服务器凭据未配置完整'+when}
         else {tone='warn';label=String(result.message||'检测暂时失败')+components+when}
-      }else if(route.auto_probe){tone='neutral';label='等待后台首次鉴权'}
-      else if(route.pingable){tone='warn';label='已配置 · 需人工检测'}
-      else {tone='warn';label='已配置 · 暂无鉴权探针'}
+      }else if(route.auto_probe){tone='neutral';verification='pending';label='等待后台首次鉴权'}
+      else if(route.pingable){tone='warn';verification='pending';label='已配置 · 需人工检测'}
+      else {tone='warn';verification='pending';label='已配置 · 暂无鉴权探针'}
     }
     else if(route){tone='fail';label='未配置'}
     else {label='渠道未登记'}
-    return {route:route||{key:dependency.key,name:dependency.key},state:tone,label:label};
+    return {route:route||{key:dependency.key,name:dependency.key},state:tone,label:label,verification_state:verification};
   }
   function updateServerProbeNodes(key){
     if(!state.data)return;

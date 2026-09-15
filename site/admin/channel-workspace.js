@@ -76,10 +76,17 @@
       {key:'tools',label:'智能工具',pages:['text','collect','process'],unit:'服务'},
       {key:'infrastructure',label:'基础服务',pages:['other'],unit:'服务'},
     ];
+    function catalogProof(c){
+      const state=c.evidence?.verification_state||c.evidence?.state;
+      if(state==='ok')return {state:'ok',label:c.evidence.label||c.health||'通过'};
+      if(['pending','neutral'].includes(state))return {state:'pending',label:c.evidence.label||c.health||'验证中'};
+      if(['attention','stale','fail','warn'].includes(state))return {state:state==='stale'?'stale':'attention',label:c.evidence.label||c.health||'验证异常'};
+      return {state:'unverified',label:c.health||'未验证'};
+    }
     function catalogRoute(c){
       const baseUrls=unique([c.base_url,c.env_base_url,c.pool_base_url,c.image_primary_base_url,c.image_fallback_base_url]);
       const management={kind:c.source==='managed'?'managed_channel':(c.pool_provider?'provider_pool':'server_env'),uid:c.uid,provider:c.pool_provider||''};
-      return {id:c.uid,name:c.name,supplier:c.supplier,connection_type:c.connection_type||'unknown',base_host:c.env_base_host||c.pool_base_host||'',base_urls:baseUrls,model:c.model||'',credential_source:c.source==='managed'?'渠道密钥库':(c.pool_provider?'后台密钥号池 / 服务器兼容线路':'服务器环境变量'),configured:c.configured!==false,enabled:!!c.enabled,auth:{state:c.attention?'unverified':'ok',label:c.health||'未验证'},full:{state:'unverified',label:'请进入测试与健康查看完整证据'},source:c.source,management};
+      return {id:c.uid,name:c.name,supplier:c.supplier,connection_type:c.connection_type||'unknown',base_host:c.env_base_host||c.pool_base_host||'',base_urls:baseUrls,model:c.model||'',credential_source:c.source==='managed'?'渠道密钥库':(c.pool_provider?'后台密钥号池 / 服务器兼容线路':'服务器环境变量'),configured:c.configured!==false,enabled:!!c.enabled,auth:catalogProof(c),full:{state:'unverified',label:'请进入测试与健康查看完整证据'},source:c.source,management};
     }
     function servicePage(key,label){
       const services=rows.filter(c=>c.categories?.includes(key));
@@ -120,8 +127,10 @@
       }
       const primary=modelLegs(model,['primary']).map(([,item])=>item);
       const proofs=primary.flatMap(item=>[item.auth,item.full]);
-      const issue=proofs.find(proof=>proof&&!['ok','unverified'].includes(proof.state));
+      const issue=proofs.find(proof=>proof&&!['ok','unverified','pending'].includes(proof.state));
       if(issue)return {label:issue.label||'验证异常',state:'warn'};
+      const pending=proofs.find(proof=>proof?.state==='pending');
+      if(pending)return {label:pending.label||'验证中',state:'neutral'};
       if(!primary.length||proofs.some(proof=>!proof||proof.state==='unverified'))return {label:'待验证',state:'neutral'};
       return {label:'可接单',state:'ok'};
     }

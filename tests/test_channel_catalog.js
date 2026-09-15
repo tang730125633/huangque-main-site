@@ -89,10 +89,12 @@ test('frontend function center uses model cards and keeps technical details in t
   const panels=['matrix','catalog','mapping','health','audit','layout'].map(cmPanel=>({dataset:{cmPanel},hidden:cmPanel!=='matrix'}));
   const context={window:null,ChannelCatalog:C,document:{activeElement:element('active'),querySelector:()=>root,querySelectorAll:selector=>selector==='[data-cm-panel]'?panels:[],body:{classList:{add(){},remove(){}}}}};context.window=context;
   vm.createContext(context);vm.runInContext(source,context);
-  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>[{key:'cosyvoice',name:'阿里百炼 API',category:'音频生成',features:['AI 配音 → 公共音色'],configured:true,accepts_new_jobs:true,env_base_url:'https://dashscope.aliyuncs.com',evidence:{state:'ok',label:'鉴权通过'}}],closeLegacy(){},lifecycle(){},detail(){},mapping(){},refresh(){},task(){},journey(){}});
-  workspace.render({items:[],mappings:[],legacy_controls:{},adapters:{},frontend_matrix:{page:'image',summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[{
+  const legacyChannels=[{key:'cosyvoice',name:'阿里百炼 API',category:'音频生成',features:['AI 配音 → 公共音色'],configured:true,accepts_new_jobs:true,env_base_url:'https://dashscope.aliyuncs.com',evidence:{state:'ok',label:'鉴权通过'}}];
+  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>legacyChannels,closeLegacy(){},lifecycle(){},detail(){},mapping(){},refresh(){},task(){},journey(){}});
+  const workspaceData={items:[],mappings:[],legacy_controls:{},adapters:{},frontend_matrix:{page:'image',summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[{
     key:'banana',label:'纳米香蕉',description:'前台产品',visible:true,admitted:true,models:[{key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图','图生图'],admitted:true,routes:[{capability:'文生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}},backup:{id:'gemini-backup',name:'Google Gemini API · 兜底',supplier:'Google Gemini API',connection_type:'relay',base_host:'relay.example.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'ok',label:'鉴权通过'},full:{state:'unverified',label:'未建立模型级成品证据'}},candidate:{id:'gemini-shadow',name:'候选线路',supplier:'候选供应商',connection_type:'relay',base_host:'shadow.example.com',credential_source:'渠道密钥库',configured:true,enabled:false,auth:{state:'stale',label:'证据已过期'},full:{state:'unverified',label:'未建立模型级成品证据'}}},{capability:'图生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}}}]}]
-  },{key:'xiaole',label:'果肉生图',description:'前台未开放',visible:false,admitted:false,models:[{key:'default',label:'GPT Image 2',actual_model:'gpt-image-2',visible:false,admitted:false,routes:[]}]}]}});
+  },{key:'xiaole',label:'果肉生图',description:'前台未开放',visible:false,admitted:false,models:[{key:'default',label:'GPT Image 2',actual_model:'gpt-image-2',visible:false,admitted:false,routes:[]}]}]}};
+  workspace.render(workspaceData);
   assert.match(elements.cmMatrix.innerHTML,/cm-function-workspace/);
   for(const group of ['内容创作','人物与声音','智能工具','基础服务'])assert.match(elements.cmMatrix.innerHTML,new RegExp(group));
   for(const label of ['生图','生视频','数字人','音频与配音','文本与助手','采集与解析','视频处理','系统依赖'])assert.match(elements.cmMatrix.innerHTML,new RegExp(label));
@@ -103,6 +105,19 @@ test('frontend function center uses model cards and keeps technical details in t
   assert.match(elements.cmMatrix.innerHTML,/cm-subfunction-tabs/);
   assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status neutral">待验证/);
   assert.match(elements.cmMatrix.innerHTML,/<span>异常<\/span><b>0<\/b>/);
+  const primary=workspaceData.frontend_matrix.products[0].models[0].routes[0].primary;
+  primary.auth={state:'pending',label:'检测中'};primary.full={state:'ok',label:'通过'};
+  workspace.render(workspaceData);
+  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status neutral">检测中/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/项异常/);
+  assert.match(elements.cmMatrix.innerHTML,/<span>异常<\/span><b>0<\/b>/);
+  primary.auth={state:'attention',label:'凭据被拒绝'};
+  workspace.render(workspaceData);
+  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status warn">凭据被拒绝/);
+  assert.match(elements.cmMatrix.innerHTML,/1 项异常/);
+  assert.match(elements.cmMatrix.innerHTML,/<span>异常<\/span><b>1<\/b>/);
+  primary.auth={state:'unverified',label:'未验证'};primary.full={state:'unverified',label:'未建立模型级成品证据'};
+  workspace.render(workspaceData);
   assert.match(elements.cmMatrix.innerHTML,/cm-switch-product/);
   assert.match(elements.cmMatrix.innerHTML,/cm-switch-model/);
   assert.match(elements.cmMatrix.innerHTML,/主渠道/);
@@ -127,6 +142,18 @@ test('frontend function center uses model cards and keeps technical details in t
   assert.match(elements.cmMatrix.innerHTML,/阿里百炼 API/);
   assert.match(elements.cmMatrix.innerHTML,/服务配置/);
   assert.match(elements.cmMatrix.innerHTML,/已登记的真实前端功能与依赖服务/);
+  legacyChannels[0].evidence={state:'warn',verification_state:'pending',label:'已配置 · 需人工检测'};
+  workspace.render(workspaceData);
+  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status neutral">已配置 · 需人工检测/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/项异常/);
+  legacyChannels[0].evidence={state:'fail',label:'凭据已失效'};
+  workspace.render(workspaceData);
+  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status warn">凭据已失效/);
+  assert.match(elements.cmMatrix.innerHTML,/1 项异常/);
+  root.listeners.click({target:{closest:()=>({dataset:{cmMatrixGroup:'creation'}})}});
+  assert.match(elements.cmMatrix.innerHTML,/<h3>生图<\/h3>/);
+  root.listeners.click({target:{closest:()=>peopleButton}});
+  assert.match(elements.cmMatrix.innerHTML,/<h3>音频与配音<\/h3>/);
   root.listeners.change({target:{closest:()=>({value:'image'})}});
   assert.match(elements.cmMatrix.innerHTML,/纳米香蕉 2/);
   root.listeners.click({target:{closest:()=>({dataset:{cmView:'health'}})}});
