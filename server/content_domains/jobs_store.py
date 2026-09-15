@@ -120,7 +120,10 @@ def set_terminal(jdb, job_id, status, result=None, error=None, from_states=("run
         return cur.rowcount >= 1
 
 
-VIDEO_NOTIFICATION_KINDS = {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}
+VIDEO_NOTIFICATION_KINDS = {
+    "video", "tryon", "xiaole_video", "sora_video", "cinematic",
+    "script_to_video", "matrix_template_video",
+}
 
 
 def ensure_video_notification_outbox(jdb):

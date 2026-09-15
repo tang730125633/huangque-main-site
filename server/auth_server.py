@@ -632,7 +632,10 @@ def _ensure_all_account_ids(c):
         c.execute("UPDATE users SET account_id=? WHERE username=?", (_new_unique_account_id(c), row["username"]))
 
 
-VIDEO_SUBSCRIPTION_KINDS = {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}
+VIDEO_SUBSCRIPTION_KINDS = {
+    "video", "tryon", "xiaole_video", "sora_video", "cinematic",
+    "script_to_video", "matrix_template_video",
+}
 def _video_subscription_title(kind):
     return {
         "video": "视频作品已完成",
@@ -640,6 +643,8 @@ def _video_subscription_title(kind):
         "xiaole_video": "视频作品已完成",
         "sora_video": "视频作品已完成",
         "cinematic": "剧情视频已完成",
+        "script_to_video": "脚本成片已完成",
+        "matrix_template_video": "模板成片已完成",
     }.get(str(kind or "").strip().lower(), "视频作品已完成")
 
 
