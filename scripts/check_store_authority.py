@@ -104,9 +104,11 @@ def systemctl_show(unit: str, prop: str) -> str:
 def read_env_files(unit: str):
     """把单元的 EnvironmentFiles 链全部读出，返回 (env, 不可读清单, 缺失清单)。
 
-    env: {var: (value, 来源文件)}。systemctl show 的列表属性名是复数
+    env: {var: (value, 来源)}。systemctl show 的列表属性名是复数
     ``EnvironmentFiles``，``--value`` 下**每项占一行**，形如
     ``/path (ignore_errors=no)``；``-`` 前缀或 ignore_errors=yes 表示文件可缺失。
+    单元自身的 ``Environment=`` 行（含 drop-in）最后叠加上去（systemd 语义：
+    Environment= 覆盖 EnvironmentFile），来源记为 ``<unit> Environment=``。
     """
     env = {}
     unreadable = []
@@ -141,6 +143,13 @@ def read_env_files(unit: str):
         except OSError:
             if not ignore_errors:
                 missing.append(raw)
+    # Environment= 项以空格分隔（值里的空格在 systemd 输出中是 \x20 转义）。
+    for item in systemctl_show(unit, "Environment").split():
+        item = item.replace("\\x20", " ")
+        if "=" not in item:
+            continue
+        key, _, value = item.partition("=")
+        env[key.strip()] = (value.strip().strip("'\""), "<%s> Environment=" % unit)
     return env, unreadable, missing
 
 
