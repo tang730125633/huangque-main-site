@@ -84,6 +84,8 @@ AUTH_SHARED_RUNTIME = {
     'server/content_domains/feature_flags.py': '/home/ubuntu/auth-service/content_domains/feature_flags.py',
     'server/content_domains/miniprogram_security.py': '/home/ubuntu/auth-service/content_domains/miniprogram_security.py',
     'server/content_domains/pricing.py': '/home/ubuntu/auth-service/content_domains/pricing.py',
+    # feature_flags/pricing 切换 PG 后的新依赖；漏部署 = auth 起来就 import 失败。
+    'server/content_domains/flags_store.py': '/home/ubuntu/auth-service/content_domains/flags_store.py',
     'server/content_domains/error_contract.py': '/home/ubuntu/auth-service/content_domains/error_contract.py',
 }
 SYSTEMD_DIR = os.environ.get('HQ_SYSTEMD_DIR', '/etc/systemd/system')

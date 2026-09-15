@@ -1,4 +1,9 @@
-"""Shared, live point pricing for every billable Huangque capability."""
+"""Shared, live point pricing for every billable Huangque capability.
+
+存储层：HQ_FLAGS_STORE=sqlite（默认，现状）走本模块 SQLite 路径；
+postgres 走 ``flags_store``（ops.pricing_rules）。切换时所有读方必须同一
+开关一起切，禁止双权威。
+"""
 
 from contextlib import closing
 import os
@@ -6,6 +11,7 @@ import pathlib
 import sqlite3
 import time
 
+from . import flags_store
 
 BASE = pathlib.Path(__file__).resolve().parents[1]
 DB_PATH = pathlib.Path(
@@ -114,6 +120,9 @@ def init_db():
 
 
 def _load_rows():
+    if flags_store.enabled():
+        rows = flags_store.read_prices()
+        return {row["rule"]: dict(row) for row in rows.values() if row["rule"] in CATALOG_MAP}
     init_db()
     with closing(db()) as conn:
         rows = conn.execute("SELECT * FROM pricing_rules").fetchall()
@@ -175,18 +184,21 @@ def set_price(key, points, actor):
     if value < 1 or value > 100000:
         raise ValueError("points must be between 1 and 100000")
     now = int(time.time())
-    init_db()
-    with closing(db()) as conn:
-        conn.execute(
-            """INSERT INTO pricing_rules(rule,points,updated_by,updated_at)
-               VALUES(?,?,?,?)
-               ON CONFLICT(rule) DO UPDATE SET
-                   points=excluded.points,
-                   updated_by=excluded.updated_by,
-                   updated_at=excluded.updated_at""",
-            (key, value, actor or "admin", now),
-        )
-        conn.commit()
+    if flags_store.enabled():
+        flags_store.write_price(key, value, actor or "admin", now)
+    else:
+        init_db()
+        with closing(db()) as conn:
+            conn.execute(
+                """INSERT INTO pricing_rules(rule,points,updated_by,updated_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(rule) DO UPDATE SET
+                       points=excluded.points,
+                       updated_by=excluded.updated_by,
+                       updated_at=excluded.updated_at""",
+                (key, value, actor or "admin", now),
+            )
+            conn.commit()
     invalidate_cache()
     return get_rule(key)
 

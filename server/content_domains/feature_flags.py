@@ -4,6 +4,10 @@ The admin service writes these flags; content/imggen read them before accepting
 new generation work. Missing rows use each catalog entry's default: legacy
 entries remain enabled, while new features may opt into fail-closed behavior
 with ``default_enabled=False``.
+
+存储层：HQ_FLAGS_STORE=sqlite（默认，现状）走本模块 SQLite 路径；
+postgres 走 ``flags_store``（ops.feature_flags）。切换时所有读方必须同一
+开关一起切，禁止双权威。
 """
 
 from contextlib import closing
@@ -12,6 +16,7 @@ import pathlib
 import sqlite3
 import time
 
+from . import flags_store
 
 BASE = pathlib.Path(__file__).resolve().parents[1]
 DB_PATH = pathlib.Path(os.environ.get("FEATURE_FLAGS_DB", str(BASE / "feature_flags.db")))
@@ -141,6 +146,16 @@ def init_db():
 
 
 def _load_rows():
+    if flags_store.enabled():
+        rows = flags_store.read_flags()
+        return {
+            row["feature"]: {
+                "enabled": bool(row["enabled"]),
+                "updated_by": row["updated_by"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows.values()
+        }
     init_db()
     with closing(db()) as c:
         rows = c.execute("SELECT * FROM feature_flags").fetchall()
@@ -215,17 +230,20 @@ def set_enabled(feature, enabled, actor):
     if key not in CATALOG_MAP:
         raise ValueError("unknown feature")
     now = int(time.time())
-    with closing(db()) as c:
-        c.execute(
-            """INSERT INTO feature_flags(feature, enabled, updated_by, updated_at)
-               VALUES(?,?,?,?)
-               ON CONFLICT(feature) DO UPDATE SET
-                   enabled=excluded.enabled,
-                   updated_by=excluded.updated_by,
-                   updated_at=excluded.updated_at""",
-            (key, 1 if enabled else 0, actor or "admin", now),
-        )
-        c.commit()
+    if flags_store.enabled():
+        flags_store.write_flag(key, bool(enabled), actor or "admin", now)
+    else:
+        with closing(db()) as c:
+            c.execute(
+                """INSERT INTO feature_flags(feature, enabled, updated_by, updated_at)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(feature) DO UPDATE SET
+                       enabled=excluded.enabled,
+                       updated_by=excluded.updated_by,
+                       updated_at=excluded.updated_at""",
+                (key, 1 if enabled else 0, actor or "admin", now),
+            )
+            c.commit()
     invalidate_cache()
     return get_feature(key)
 
