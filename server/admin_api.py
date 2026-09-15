@@ -2001,6 +2001,190 @@ def auth_admin_raw(path, token):
         raise err
 
 
+IP12_SESSION_DIR = pathlib.Path(os.environ.get(
+    "HQ_IP12_SESSION_DIR", "/home/ubuntu/hq-ip-agent/data/sessions"))
+_CONV_SCAN_CACHE = {"ts": 0.0, "payload": None}
+_CONV_SCAN_CACHE_TTL = 60
+_CONV_TZ_OFFSET = 8 * 3600  # 北京时区切天，无夏令时
+
+
+def _conv_day(ts_ms):
+    return time.strftime("%Y-%m-%d", time.gmtime(int(ts_ms) / 1000.0 + _CONV_TZ_OFFSET))
+
+
+def _conv_day_start_ts():
+    return (int(time.time()) + _CONV_TZ_OFFSET) // 86400 * 86400 - _CONV_TZ_OFFSET
+
+
+def _conv_scan_sessions():
+    """只读扫描 IP12 落盘会话（owner/main/main_meta/turn_audits），60 秒缓存。"""
+    now = time.time()
+    cached = _CONV_SCAN_CACHE["payload"]
+    if cached is not None and now - _CONV_SCAN_CACHE["ts"] < _CONV_SCAN_CACHE_TTL:
+        return cached
+    rows = []
+    legacy = 0
+    for session_path in sorted(IP12_SESSION_DIR.glob("v4-*.json")):
+        try:
+            with open(session_path, "r", encoding="utf-8") as handle:
+                doc = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        owner = doc.get("owner") or {}
+        username = str(owner.get("username") or "").strip()
+        if not username:
+            legacy += 1
+            continue
+        main = doc.get("main") or []
+        meta = doc.get("main_meta") or []
+        audits = doc.get("turn_audits") or []
+        user_msgs = 0
+        assistant_msgs = 0
+        by_day = {}
+        first_ts = 0
+        last_ts = 0
+        for idx, message in enumerate(main):
+            role = message.get("role")
+            if role == "system":
+                continue
+            content = message.get("content") or ""
+            created = None
+            if idx < len(meta) and meta[idx].get("created_at"):
+                created = int(meta[idx]["created_at"])
+            if role == "user" and not str(content).startswith("（系统事件"):
+                user_msgs += 1
+                if created:
+                    slot = by_day.setdefault(_conv_day(created), {"user_msgs": 0, "assistant_msgs": 0})
+                    slot["user_msgs"] += 1
+                    first_ts = created if not first_ts else min(first_ts, created)
+                    last_ts = max(last_ts, created)
+            elif role == "assistant":
+                assistant_msgs += 1
+                if created:
+                    slot = by_day.setdefault(_conv_day(created), {"user_msgs": 0, "assistant_msgs": 0})
+                    slot["assistant_msgs"] += 1
+                    last_ts = max(last_ts, created)
+        for audit in audits:
+            if audit.get("started_at"):
+                ts = int(audit["started_at"])
+                first_ts = ts if not first_ts else min(first_ts, ts)
+                last_ts = max(last_ts, ts)
+        rows.append({
+            "sid": session_path.name[3:-5],
+            "username": username,
+            "first_ts": first_ts,
+            "last_ts": last_ts,
+            "user_msgs": user_msgs,
+            "assistant_msgs": assistant_msgs,
+            "by_day": by_day,
+        })
+    payload = {"rows": rows, "legacy": legacy}
+    _CONV_SCAN_CACHE["ts"] = now
+    _CONV_SCAN_CACHE["payload"] = payload
+    return payload
+
+
+def conversation_stats(days=7, user=""):
+    """按天范围聚合：按天行（带当天用户明细）、最新对话的用户、按用户名搜全部会话。"""
+    scanned = _conv_scan_sessions()
+    rows = scanned["rows"]
+    cutoff_ms = 0 if not days else (_conv_day_start_ts() - (days - 1) * 86400) * 1000
+    if cutoff_ms:
+        rows = [row for row in rows if row["last_ts"] >= cutoff_ms]
+    users = {}
+    for row in rows:
+        entry = users.setdefault(row["username"], {
+            "username": row["username"], "last_ts": 0, "sessions": 0,
+            "user_msgs": 0, "assistant_msgs": 0, "last_sid": "",
+        })
+        entry["sessions"] += 1
+        entry["user_msgs"] += row["user_msgs"]
+        entry["assistant_msgs"] += row["assistant_msgs"]
+        if row["last_ts"] > entry["last_ts"]:
+            entry["last_ts"] = row["last_ts"]
+            entry["last_sid"] = row["sid"]
+    day_users = {}
+    day_sessions = {}
+    day_umsgs = {}
+    day_amsgs = {}
+    day_detail = {}
+    for row in rows:
+        for day, slot in (row["by_day"] or {}).items():
+            if not slot.get("user_msgs"):
+                continue
+            if cutoff_ms and day < _conv_day(cutoff_ms):
+                continue
+            day_users.setdefault(day, set()).add(row["username"])
+            day_sessions.setdefault(day, set()).add(row["sid"])
+            day_umsgs[day] = day_umsgs.get(day, 0) + slot["user_msgs"]
+            day_amsgs[day] = day_amsgs.get(day, 0) + slot["assistant_msgs"]
+            bucket = day_detail.setdefault(day, {})
+            entry = bucket.get(row["username"])
+            if entry is None:
+                entry = {"username": row["username"], "sessions": 0, "user_msgs": 0,
+                         "assistant_msgs": 0, "last_ts": 0, "last_sid": ""}
+                bucket[row["username"]] = entry
+            entry["sessions"] += 1
+            entry["user_msgs"] += slot["user_msgs"]
+            entry["assistant_msgs"] += slot["assistant_msgs"]
+            if row["last_ts"] > entry["last_ts"]:
+                entry["last_ts"] = row["last_ts"]
+                entry["last_sid"] = row["sid"]
+    user_detail = None
+    if user:
+        owned = [row for row in rows if row["username"] == user]
+        if owned:
+            user_detail = {
+                "username": user,
+                "sessions": [
+                    {
+                        "sid": row["sid"],
+                        "first_ts": row["first_ts"],
+                        "last_ts": row["last_ts"],
+                        "user_msgs": row["user_msgs"],
+                        "assistant_msgs": row["assistant_msgs"],
+                        "total_msgs": row["user_msgs"] + row["assistant_msgs"],
+                    }
+                    for row in sorted(owned, key=lambda r: r["last_ts"], reverse=True)
+                ],
+                "candidates": [],
+            }
+        else:
+            candidates = [
+                entry["username"] for entry in sorted(users.values(), key=lambda u: u["last_ts"], reverse=True)
+                if entry["username"].startswith(user)
+            ][:10]
+            user_detail = {"username": user, "sessions": [], "candidates": candidates}
+    return {
+        "generated_at": int(time.time() * 1000),
+        "summary": {
+            "users": len(users),
+            "sessions": len(rows),
+            "user_msgs": sum(r["user_msgs"] for r in rows),
+            "assistant_msgs": sum(r["assistant_msgs"] for r in rows),
+            "days_covered": len(day_sessions),
+            "legacy_sessions": scanned["legacy"],
+            "days": days,
+        },
+        "days": [
+            {
+                "date": day,
+                "users": len(day_users.get(day, ())),
+                "sessions": len(day_sessions.get(day, ())),
+                "user_msgs": day_umsgs.get(day, 0),
+                "assistant_msgs": day_amsgs.get(day, 0),
+                "users_detail": sorted(
+                    day_detail.get(day, {}).values(),
+                    key=lambda entry: (-entry["user_msgs"], -entry["last_ts"]),
+                ),
+            }
+            for day in sorted(day_sessions, reverse=True)
+        ],
+        "recent_users": sorted(users.values(), key=lambda u: u["last_ts"], reverse=True)[:50],
+        "user_detail": user_detail,
+    }
+
+
 def auth_error_response(handler, exc):
     status = int(getattr(exc, "status", 502) or 502)
     body = getattr(exc, "body", None) or {"detail": str(exc)[:180]}
@@ -8639,6 +8823,20 @@ class H(BaseHTTPRequestHandler):
             return
         if path == "/api/admin/health":
             return self._send(200, {"ok": True, "service": "huangque-admin"})
+        if path == "/api/admin/conversation-stats":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                days = int((query.get("days") or ["7"])[0])
+            except (TypeError, ValueError):
+                days = 7
+            if days < 0:
+                days = 0
+            username = (query.get("user") or [""])[0].strip()[:64]
+            try:
+                return self._send(200, conversation_stats(days, username))
+            except Exception as exc:
+                return self._send(503, {"detail": "对话统计暂时不可用：%s" % exc})
+
         if path == "/api/admin/channel-manager":
             try:
                 return self._send(200, channel_workspace_overview())
