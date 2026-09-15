@@ -84,6 +84,9 @@ MANIFEST = {
         # M6 切写阶段才配置；在此之前期待「未配置」。
         ("HQ_IDENTITY_STORE", "sqlite"),
         ("HQ_LEDGER_STORE", "sqlite"),
+        # M3A 切写后 auth 也是 flags 域的读方（feature_flags/flags_store 部署在
+        # auth-service/content_domains），必须与 content 家族同值。
+        ("HQ_FLAGS_STORE", "sqlite"),
     ],
 }
 
