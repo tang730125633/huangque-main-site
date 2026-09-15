@@ -19,6 +19,20 @@ jobs:
     name: 代码与安全门禁
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: huangque_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d huangque_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: 检出代码
@@ -61,6 +75,15 @@ jobs:
 
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
+
+      - name: PostgreSQL 基础 Schema 与 SQLite 禁增门禁
+        env:
+          HQ_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/huangque_ci
+        run: |
+          alembic upgrade head
+          python -m unittest discover -s tests -p 'test_postgres_foundation.py' -v
+          python -m unittest discover -s tests -p 'test_sqlite_inventory.py' -v
+          python scripts/sqlite_inventory.py --check
 
       - name: 检查静态资源版本戳
         run: python scripts/stamp_assets.py --check

@@ -1,0 +1,474 @@
+{
+  "files": [
+    {
+      "autoincrement": 1,
+      "begin_immediate": 1,
+      "connect_calls": 23,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/admin_api.py",
+      "pragma": 9
+    },
+    {
+      "autoincrement": 1,
+      "begin_immediate": 2,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/app.py",
+      "pragma": 1
+    },
+    {
+      "autoincrement": 1,
+      "begin_immediate": 0,
+      "connect_calls": 1,
+      "insert_or": 2,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/assets_store.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 6,
+      "connect_calls": 0,
+      "insert_or": 4,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/audio.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 1,
+      "insert_or": 2,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/channel_lifecycle.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 7,
+      "connect_calls": 1,
+      "insert_or": 5,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/channel_manager.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/digital_human_oneclick.py",
+      "pragma": 1
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 5,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/digital_human_v2.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 1,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 1,
+      "path": "server/content_domains/digital_ip.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/director_workflows.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/feature_flags.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/inspiration_likes.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 1,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/jobs_store.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 1,
+      "connect_calls": 1,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/leads.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 5,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/pixelle_talking_assets.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 1,
+      "connect_calls": 2,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/pixelle_video.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/pricing.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 2,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/provider_keys.py",
+      "pragma": 1
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 1,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/runtime_observability.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 17,
+      "connect_calls": 0,
+      "insert_or": 3,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama.py",
+      "pragma": 6
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 11,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_alignment.py",
+      "pragma": 7
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 13,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_assembly.py",
+      "pragma": 8
+    },
+    {
+      "autoincrement": 1,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_assembly_artifacts.py",
+      "pragma": 5
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 13,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_asset_graph.py",
+      "pragma": 4
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 19,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_autodraft.py",
+      "pragma": 3
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_character_studio.py",
+      "pragma": 1
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_completion.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 6,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_conversation.py",
+      "pragma": 1
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 2,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync.py",
+      "pragma": 4
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_diagnostics.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 2,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_faces.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_inputs.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 7,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_jobs.py",
+      "pragma": 1
+    },
+    {
+      "autoincrement": 1,
+      "begin_immediate": 0,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_observability.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_reconcile.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_rollout.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_snapshot.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 0,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_lipsync_visuals.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_playback.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 2,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_preflight.py",
+      "pragma": 1
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 8,
+      "connect_calls": 0,
+      "insert_or": 2,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_production.py",
+      "pragma": 11
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 18,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_refinement.py",
+      "pragma": 4
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_sound_design.py",
+      "pragma": 3
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 2,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_timeline.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 8,
+      "connect_calls": 0,
+      "insert_or": 1,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_video.py",
+      "pragma": 11
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 7,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/short_drama_voice.py",
+      "pragma": 9
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 2,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/task_termination.py",
+      "pragma": 0
+    },
+    {
+      "autoincrement": 0,
+      "begin_immediate": 3,
+      "connect_calls": 0,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/video.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 1,
+      "begin_immediate": 7,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/content_domains/video_compose_store.py",
+      "pragma": 2
+    },
+    {
+      "autoincrement": 1,
+      "begin_immediate": 16,
+      "connect_calls": 1,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/creator_agent/store.py",
+      "pragma": 7
+    },
+    {
+      "autoincrement": 1,
+      "begin_immediate": 0,
+      "connect_calls": 2,
+      "insert_or": 0,
+      "last_insert_rowid": 0,
+      "path": "server/inspiration_cases.py",
+      "pragma": 0
+    }
+  ],
+  "schema": "huangque.sqlite-runtime-inventory/v1",
+  "scope": "server/**/*.py",
+  "sqlite_files": 51,
+  "totals": {
+    "autoincrement": 8,
+    "begin_immediate": 219,
+    "connect_calls": 42,
+    "insert_or": 28,
+    "last_insert_rowid": 1,
+    "pragma": 118
+  }
+}

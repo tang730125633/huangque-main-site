@@ -15,3 +15,8 @@ playwright==1.45.0
 cryptography>=45,<51
 # Windows and minimal Python images do not ship the IANA timezone database.
 tzdata>=2025.2
+# PostgreSQL runtime + versioned schema migrations. SQLite remains authoritative
+# until each business domain passes its explicit cutover gate.
+psycopg[binary,pool]>=3.2,<4
+SQLAlchemy>=2.0,<3
+alembic>=1.13,<2
