@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Huangque PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+RandomizedDelaySec=10m
+Persistent=true
+Unit=huangque-postgres-backup.service
+
+[Install]
+WantedBy=timers.target
