@@ -58,6 +58,14 @@ class PostgresFoundationTest(unittest.TestCase):
                 )
             }
             self.assertTrue({"data_migration_runs", "data_migration_items"} <= tables)
+            agent_tables = {
+                row["table_name"]
+                for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'agent'"
+                )
+            }
+            self.assertIn("sessions", agent_tables)
 
 
 if __name__ == "__main__":
