@@ -2968,6 +2968,8 @@ def list_video_assets(username, limit=120, offset=0):
                     )
                 if result.get("upscale_provider"):
                     item["upscale_provider"] = result["upscale_provider"]
+                if result.get("cover_url"):
+                    item["cover_url"] = str(result["cover_url"])
                 if str(payload.get("line") or "") in {"1", "2"}:
                     item["line"] = str(payload["line"])
                 for key in ("batch_id", "batch_label", "batch_index", "batch_size"):
