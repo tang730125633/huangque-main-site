@@ -20,3 +20,5 @@ tzdata>=2025.2
 psycopg[binary,pool]>=3.2,<4
 SQLAlchemy>=2.0,<3
 alembic>=1.13,<2
+# M3F 缓存切 Redis TTL 后需要（HQ_TIKHUB_CACHE=redis 时启用）。
+redis>=4.6,<6

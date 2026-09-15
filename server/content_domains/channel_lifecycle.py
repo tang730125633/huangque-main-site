@@ -1,4 +1,9 @@
-"""Versioned channel operations. Deletion is reversible; execution snapshots survive."""
+"""Versioned channel operations. Deletion is reversible; execution snapshots survive.
+
+存储层：渠道库（channel_management.db → routing schema）的读写统一经
+``channel_manager`` 分发；本模块在 HQ_CHANNEL_STORE=postgres 时改走 ``channel_store``，
+SQLite 路径与行为逐字节不变。``active_jobs`` 读的是任务库（jobs 域），不走渠道开关。
+"""
 import json
 import os
 import sqlite3
@@ -7,6 +12,7 @@ from contextlib import closing
 from pathlib import Path
 
 from . import channel_manager as store
+from . import channel_store
 
 LEGACY_SCOPES = {
     'xai': '果肉视频新任务', 'minimax': 'MiniMax 视频新任务',
@@ -18,6 +24,8 @@ LEGACY_SCOPES = {
 
 def legacy_states(connection=None):
     if connection is None:
+        if channel_store.enabled():
+            return channel_store.legacy_states()
         with closing(store.db()) as c:
             return legacy_states(c)
     row=connection.execute('SELECT value FROM settings WHERE id=2').fetchone()
@@ -44,6 +52,8 @@ def require_legacy(kind,payload):
 
 
 def mutate_legacy(actor,body):
+    if channel_store.enabled():
+        return channel_store.mutate_legacy(actor,body)
     key=str(body.get('id') or '')
     action=body.get('action')
     reason=str(body.get('reason') or '').strip()
@@ -87,6 +97,8 @@ def active_jobs(cid):
 
 
 def mutate(actor, body):
+    if channel_store.enabled():
+        return channel_store.mutate(actor, body)
     cid=str(body.get('id') or '')
     action=body.get('action')
     reason=str(body.get('reason') or '').strip()
@@ -137,6 +149,8 @@ def mutate(actor, body):
 
 
 def unmap(actor, body):
+    if channel_store.enabled():
+        return channel_store.unmap(actor, body)
     selector=str(body.get('selector') or '')
     with closing(store.db()) as c:
         c.execute('BEGIN IMMEDIATE')

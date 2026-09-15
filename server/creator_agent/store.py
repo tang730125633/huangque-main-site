@@ -45,6 +45,15 @@ def _loads(value, fallback):
         return fallback
     return parsed
 
+def _postgres_backend():
+    """本域 PostgreSQL 后端（``HQ_CREATOR_STORE=postgres``）；默认返回 None。
+
+    只在真正调用时导入 ``pg_store``（模块本身不 import psycopg），非法开关值由
+    ``pg_store.mode()`` 抛错，绝不静默回退到 SQLite。
+    """
+    from . import pg_store
+    return pg_store if pg_store.enabled() else None
+
 
 class CreatorAgentStore:
     """Project-scoped state for the independent Creator profile and productions."""
@@ -52,9 +61,21 @@ class CreatorAgentStore:
     def __init__(self, path):
         self.path = pathlib.Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.init_schema()
+        # 切换纪律：postgres 模式下不再打开/迁移 SQLite 库（表结构由 Alembic 负责），
+        # 避免同一时刻两个权威。path 仍用于 profile-pdfs 等本地目录定位。
+        if _postgres_backend() is None:
+            self.init_schema()
 
     def db(self):
+        """SQLite 连接工厂（``ModelUsageGuard`` 的 db_factory）。
+
+        ``HQ_CREATOR_STORE=postgres`` 时返回 PostgreSQL 权威的连接包装
+        （``pg_store.usage_connection()``：把用量守卫的 SQLite 方言语句显式翻译，
+        见该函数与 ``_UsageConnection`` 的说明）；默认路径逐字节不变。
+        """
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.usage_connection()
         connection = sqlite3.connect(str(self.path), timeout=20)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
@@ -257,6 +278,9 @@ class CreatorAgentStore:
 
     def health(self):
         """Verify integrity and a rollback-only write without persisting a sentinel."""
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.health()
         try:
             with closing(self.db()) as connection:
                 check = connection.execute("PRAGMA quick_check").fetchone()
@@ -275,6 +299,9 @@ class CreatorAgentStore:
             return False
 
     def set_active_project(self, username, project_id):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.set_active_project(username, project_id)
         now = int(time.time())
         with closing(self.db()) as connection:
             connection.execute(
@@ -286,6 +313,9 @@ class CreatorAgentStore:
             connection.commit()
 
     def active_project(self, username):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.active_project(username)
         with closing(self.db()) as connection:
             row = connection.execute(
                 "SELECT active_project_id FROM creator_account_state WHERE username=?",
@@ -294,6 +324,9 @@ class CreatorAgentStore:
         return str(row["active_project_id"] or "") if row else ""
 
     def ensure_workspace(self, username, project_id, alias=""):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.ensure_workspace(username, project_id, alias)
         now = int(time.time())
         with closing(self.db()) as connection:
             connection.execute(
@@ -332,6 +365,9 @@ class CreatorAgentStore:
         }
 
     def workspace(self, username, project_id):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.workspace(username, project_id)
         with closing(self.db()) as connection:
             row = connection.execute(
                 "SELECT * FROM creator_workspaces WHERE username=? AND project_id=?",
@@ -340,6 +376,9 @@ class CreatorAgentStore:
         return self._workspace(row)
 
     def update_workspace(self, username, project_id, **changes):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.update_workspace(username, project_id, **changes)
         mapping = {
             "alias": "alias",
             "platforms": "platforms_json",
@@ -369,6 +408,11 @@ class CreatorAgentStore:
 
     def commit_profile_opening(self, username, project_id, state, reply, public,
                                source_key, flow=None):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.commit_profile_opening(
+                username, project_id, state, reply, public, source_key, flow
+            )
         now = int(time.time())
         with closing(self.db()) as connection:
             try:
@@ -408,6 +452,9 @@ class CreatorAgentStore:
         return self.workspace(username, project_id)
 
     def workspaces(self, username):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.workspaces(username)
         with closing(self.db()) as connection:
             rows = connection.execute(
                 "SELECT * FROM creator_workspaces WHERE username=? "
@@ -419,6 +466,12 @@ class CreatorAgentStore:
     def update_profile_state(self, username, project_id, state, expected_revision,
                              *, profile=None, profile_overrides=None,
                              deliverables=None, flow=None):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.update_profile_state(
+                username, project_id, state, expected_revision, profile=profile,
+                profile_overrides=profile_overrides, deliverables=deliverables, flow=flow
+            )
         now = int(time.time())
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -464,6 +517,13 @@ class CreatorAgentStore:
                             *, profile=None, profile_overrides=None,
                             deliverables=None, flow=None,
                             fault_hook=None):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.commit_profile_turn(
+                username, project_id, user_message_id, state, expected_revision, reply, public,
+                profile=profile, profile_overrides=profile_overrides,
+                deliverables=deliverables, flow=flow, fault_hook=fault_hook
+            )
         now = int(time.time())
         with closing(self.db()) as connection:
             try:
@@ -529,6 +589,11 @@ class CreatorAgentStore:
 
     def commit_message_turn(self, username, project_id, user_message_id,
                             reply, public, fault_hook=None):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.commit_message_turn(
+                username, project_id, user_message_id, reply, public, fault_hook=fault_hook
+            )
         now = int(time.time())
         source_key = "message-turn:%d" % int(user_message_id)
         with closing(self.db()) as connection:
@@ -593,6 +658,13 @@ class CreatorAgentStore:
 
     def add_message(self, username, project_id, role, content, *, source_key=None,
                     request_id=None, request_hash="", public=None, created_at=None):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.add_message(
+                username, project_id, role, content, source_key=source_key,
+                request_id=request_id, request_hash=request_hash, public=public,
+                created_at=created_at
+            )
         now = int(created_at or time.time())
         with closing(self.db()) as connection:
             if not connection.execute(
@@ -638,6 +710,9 @@ class CreatorAgentStore:
         return self._message(row), True
 
     def messages(self, username, project_id, limit=300):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.messages(username, project_id, limit)
         with closing(self.db()) as connection:
             rows = connection.execute(
                 """SELECT * FROM creator_messages WHERE username=? AND project_id=?
@@ -647,6 +722,9 @@ class CreatorAgentStore:
         return [self._message(row) for row in reversed(rows)]
 
     def update_message_public(self, username, message_id, public):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.update_message_public(username, message_id, public)
         with closing(self.db()) as connection:
             changed = connection.execute(
                 "UPDATE creator_messages SET public_json=? WHERE id=? AND username=?",
@@ -657,6 +735,9 @@ class CreatorAgentStore:
             connection.commit()
 
     def delete_message_if_unanswered(self, username, message_id):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.delete_message_if_unanswered(username, message_id)
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -712,6 +793,11 @@ class CreatorAgentStore:
 
     def create_batch(self, username, project_id, topic, goal, platform_plans,
                      source_message_id=0):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.create_batch(
+                username, project_id, topic, goal, platform_plans, source_message_id
+            )
         if not platform_plans:
             raise StoreError("platform plans are required")
         now = int(time.time())
@@ -761,6 +847,9 @@ class CreatorAgentStore:
         return self.batch(username, batch_id, include_private=True)
 
     def batch_for_source_message(self, username, project_id, message_id):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.batch_for_source_message(username, project_id, message_id)
         if int(message_id or 0) <= 0:
             return None
         with closing(self.db()) as connection:
@@ -772,6 +861,9 @@ class CreatorAgentStore:
         return self.batch(username, row["id"], include_private=True) if row else None
 
     def batch_for_mutation_message(self, username, project_id, message_id):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.batch_for_mutation_message(username, project_id, message_id)
         if int(message_id or 0) <= 0:
             return None
         with closing(self.db()) as connection:
@@ -797,6 +889,9 @@ class CreatorAgentStore:
         }
 
     def batch(self, username, batch_id, include_private=False):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.batch(username, batch_id, include_private)
         with closing(self.db()) as connection:
             row = connection.execute(
                 "SELECT * FROM creator_batches WHERE id=? AND username=?",
@@ -824,6 +919,9 @@ class CreatorAgentStore:
         return value
 
     def batches(self, username, project_id, limit=30):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.batches(username, project_id, limit)
         with closing(self.db()) as connection:
             rows = connection.execute(
                 """SELECT id FROM creator_batches WHERE username=? AND project_id=?
@@ -833,6 +931,9 @@ class CreatorAgentStore:
         return [self.batch(username, row["id"]) for row in rows]
 
     def latest_batch(self, username, project_id, include_private=False):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.latest_batch(username, project_id, include_private)
         with closing(self.db()) as connection:
             row = connection.execute(
                 """SELECT id FROM creator_batches WHERE username=? AND project_id=?
@@ -914,6 +1015,11 @@ class CreatorAgentStore:
 
     def claim_quote(self, username, batch_id, expected_revision, now=None,
                     minimum_validity=0):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.claim_quote(
+                username, batch_id, expected_revision, now, minimum_validity
+            )
         claim_id = "quote_" + uuid.uuid4().hex
         now = int(time.time() if now is None else now)
         with closing(self.db()) as connection:
@@ -973,6 +1079,9 @@ class CreatorAgentStore:
         return value
 
     def finish_quote(self, username, batch_id, claim_id, job_quotes, quote, now=None):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.finish_quote(username, batch_id, claim_id, job_quotes, quote, now)
         now = int(time.time() if now is None else now)
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1028,6 +1137,9 @@ class CreatorAgentStore:
         return self.batch(username, batch_id)
 
     def abort_quote(self, username, batch_id, claim_id):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.abort_quote(username, batch_id, claim_id)
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -1039,6 +1151,12 @@ class CreatorAgentStore:
 
     def claim_confirmation(self, username, batch_id, confirmation_id, expected_revision,
                            expected_quote_expires_at, now=None, safety_margin_seconds=0):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.claim_confirmation(
+                username, batch_id, confirmation_id, expected_revision,
+                expected_quote_expires_at, now, safety_margin_seconds
+            )
         now = int(time.time() if now is None else now)
         claimed_ids = []
         with closing(self.db()) as connection:
@@ -1126,6 +1244,9 @@ class CreatorAgentStore:
         return batch
 
     def claim_recovery(self, username, batch_id, now=None):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.claim_recovery(username, batch_id, now)
         now = int(time.time() if now is None else now)
         claimed_ids = []
         with closing(self.db()) as connection:
@@ -1155,6 +1276,12 @@ class CreatorAgentStore:
 
     def finish_submit_claim(self, username, record_id, expected_revision, *, status,
                             job_id="", result=None, error="", refund_status=""):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.finish_submit_claim(
+                username, record_id, expected_revision, status=status, job_id=job_id,
+                result=result, error=error, refund_status=refund_status
+            )
         now = int(time.time())
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1183,6 +1310,12 @@ class CreatorAgentStore:
 
     def finish_task_poll(self, username, record_id, expected_revision, *, status,
                          result=None, error="", refund_status=""):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.finish_task_poll(
+                username, record_id, expected_revision, status=status, result=result,
+                error=error, refund_status=refund_status
+            )
         now = int(time.time())
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1211,6 +1344,9 @@ class CreatorAgentStore:
         return True
 
     def recompute_batch(self, username, batch_id):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.recompute_batch(username, batch_id)
         with closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row, jobs = self._locked_batch(connection, username, batch_id)
@@ -1226,6 +1362,9 @@ class CreatorAgentStore:
         return self.batch(username, batch_id)
 
     def update_batch(self, username, batch_id, **changes):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.update_batch(username, batch_id, **changes)
         mapping = {"status": "status", "plans": "plan_json", "quote": "quote_json",
                    "confirmation_id": "confirmation_id", "goal": "goal", "topic": "topic"}
         if not changes or set(changes) - set(mapping):
@@ -1246,6 +1385,9 @@ class CreatorAgentStore:
         return self.batch(username, batch_id, include_private=True)
 
     def update_job(self, username, record_id, **changes):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.update_job(username, record_id, **changes)
         mapping = {
             "status": "status", "input": "input_json", "quote_token": "quote_token",
             "quote": "quote_json", "confirmation_id": "confirmation_id",
@@ -1274,6 +1416,11 @@ class CreatorAgentStore:
 
     def replace_batch_plans(self, username, batch_id, platform_plans,
                             expected_revision, mutation_message_id=0):
+        _pg = _postgres_backend()
+        if _pg is not None:
+            return _pg.replace_batch_plans(
+                username, batch_id, platform_plans, expected_revision, mutation_message_id
+            )
         now = int(time.time())
         incoming = {str(item.get("platform") or ""): item for item in platform_plans}
         mutation_message_id = max(0, int(mutation_message_id or 0))

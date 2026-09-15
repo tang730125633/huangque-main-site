@@ -1,4 +1,9 @@
-"""Bounded managed-channel execution and tests; never retry a generation POST."""
+"""Bounded managed-channel execution and tests; never retry a generation POST.
+
+存储层：执行记录与调度排期统一经 ``channel_manager`` / ``channel_store`` 分发；
+``HQ_CHANNEL_STORE=postgres`` 时本模块的读写走 ``channel_store``（routing schema），
+SQLite 路径与行为逐字节不变。本模块不再直连 ``channel_manager.db()``。
+"""
 import base64
 import io
 import json
@@ -8,7 +13,7 @@ import urllib.parse
 import uuid
 from contextlib import closing
 
-from . import channel_manager as store, runtime_observability as trace, safe_http
+from . import channel_manager as store, channel_store, runtime_observability as trace, safe_http
 
 
 class OutcomeUnknown(RuntimeError):
@@ -406,6 +411,8 @@ def _provider_submitted(provider_id):
 
 def _mark_terminated(rid, detail='管理员终止任务'):
     """终止态独立于失败/未知：不参与渠道健康与告警，也不覆盖真实终态。"""
+    if channel_store.enabled():
+        return channel_store.mark_terminated(rid, detail)
     with closing(store.db()) as c:
         cur = c.execute(
             "UPDATE runs SET state='terminated',detail=?,updated=? "
@@ -417,30 +424,40 @@ def _mark_terminated(rid, detail='管理员终止任务'):
 
 
 def execute(rid, payload=None):
-    with closing(store.db()) as c:
-        row = dict(c.execute('SELECT * FROM runs WHERE id=?',(rid,)).fetchone())
+    if channel_store.enabled():
+        row = channel_store.run_record(rid)
+    else:
+        with closing(store.db()) as c:
+            row = dict(c.execute('SELECT * FROM runs WHERE id=?',(rid,)).fetchone())
     cfg = store.version(row['channel'],row['version'])
     start = time.monotonic()
     try:
         cfg = store.version(row['channel'],row['version'],True)
         while True:
             _termination_check()   # 排队阶段终止：尚未提交供应商，零费用止损
-            with closing(store.db()) as c:
-                c.execute('BEGIN IMMEDIATE')
-                # Stale runs remain unknown; never resubmit after restart.
-                c.execute("UPDATE runs SET state='unknown',detail='执行进程中断或超时，需人工核查' WHERE state='running' AND updated<?",(time.time()-2400,))
-                active = c.execute("SELECT COUNT(*) FROM runs WHERE channel=? AND state='running'",(cfg['id'],)).fetchone()[0]
-                rate = c.execute("SELECT COUNT(*) FROM events WHERE target=? AND action='runtime.dispatch' AND created>?",(cfg['id'],time.time()-60)).fetchone()[0]
-                own = c.execute('SELECT state FROM runs WHERE id=?',(rid,)).fetchone()[0]
-                if own!='queued':
-                    c.commit()
-                    return None
-                if active<cfg['concurrency'] and rate<cfg['rpm']:
-                    c.execute("UPDATE runs SET state='running',updated=? WHERE id=?",(time.time(),rid))
-                    store._audit(c,'runtime.dispatch',cfg['id'],'runtime')
-                    c.commit()
+            if channel_store.enabled():
+                started = channel_store.try_start_run(rid, cfg, time.time()-2400)
+                if started:
                     break
-                c.commit()
+                if started is False:
+                    return None
+            else:
+                with closing(store.db()) as c:
+                    c.execute('BEGIN IMMEDIATE')
+                    # Stale runs remain unknown; never resubmit after restart.
+                    c.execute("UPDATE runs SET state='unknown',detail='执行进程中断或超时，需人工核查' WHERE state='running' AND updated<?",(time.time()-2400,))
+                    active = c.execute("SELECT COUNT(*) FROM runs WHERE channel=? AND state='running'",(cfg['id'],)).fetchone()[0]
+                    rate = c.execute("SELECT COUNT(*) FROM events WHERE target=? AND action='runtime.dispatch' AND created>?",(cfg['id'],time.time()-60)).fetchone()[0]
+                    own = c.execute('SELECT state FROM runs WHERE id=?',(rid,)).fetchone()[0]
+                    if own!='queued':
+                        c.commit()
+                        return None
+                    if active<cfg['concurrency'] and rate<cfg['rpm']:
+                        c.execute("UPDATE runs SET state='running',updated=? WHERE id=?",(time.time(),rid))
+                        store._audit(c,'runtime.dispatch',cfg['id'],'runtime')
+                        c.commit()
+                        break
+                    c.commit()
             if time.monotonic()-start>120:
                 raise RuntimeError('渠道并发或限流等待超时，尚未提交供应商')
             time.sleep(1)
@@ -485,8 +502,11 @@ def execute(rid, payload=None):
             raise
         state = 'blocked' if isinstance(exc,CheckUnsupported) else 'unknown' if isinstance(exc,OutcomeUnknown) else 'failed'
         # Raw provider errors/payloads and secrets never enter public diagnostics.
-        with closing(store.db()) as c:
-            phase = c.execute('SELECT detail FROM runs WHERE id=?',(rid,)).fetchone()[0]
+        if channel_store.enabled():
+            phase = channel_store.execution_phase(rid)
+        else:
+            with closing(store.db()) as c:
+                phase = c.execute('SELECT detail FROM runs WHERE id=?',(rid,)).fetchone()[0]
         detail = phase+'：'+str(exc)[:200] if isinstance(exc,(ValueError,OutcomeUnknown,ProviderError)) else (
             phase+'：SafeHttpError HTTP '+str(exc.status) if isinstance(exc, safe_http.SafeHttpError)
             else phase+'：'+type(exc).__name__)
@@ -500,16 +520,19 @@ def execute(rid, payload=None):
 def _notify(row,state):
     if state not in {'passed','failed','unknown'}:
         return
-    with closing(store.db()) as c:
-        c.execute('BEGIN IMMEDIATE')
-        previous = c.execute('SELECT * FROM channel_incidents WHERE channel=? AND kind=?',(row['channel'],row['kind'])).fetchone()
-        if previous and previous['state']==state:
-            action,occurred=previous['action'],previous['occurred']
-        else:
-            action=('channel.recovered' if previous else '') if state=='passed' else 'channel.'+state
-            occurred=time.time()
-            c.execute('INSERT OR REPLACE INTO channel_incidents VALUES(?,?,?,?,?)',(row['channel'],row['kind'],state,action,occurred))
-        c.commit()
+    if channel_store.enabled():
+        action,occurred=channel_store.note_incident(row['channel'],row['kind'],state)
+    else:
+        with closing(store.db()) as c:
+            c.execute('BEGIN IMMEDIATE')
+            previous = c.execute('SELECT * FROM channel_incidents WHERE channel=? AND kind=?',(row['channel'],row['kind'])).fetchone()
+            if previous and previous['state']==state:
+                action,occurred=previous['action'],previous['occurred']
+            else:
+                action=('channel.recovered' if previous else '') if state=='passed' else 'channel.'+state
+                occurred=time.time()
+                c.execute('INSERT OR REPLACE INTO channel_incidents VALUES(?,?,?,?,?)',(row['channel'],row['kind'],state,action,occurred))
+            c.commit()
     # Re-enqueue the same durable event identity after an interrupted write; INSERT OR IGNORE deduplicates.
     if action:
         trace.enqueue(action,row['channel'],occurred)
@@ -540,9 +563,12 @@ def start_test(actor,body):
         cfg = store.version(cid)
         validate_payload(cfg,cfg['fixture'])
     rid = store.reserve(cid,kind)
-    with closing(store.db()) as c:
-        store._audit(c,'test.'+kind,cid,actor)
-        c.commit()
+    if channel_store.enabled():
+        channel_store.record_audit('test.'+kind,cid,actor)
+    else:
+        with closing(store.db()) as c:
+            store._audit(c,'test.'+kind,cid,actor)
+            c.commit()
     def work():
         try:
             execute(rid)
@@ -555,31 +581,43 @@ def start_test(actor,body):
 def monitor_cycle():
     now = time.time()
     due = []
-    with closing(store.db()) as c:
-        incidents=[dict(r) for r in c.execute("SELECT channel,action,occurred FROM channel_incidents WHERE action!=''")]
+    if channel_store.enabled():
+        incidents = channel_store.pending_incidents()
+    else:
+        with closing(store.db()) as c:
+            incidents=[dict(r) for r in c.execute("SELECT channel,action,occurred FROM channel_incidents WHERE action!=''")]
     for incident in incidents:
         trace.enqueue(incident['action'],incident['channel'],incident['occurred'])
-    with closing(store.db()) as c:
-        c.execute('BEGIN IMMEDIATE')
-        for row in c.execute('SELECT s.*,ch.version FROM schedule s JOIN channels ch ON ch.id=s.channel WHERE ch.enabled=1').fetchall():
-            cfg = store.version(row['channel'],row['version'])
-            for kind, column, enabled in [('connection','light_due',cfg['monitor']),('full','full_due',cfg['daily_test'])]:
-                if enabled and row[column]<=now:
-                    due.append((row['channel'],kind))
-                    next_at = now+cfg['poll_seconds'] if kind=='connection' else store._next_daily(cfg['daily_hour'],now)
-                    c.execute('UPDATE schedule SET '+column+'=? WHERE channel=?',(next_at,row['channel']))
-        c.commit()
+    if channel_store.enabled():
+        due = channel_store.poll_schedule(now)
+    else:
+        with closing(store.db()) as c:
+            c.execute('BEGIN IMMEDIATE')
+            for row in c.execute('SELECT s.*,ch.version FROM schedule s JOIN channels ch ON ch.id=s.channel WHERE ch.enabled=1').fetchall():
+                cfg = store.version(row['channel'],row['version'])
+                for kind, column, enabled in [('connection','light_due',cfg['monitor']),('full','full_due',cfg['daily_test'])]:
+                    if enabled and row[column]<=now:
+                        due.append((row['channel'],kind))
+                        next_at = now+cfg['poll_seconds'] if kind=='connection' else store._next_daily(cfg['daily_hour'],now)
+                        c.execute('UPDATE schedule SET '+column+'=? WHERE channel=?',(next_at,row['channel']))
+            c.commit()
     for cid,kind in due:
         try:
             start_test('scheduler',{'id':cid,'kind':kind})
         except Exception as exc:
             trace.enqueue('channel.schedule_blocked',cid,int(now))
-            with closing(store.db()) as c:
-                store._audit(c,'scheduler.blocked.'+kind,cid,'scheduler')
-                c.commit()
+            if channel_store.enabled():
+                channel_store.record_audit('scheduler.blocked.'+kind,cid,'scheduler')
+            else:
+                with closing(store.db()) as c:
+                    store._audit(c,'scheduler.blocked.'+kind,cid,'scheduler')
+                    c.commit()
     # Resume only work that has never been submitted. Running/unknown calls are not replayed.
-    with closing(store.db()) as c:
-        queued = [r[0] for r in c.execute("SELECT id FROM runs WHERE state='queued' AND kind!='task' ORDER BY started LIMIT 8")]
+    if channel_store.enabled():
+        queued = channel_store.queued_test_run_ids(8)
+    else:
+        with closing(store.db()) as c:
+            queued = [r[0] for r in c.execute("SELECT id FROM runs WHERE state='queued' AND kind!='task' ORDER BY started LIMIT 8")]
     for rid in queued:
         def work(run_id=rid):
             try:

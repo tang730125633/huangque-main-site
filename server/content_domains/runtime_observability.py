@@ -1,4 +1,10 @@
-"""Private operational evidence and durable, opt-in health notification outbox."""
+"""Private operational evidence and durable, opt-in health notification outbox.
+
+存储层：HQ_OBS_STORE=sqlite（默认，现状）走本模块 SQLite 路径
+（HQ_OBSERVABILITY_DB 指向的 runtime_observability.db）；postgres 走
+``observability_store``（ops.traces / ops.alert_outbox）。切换时所有读方
+（content / admin）必须同一开关一起切，禁止双权威。
+"""
 import json
 import os
 import sqlite3
@@ -8,6 +14,7 @@ from contextlib import closing
 from pathlib import Path
 
 from . import safe_http
+from . import observability_store
 
 
 def database():
@@ -33,6 +40,14 @@ def record(job_id, stage, state, duration=None, **metadata):
         return
     allowed = {'provider', 'model', 'host', 'transport', 'provider_task_id', 'error_type'}
     data = {key: str(value)[:160] for key, value in metadata.items() if key in allowed}
+    if observability_store.enabled():
+        try:
+            now = time.time()
+            observability_store.write_trace(str(job_id), stage, state, now, now, duration, json.dumps(data))
+        except Exception:
+            # 与 SQLite 路径同一降级语义：证据缺失绝不影响已付费任务结论。
+            pass
+        return
     try:
         with closing(database()) as connection:
             now = time.time()
@@ -61,7 +76,20 @@ def call(job_id, stage, action, **metadata):
     return result
 
 
+def _trace_row(row):
+    """PostgreSQL 行的对外形状；与 SQLite 分支的内联构造逐字段一致。"""
+    return {'stage': row['stage'], 'state': row['state'], 'started_at': row['started'],
+            'updated_at': row['updated'], 'duration_sec': row['duration'],
+            **json.loads(row['metadata'])}
+
+
 def traces(job_id):
+    if observability_store.enabled():
+        try:
+            rows = observability_store.read_traces(str(job_id))
+        except Exception:
+            return []
+        return [_trace_row(row) for row in rows]
     try:
         with closing(database()) as connection:
             rows = connection.execute('SELECT * FROM task_trace WHERE job_id=? ORDER BY started', (str(job_id),)).fetchall()
@@ -76,6 +104,10 @@ def enqueue(action, service, occurred_at):
     # Deliberately exclude raw probe details, credentials, user data and task output.
     payload = {'event': action, 'service': service, 'occurred_at': occurred_at}
     event_id = '%s:%s:%s' % (action, service, occurred_at)
+    if observability_store.enabled():
+        # 与原路径一致：入队失败必须暴露（告警不能悄悄丢），不做兜底。
+        observability_store.enqueue_alert(event_id, json.dumps(payload), time.time())
+        return
     with closing(database()) as connection:
         connection.execute('INSERT OR IGNORE INTO alert_outbox(event_id,payload,updated) VALUES(?,?,?)',
                            (event_id, json.dumps(payload), time.time()))
@@ -90,6 +122,37 @@ def valid_endpoint(url):
         return False
 
 
+def _dispatch_postgres(url, base_enabled, channel_url, now):
+    """dispatch() 的 PostgreSQL 分支：逐行语义与 SQLite 循环逐句对应。
+
+    每行单独一个事务（与 SQLite 路径每行 commit 一致），因此中途失败已投递的
+    行不会重发；同一时刻只有一个 admin 进程在跑 dispatch，不存在并发认领问题。
+    """
+    dispatched = 0
+    for row in observability_store.pending_alerts(now):
+        is_channel = str(json.loads(row['payload']).get('event','')).startswith('channel.')
+        target = channel_url if is_channel else url if base_enabled else ''
+        if not target:
+            continue
+        if dispatched >= 5:
+            break
+        dispatched += 1
+        attempts = row['attempts']+1
+        try:
+            safe_http.request_bytes(
+                'POST', target, body=row['payload'].encode(), timeout=3,
+                max_bytes=64*1024,
+                headers={'Content-Type':'application/json',
+                         'Idempotency-Key':row['event_id']},
+            )
+            state, error = 'sent', ''
+        except Exception as exc:
+            state, error = ('failed' if attempts >= 5 else 'pending'), type(exc).__name__
+        observability_store.update_alert(
+            row['event_id'], state, attempts, now+min(3600, 60*2**attempts), now, error,
+        )
+
+
 def dispatch():
     url = os.environ.get('HQ_ALERT_WEBHOOK_URL', '').strip()
     base_enabled = os.environ.get('HQ_ALERT_ENABLED') == '1' and valid_endpoint(url)
@@ -102,6 +165,9 @@ def dispatch():
     if not base_enabled and not channel_url:
         return
     now = time.time()
+    if observability_store.enabled():
+        _dispatch_postgres(url, base_enabled, channel_url, now)
+        return
     with closing(database()) as connection:
         rows = connection.execute("SELECT * FROM alert_outbox WHERE state='pending' AND next_try<=? ORDER BY updated", (now,)).fetchall()
         dispatched = 0
@@ -130,9 +196,34 @@ def dispatch():
         connection.commit()
 
 
+def alert_counts(prefix=None):
+    """{状态: 条数}。带开关：postgres 模式读 ops.alert_outbox，sqlite 模式直连旧库。
+
+    sqlite 分支保持与迁移前直连一致：存储错误原样冒泡（调用方各自决定降级）；
+    postgres 分支按只读降级语义：读不到返回空 dict。"""
+    if observability_store.enabled():
+        try:
+            return observability_store.alert_counts(prefix)
+        except Exception:
+            return {}
+    with closing(database()) as connection:
+        if prefix:
+            return {r['state']: r['n'] for r in connection.execute(
+                'SELECT state,COUNT(*) n FROM alert_outbox WHERE event_id LIKE ? GROUP BY state',
+                (prefix,))}
+        return {r['state']: r['n'] for r in connection.execute(
+            'SELECT state,COUNT(*) n FROM alert_outbox GROUP BY state')}
+
+
 def alert_status():
     requested = os.environ.get('HQ_ALERT_ENABLED') == '1'
     enabled = requested and valid_endpoint(os.environ.get('HQ_ALERT_WEBHOOK_URL', ''))
+    if observability_store.enabled():
+        try:
+            counts = observability_store.alert_counts()
+        except Exception:
+            return {'enabled':enabled, 'error':'通知记录不可读'}
+        return {'enabled':enabled, 'counts':counts, 'error':'通知地址配置无效' if requested and not enabled else ''}
     try:
         with closing(database()) as connection:
             counts = {r['state']:r['n'] for r in connection.execute('SELECT state,COUNT(*) n FROM alert_outbox GROUP BY state')}
@@ -145,6 +236,12 @@ def search_task_ids(query):
     needle = '%' + str(query or '').lower() + '%'
     if needle == '%%':
         return set()
+    if observability_store.enabled():
+        try:
+            values = observability_store.search_trace_job_ids(needle)
+        except Exception:
+            return set()
+        return {str(value) for value in values if value not in (None, '')}
     try:
         with closing(database()) as connection:
             rows = connection.execute(

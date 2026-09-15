@@ -4,6 +4,7 @@ import sqlite3
 import time
 from contextlib import closing
 
+from . import leads_store
 from .core import BASE, _collect_cos_play_url, public_url_from_remote, re, tikhub
 
 LEADS_CRM_DB = str(BASE / "leads_crm.db")
@@ -49,12 +50,15 @@ def list_crm(username, lead_ids=None):
             ids.append(_clean_lead_id(lead_id))
         except ValueError:
             continue
-    with closing(crm_db()) as c:
-        if ids:
-            qs = ",".join("?" for _ in ids)
-            rows = c.execute("SELECT * FROM lead_crm WHERE username=? AND lead_id IN (%s)" % qs, [username] + ids).fetchall()
-        else:
-            rows = c.execute("SELECT * FROM lead_crm WHERE username=? ORDER BY updated_at DESC LIMIT 500", (username,)).fetchall()
+    if leads_store.enabled():
+        rows = leads_store.read_crm(username, ids)
+    else:
+        with closing(crm_db()) as c:
+            if ids:
+                qs = ",".join("?" for _ in ids)
+                rows = c.execute("SELECT * FROM lead_crm WHERE username=? AND lead_id IN (%s)" % qs, [username] + ids).fetchall()
+            else:
+                rows = c.execute("SELECT * FROM lead_crm WHERE username=? ORDER BY updated_at DESC LIMIT 500", (username,)).fetchall()
     return {r["lead_id"]: _row_dict(r) for r in rows}
 
 def delete_crm(username, lead_ids):
@@ -67,35 +71,53 @@ def delete_crm(username, lead_ids):
     ids = list(dict.fromkeys(ids))
     if not ids:
         raise ValueError("请选择要删除的线索")
-    with closing(crm_db()) as c:
-        c.execute("BEGIN IMMEDIATE")
-        deleted = []
-        for lead_id in ids:
-            cur = c.execute(
-                "DELETE FROM lead_crm WHERE username=? AND lead_id=?",
-                (username, lead_id),
-            )
-            if cur.rowcount > 0:
-                deleted.append(lead_id)
-        c.commit()
+    if leads_store.enabled():
+        deleted = leads_store.delete_crm(username, ids)
+    else:
+        with closing(crm_db()) as c:
+            c.execute("BEGIN IMMEDIATE")
+            deleted = []
+            for lead_id in ids:
+                cur = c.execute(
+                    "DELETE FROM lead_crm WHERE username=? AND lead_id=?",
+                    (username, lead_id),
+                )
+                if cur.rowcount > 0:
+                    deleted.append(lead_id)
+            c.commit()
     if not deleted:
         raise ValueError("所选线索不存在或不属于当前账号")
     return {"deleted": len(deleted)}
 
+def _crm_merged_fields(payload, current):
+    """把「本次提交 + 既有行」合并成最终三字段并校验取值。
+
+    两种存储模式共用这一份派生/校验逻辑（SQLite 的 sqlite3.Row 与 PostgreSQL 的 dict
+    都支持按列名取值），保证切换前后「哪些输入报什么错」逐字一致。"""
+    intent = (payload or {}).get("intent") or (current["intent"] if current else "高意向")
+    follow_status = (payload or {}).get("follow_status") or (current["follow_status"] if current else "待跟进")
+    follow_note = (payload or {}).get("follow_note")
+    if follow_note is None:
+        follow_note = current["follow_note"] if current else ""
+    follow_note = str(follow_note or "")[:300]
+    if intent not in CRM_INTENTS:
+        raise ValueError("意向标签无效")
+    if follow_status not in CRM_STATUSES:
+        raise ValueError("跟进状态无效")
+    return intent, follow_status, follow_note
+
 def upsert_crm(username, payload):
     lead_id = _clean_lead_id((payload or {}).get("lead_id"))
+    if leads_store.enabled():
+        current = leads_store.read_one(username, lead_id)
+        intent, follow_status, follow_note = _crm_merged_fields(payload, current)
+        now = int(time.time())
+        leads_store.write_crm(username, lead_id, intent, follow_status, follow_note, now)
+        return {"lead_id": lead_id, "intent": intent, "follow_status": follow_status,
+                "follow_note": follow_note, "updated_at": now}
     with closing(crm_db()) as c:
         current = c.execute("SELECT * FROM lead_crm WHERE username=? AND lead_id=?", (username, lead_id)).fetchone()
-        intent = (payload or {}).get("intent") or (current["intent"] if current else "高意向")
-        follow_status = (payload or {}).get("follow_status") or (current["follow_status"] if current else "待跟进")
-        follow_note = (payload or {}).get("follow_note")
-        if follow_note is None:
-            follow_note = current["follow_note"] if current else ""
-        follow_note = str(follow_note or "")[:300]
-        if intent not in CRM_INTENTS:
-            raise ValueError("意向标签无效")
-        if follow_status not in CRM_STATUSES:
-            raise ValueError("跟进状态无效")
+        intent, follow_status, follow_note = _crm_merged_fields(payload, current)
         now = int(time.time())
         c.execute("""INSERT OR REPLACE INTO lead_crm(username, lead_id, intent, follow_status, follow_note, updated_at)
                      VALUES(?,?,?,?,?,?)""", (username, lead_id, intent, follow_status, follow_note, now))

@@ -2,11 +2,17 @@
 
 Uses existing channel versions/settings. Public metadata never contains credentials,
 upstream model names, URLs, proxies, drafts or operator identities.
+
+存储层：设置行（settings id=3/4）、渠道版本与映射统一经 ``channel_manager`` /
+``channel_store`` 分发；``HQ_CHANNEL_STORE=postgres`` 时走 ``channel_store``
+（routing schema），SQLite 路径与行为逐字节不变。本模块不再直连
+``channel_manager.db()``。
 """
 import json
 import time
 from contextlib import closing
 from . import channel_manager as store
+from . import channel_store
 from . import channel_lifecycle, feature_flags
 
 LABELS={'size':'图片尺寸','quality':'生成质量','output_format':'文件格式','background':'背景',
@@ -63,12 +69,25 @@ def _clean_layout(raw, strict=False):
 
 
 def layout_state():
+    if channel_store.enabled():
+        return _clean_layout(channel_store.layout_setting())
     with closing(store.db()) as c:
         row = c.execute('SELECT value FROM settings WHERE id=4').fetchone()
     return _clean_layout(json.loads(row[0]) if row else {})
 
 
 def _published_items():
+    if channel_store.enabled():
+        result=[]
+        for m,version,cfg in channel_store.published_channel_configs():
+            spec=cfg.get('parameters')
+            if not spec or cfg.get('_lifecycle',{}).get('deleted'):continue
+            cfg.update(id=m['channel'],version=version)
+            result.append(dict(kind=m['kind'],front=m['front'],label=m['label'],revision=token(cfg),
+                fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
+                reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
+                mask_enabled=spec.get('mask') is True))
+        return result
     result=[]
     with closing(store.db()) as c:
         for row in c.execute('SELECT config FROM mappings'):
@@ -147,13 +166,15 @@ def layout_save(actor, body):
         allowed={item['key'] for item in entries.get(page,[]) if item['defaultable'] and item['visible']}
         if cfg['default'] not in allowed:
             raise ValueError(page + ' 默认渠道当前不可用，请选择可接单渠道')
+    if channel_store.enabled():
+        channel_store.save_layout(actor, value)
+        return admin_layout_state()
     with closing(store.db()) as c:
         c.execute('BEGIN IMMEDIATE')
         c.execute('INSERT OR REPLACE INTO settings VALUES(4,?)', (json.dumps(value, ensure_ascii=False),))
         store._audit(c, 'layout.save', 'workbench', actor)
         c.commit()
     return admin_layout_state()
-
 
 def capabilities(cfg,profile=None):
     adapter=cfg['adapter']
@@ -261,12 +282,19 @@ def drafts(c):
 
 def admin_state(cid,profile=None):
     cfg=store.version(cid)
-    with closing(store.db()) as c:
-        draft=drafts(c).get(cid)
+    if channel_store.enabled():
+        draft=channel_store.draft_setting().get(cid)
         history=[]
-        for r in c.execute('SELECT version,config,actor,created FROM versions WHERE channel=? ORDER BY version DESC',(cid,)):
+        for r in channel_store.channel_versions(cid):
             spec=json.loads(r['config']).get('parameters')
             if spec:history.append(dict(version=r['version'],actor=r['actor'],created=r['created'],parameters=spec))
+    else:
+        with closing(store.db()) as c:
+            draft=drafts(c).get(cid)
+            history=[]
+            for r in c.execute('SELECT version,config,actor,created FROM versions WHERE channel=? ORDER BY version DESC',(cid,)):
+                spec=json.loads(r['config']).get('parameters')
+                if spec:history.append(dict(version=r['version'],actor=r['actor'],created=r['created'],parameters=spec))
     selected_profile=profile or (draft or {}).get('parameters',{}).get('profile') or cfg.get('parameters',{}).get('profile')
     return dict(id=cid,version=cfg['version'],capabilities=capabilities(cfg,selected_profile),labels=LABELS,sizes=SIZES,
                 published=cfg.get('parameters'),draft=draft,history=history[:30])
@@ -275,6 +303,9 @@ def admin_state(cid,profile=None):
 def change(actor,body):
     cid=str(body.get('id') or '');action=body.get('action')
     if action not in {'draft','publish','rollback'}:raise ValueError('未知参数操作')
+    if channel_store.enabled():
+        channel_store.change_parameters(actor,body)
+        return admin_state(cid)
     with closing(store.db()) as c:
         c.execute('BEGIN IMMEDIATE')
         row=c.execute('SELECT ch.version,v.config,v.secret FROM channels ch JOIN versions v ON v.channel=ch.id AND v.version=ch.version WHERE ch.id=?',(cid,)).fetchone()
@@ -361,6 +392,13 @@ def quote(kind,payload,allow_historical=False):
             cfg = store.version(operation_route['channel'])
             return apply(cfg, payload)[1]
     front=str(payload.get('channel') if kind=='xiaole_video' else payload.get('model') or '')
+    if channel_store.enabled():
+        mapping=channel_store.mapping_by_selector(kind+':'+front)
+        if not mapping.get('enabled'):
+            if payload.get('parameter_selection'):raise ValueError('功能映射已变化，请刷新后重试')
+            return None
+        cfg=store.version(mapping['channel'])
+        return apply(cfg,payload)[1]
     with closing(store.db()) as c:
         r=c.execute('SELECT config FROM mappings WHERE selector=?',(kind+':'+front,)).fetchone()
         mapping=json.loads(r[0]) if r else {}

@@ -61,6 +61,9 @@ egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 function_registry = import_module(_DOMAIN_PACKAGE + ".function_registry")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
+# M3D：admin_config.db 的 PostgreSQL 存储层。默认 HQ_ADMIN_CONFIG_STORE=sqlite，
+# 所有 SQLite 路径逐字节保留；只有下面明确标注的表在 postgres 模式下改走本模块。
+admin_config_store = import_module(_DOMAIN_PACKAGE + ".admin_config_store")
 pricing = import_module(_DOMAIN_PACKAGE + ".pricing")
 error_contract = import_module(_DOMAIN_PACKAGE + ".error_contract")
 video_minimax_h3 = import_module(_DOMAIN_PACKAGE + ".video_minimax_h3")
@@ -2955,6 +2958,15 @@ def channel_workspace_overview():
         provider_key_rows=provider_key_state.get('items') or [],
         runtime_health=content_health,
     )
+    if admin_config_store.enabled():
+        try:
+            result['legacy_events'] = admin_config_store.read_legacy_audit(
+                ("provider_key.", "server_key.", "heygen.oauth.", "channel.secret."), 50
+            )
+        except Exception:
+            result['legacy_events'] = []
+            result['legacy_audit_error'] = '现有线路操作记录暂不可读'
+        return result
     try:
         with closing(db()) as connection:
             result['legacy_events'] = [dict(row) for row in connection.execute(
@@ -2998,6 +3010,10 @@ def _admin_audit(actor, action, target, detail, conn=None):
             "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
             values,
         )
+        return
+    # M3D：admin_audit 切 PG 后，仍由本函数统一落库（审计只有这一个权威）。
+    if admin_config_store.enabled():
+        admin_config_store.write_audit(*values)
         return
     with closing(db()) as audit_conn:
         audit_conn.execute(
@@ -3610,13 +3626,20 @@ def acceptance_freshness(now=None):
 
 def _persisted_open_service_incidents():
     try:
-        with closing(db()) as connection:
-            rows = connection.execute(
-                """SELECT action,target FROM admin_audit
-                   WHERE action IN ('service.incident.open','service.incident.recovered')
-                   ORDER BY created_at DESC,id DESC"""
-            ).fetchall()
+        if admin_config_store.enabled():
+            # 只读降级语义不变：查不到一律当「没有未恢复事件」，不影响其它展示。
+            rows = admin_config_store.read_audit_by_actions(
+                ("service.incident.open", "service.incident.recovered"))
+        else:
+            with closing(db()) as connection:
+                rows = connection.execute(
+                    """SELECT action,target FROM admin_audit
+                       WHERE action IN ('service.incident.open','service.incident.recovered')
+                       ORDER BY created_at DESC,id DESC"""
+                ).fetchall()
     except sqlite3.Error:
+        return set()
+    except Exception:
         return set()
     latest = {}
     for row in rows:
@@ -3731,7 +3754,9 @@ def _run_service_monitor_cycle(probe=None, services=None, now=None, record_event
             try:
                 _admin_audit("system:health-monitor", action, target, detail)
                 runtime_observability.enqueue(action, target, int(now))
-            except sqlite3.Error:
+            except Exception:
+                # 审计/告警存储不可用（含 postgres 模式）绝不能挂掉监控循环；
+                # 失败时放弃本次记录，下次循环自然重试。
                 pass
     snapshot["summary"] = {
         "total": len(snapshot["services"]),
@@ -3767,14 +3792,22 @@ def service_monitor_status():
 
 def service_monitor_events(limit=20):
     try:
-        with closing(db()) as connection:
-            rows = connection.execute(
-                """SELECT action,target,detail,created_at FROM admin_audit
-                   WHERE action IN ('service.incident.open','service.incident.recovered')
-                   ORDER BY created_at DESC,id DESC LIMIT ?""",
-                (max(1, min(int(limit or 20), 100)),),
-            ).fetchall()
+        if admin_config_store.enabled():
+            rows = admin_config_store.read_audit_by_actions(
+                ("service.incident.open", "service.incident.recovered"),
+                max(1, min(int(limit or 20), 100)),
+            )
+        else:
+            with closing(db()) as connection:
+                rows = connection.execute(
+                    """SELECT action,target,detail,created_at FROM admin_audit
+                       WHERE action IN ('service.incident.open','service.incident.recovered')
+                       ORDER BY created_at DESC,id DESC LIMIT ?""",
+                    (max(1, min(int(limit or 20), 100)),),
+                ).fetchall()
     except sqlite3.Error:
+        return []
+    except Exception:
         return []
     events = []
     for row in rows:
@@ -3836,8 +3869,13 @@ def service_status():
 
 def load_channels():
     saved = {}
-    with closing(db()) as c:
-        rows = c.execute("SELECT * FROM admin_channel_config").fetchall()
+    if admin_config_store.enabled():
+        rows = list(admin_config_store.read_channels().values())
+    else:
+        with closing(db()) as c:
+            rows = c.execute("SELECT * FROM admin_channel_config").fetchall()
+    # 两种模式的列名与取值一致（config 是 JSON 文本、enabled 是真假），
+    # 归一化只有这一处，PG 模式不会返回未解析的 config。
     for row in rows:
         try:
             config = json.loads(row["config"] or "{}")
@@ -3933,6 +3971,12 @@ def save_channel(actor, body):
     reason = str(body.get("reason") or "").strip()[:200]
     now = int(time.time())
     detail = {"enabled": enabled, "config": config, "reason": reason}
+    encoded = json.dumps(config, ensure_ascii=False)
+    if admin_config_store.enabled():
+        # 渠道配置与它的审计行必须同一事务：拆开会留下「配置改了但没审计」。
+        admin_config_store.save_channel(
+            actor, channel, enabled, encoded, json.dumps(detail, ensure_ascii=False), now)
+        return next(item for item in load_channels() if item["key"] == channel)
     with closing(db()) as c:
         c.execute(
             """INSERT INTO admin_channel_config(channel, enabled, config, updated_by, updated_at)
@@ -3942,7 +3986,7 @@ def save_channel(actor, body):
                    config=excluded.config,
                    updated_by=excluded.updated_by,
                    updated_at=excluded.updated_at""",
-            (channel, 1 if enabled else 0, json.dumps(config, ensure_ascii=False), actor, now),
+            (channel, 1 if enabled else 0, encoded, actor, now),
         )
         c.execute(
             "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
@@ -3961,6 +4005,10 @@ def save_feature(actor, body):
     item = feature_flags.set_enabled(feature, enabled, actor)
     now = int(time.time())
     detail = {"enabled": enabled, "reason": reason}
+    if admin_config_store.enabled():
+        admin_config_store.write_audit(
+            actor, "feature.toggle", feature, json.dumps(detail, ensure_ascii=False), now)
+        return item
     with closing(db()) as c:
         c.execute(
             "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
@@ -3982,6 +4030,11 @@ def save_pricing(actor, body):
         "new_points": item["points"],
         "reason": reason,
     }
+    now = int(time.time())
+    if admin_config_store.enabled():
+        admin_config_store.write_audit(
+            actor, "pricing.update", key, json.dumps(detail, ensure_ascii=False), now)
+        return item
     with closing(db()) as conn:
         conn.execute(
             "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
@@ -7060,16 +7113,26 @@ def start_e2e_batch(actor, admin_token, page_key, include_fresh=False):
                 username=preflight["account"], cost=item["cost"], error=item["blocker"],
             )
         now = int(time.time())
-        with closing(db()) as connection:
-            connection.execute(
-                "INSERT INTO admin_audit(actor,action,target,detail,created_at) VALUES(?,?,?,?,?)",
-                (actor, "e2e.batch.start", batch_id,
-                 json.dumps({"page_key": page_key, "target_count": preflight["target_count"],
-                             "ready_count": preflight["ready_count"],
-                             "total_cost": preflight["total_cost"],
-                             "include_fresh": bool(include_fresh)}, ensure_ascii=False), now),
+        if admin_config_store.enabled():
+            admin_config_store.write_audit(
+                actor, "e2e.batch.start", batch_id,
+                json.dumps({"page_key": page_key, "target_count": preflight["target_count"],
+                            "ready_count": preflight["ready_count"],
+                            "total_cost": preflight["total_cost"],
+                            "include_fresh": bool(include_fresh)}, ensure_ascii=False),
+                now,
             )
-            connection.commit()
+        else:
+            with closing(db()) as connection:
+                connection.execute(
+                    "INSERT INTO admin_audit(actor,action,target,detail,created_at) VALUES(?,?,?,?,?)",
+                    (actor, "e2e.batch.start", batch_id,
+                     json.dumps({"page_key": page_key, "target_count": preflight["target_count"],
+                                 "ready_count": preflight["ready_count"],
+                                 "total_cost": preflight["total_cost"],
+                                 "include_fresh": bool(include_fresh)}, ensure_ascii=False), now),
+                )
+                connection.commit()
         threading.Thread(
             target=_run_e2e_batch, args=(batch_id, admin_token), daemon=True,
             name="admin-e2e-batch-" + batch_id[:8],

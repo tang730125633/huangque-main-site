@@ -4,3 +4,5 @@
 reportlab==5.0.0
 pillow==12.2.0
 charset-normalizer==3.4.7
+# M3G PostgreSQL backend (HQ_CREATOR_STORE=postgres); sqlite mode does not need it.
+psycopg[binary,pool]>=3.2,<4
