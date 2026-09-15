@@ -419,14 +419,30 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(rows["gemini"]["env_features"], ["图片生成 → 纳米香蕉"])
         self.assertEqual(rows["gemini"]["pool_features"], ["视频模块 → Omni 视频"])
         self.assertEqual(rows["gemini"]["pool_base_host"], "sg.huangquechuanmei.com")
+        self.assertEqual(rows["gemini"]["pool_base_url"],
+                         "https://sg.huangquechuanmei.com/google")
         self.assertEqual(rows["gemini"]["image_primary_base_host"],
                          "generativelanguage.googleapis.com")
         self.assertEqual(rows["gemini"]["image_fallback_base_host"],
                          "gemini-relay.example.com")
+        self.assertEqual(rows["gemini"]["image_fallback_base_url"],
+                         "https://gemini-relay.example.com/google")
         self.assertEqual(rows["gemini"]["image_probe_base_host"],
                          "gemini-relay.example.com")
         self.assertIn("视频模块 → 电影化身", rows["heygen"]["features"])
         self.assertEqual(rows["seedance"]["pool_provider"], "seedance")
+
+    def test_public_base_url_removes_credentials_query_and_fragment(self):
+        item = {"env_base_env": ["EXAMPLE_BASE"], "env_base_default": ""}
+        sources = [{"name": "test", "values": {
+            "EXAMPLE_BASE": "https://relay.example.com/v1?token=secret#debug",
+        }}]
+        self.assertEqual(
+            admin_api._key_group_base_url(item, "env", sources),
+            "https://relay.example.com/v1",
+        )
+        sources[0]["values"]["EXAMPLE_BASE"] = "https://user:pass@relay.example.com/v1"
+        self.assertEqual(admin_api._key_group_base_url(item, "env", sources), "")
 
     def test_deepseek_catalog_exposes_agent_base_and_supported_models(self):
         rows = {item["key"]: item for item in admin_api.key_status()}
