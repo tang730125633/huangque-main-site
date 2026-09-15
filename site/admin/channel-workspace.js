@@ -17,7 +17,7 @@
       const remove=c.source==='managed'?action('delete','移入回收站'):'<span class="muted">内置线路不可删除</span>';
       return '<div class="cm-row-actions">'+button(c)+edit+modelButton+(c.source==='managed'?'<button data-parameters="'+esc(c.id)+'">参数</button>':'')+toggle+'<details><summary>更多</summary>'+remove+'</details></div>';
     }
-    function showTab(name){tab=name;document.querySelectorAll('[data-cm-panel]').forEach(n=>n.hidden=n.dataset.cmPanel!==name);document.querySelectorAll('[data-cm-tab]').forEach(n=>{n.classList.toggle('active',n.dataset.cmTab===name);n.setAttribute('aria-pressed',String(n.dataset.cmTab===name))});if(name==='layout')loadLayout()}
+    function showTab(name){tab=name;document.querySelectorAll('[data-cm-panel]').forEach(n=>n.hidden=n.dataset.cmPanel!==name);document.querySelectorAll('.cm-admin-menu[open]').forEach(n=>n.removeAttribute('open'));if(name==='layout')loadLayout()}
     function renderLayout(state,catalog,effectiveState){
       const host=el('cmLayout');if(!host)return;
       const layout=state||{},effective=effectiveState||layout,directory=catalog||{};
@@ -68,7 +68,8 @@
       }catch(error){renderLayoutError(error)}
       finally{layoutLoading=false}
     }
-    const matrixPageMeta=[['image','生图'],['video','生视频'],['avatar','数字人'],['audio','音频与配音'],['text','文本与助手'],['collect','采集与解析'],['process','视频处理'],['other','其他服务']];
+    const matrixPageMeta=[['image','生图'],['video','生视频'],['avatar','数字人'],['audio','音频与配音'],['text','文本与助手'],['collect','采集与解析'],['process','视频处理'],['other','系统依赖']];
+    const matrixPageGroups=[['内容创作',['image','video']],['人物与声音',['avatar','audio']],['智能工具',['text','collect','process']],['基础服务',['other']]];
     function catalogRoute(c){
       const baseUrls=unique([c.base_url,c.env_base_url,c.pool_base_url,c.image_primary_base_url,c.image_fallback_base_url]);
       const management={kind:c.source==='managed'?'managed_channel':(c.pool_provider?'provider_pool':'server_env'),uid:c.uid,provider:c.pool_provider||''};
@@ -167,11 +168,12 @@
         const state=product.visible?'前台显示':'前台隐藏';
         return '<section class="cm-switch-product '+(product.attention?'attention':'')+'"><div class="cm-switch-product-head"><div><h4>'+esc(product.label)+'</h4><p>'+esc(product.description||product.visibility_reason||'前端产品')+'</p></div><span class="cm-matrix-pill '+(product.visible?'ok':'')+'">'+esc(state)+'</span></div><div class="cm-switch-models">'+(cards||'<p class="cm-matrix-empty">'+esc(product.warning||'当前没有已登记模型。')+'</p>')+'</div></section>';
       }).join('');
-      const pageTabs='<div class="cm-function-tabs" role="tablist">'+pages.map(page=>'<button type="button" role="tab" data-cm-matrix-page="'+esc(page.page)+'" aria-selected="'+String(page.page===matrixPage)+'" class="'+(page.page===matrixPage?'active':'')+'">'+esc(page.label||page.page)+'</button>').join('')+'</div>';
-      host.innerHTML='<div class="section-head"><div><h3>前端功能与渠道</h3><p class="muted">先选前端功能，再点具体模型查看并管理渠道、API Key、Base URL 与验证证据。</p></div><button type="button" class="cm-hidden-toggle '+(matrixShowHidden?'active':'')+'" data-cm-matrix-hidden aria-pressed="'+String(matrixShowHidden)+'">'+(matrixShowHidden?'隐藏停用项':'显示前台隐藏 / 停用项')+'</button></div>'+pageTabs
+      const sidebar=matrixPageGroups.map(([group,keys])=>'<div class="cm-function-group"><strong>'+esc(group)+'</strong>'+keys.map(key=>pages.find(page=>page.page===key)).filter(Boolean).map(page=>{const meta=page.summary||{},attention=Number(meta.attention_models||0);return '<button type="button" data-cm-matrix-page="'+esc(page.page)+'" aria-current="'+(page.page===matrixPage?'page':'false')+'" class="'+(page.page===matrixPage?'active':'')+'"><span>'+esc(page.label||page.page)+'</span>'+(attention?'<em class="cm-function-alert">待处理 '+attention+'</em>':'')+'<small>'+Number(meta.models||0)+' 个模型 / 服务</small></button>'}).join('')+'</div>').join('');
+      const mobile=matrixPageGroups.map(([group,keys])=>'<optgroup label="'+esc(group)+'">'+keys.map(key=>pages.find(page=>page.page===key)).filter(Boolean).map(page=>'<option value="'+esc(page.page)+'" '+(page.page===matrixPage?'selected':'')+'>'+esc(page.label||page.page)+' · '+Number(page.summary?.models||0)+' 个</option>').join('')+'</optgroup>').join('');
+      host.innerHTML='<div class="cm-function-workspace"><aside class="cm-function-sidebar" aria-label="业务功能">'+sidebar+'</aside><main class="cm-function-content"><label class="cm-function-mobile">选择业务功能<select data-cm-matrix-select aria-label="选择业务功能">'+mobile+'</select></label><div class="section-head"><div><h3>'+esc(matrix.label||matrix.page||'前端模型与渠道')+'</h3><p class="muted">点击具体模型，查看并管理渠道、API Key、Base URL 与验证证据。</p></div><div class="actions"><button type="button" data-cm-view="layout">调整前台展示</button><button type="button" class="cm-hidden-toggle '+(matrixShowHidden?'active':'')+'" data-cm-matrix-hidden aria-pressed="'+String(matrixShowHidden)+'">'+(matrixShowHidden?'隐藏停用项':'显示前台隐藏 / 停用项')+'</button></div></div>'
         +'<div class="cm-matrix-summary"><div><span>前端产品</span><b>'+Number(summary.products||0)+'</b></div><div><span>模型 / 服务</span><b>'+Number(summary.models||0)+'</b></div><div><span>允许接单</span><b>'+Number(summary.admitted_models||0)+'</b></div><div><span>需要处理</span><b>'+Number(summary.attention_models||0)+'</b></div></div>'
         +(matrix.precision==='service'?'<p class="cm-precision-note">本板块按已登记的真实前端功能与依赖服务展示；尚未建立独立模型档位的功能会标为“服务配置”。</p>':'')
-        +'<div class="cm-switch-products">'+(productCards||'<div class="empty">当前板块没有'+(matrixShowHidden?'已登记':'前台显示')+'的模型或服务。</div>')+'</div>';
+        +'<div class="cm-switch-products">'+(productCards||'<div class="empty">当前板块没有'+(matrixShowHidden?'已登记':'前台显示')+'的模型或服务。</div>')+'</div></main></div>';
     }
     function list(){
       const visible=C.filter(rows,filters);
@@ -231,7 +233,7 @@
         });
         return;
       }
-      if(b.dataset.cmTab)showTab(b.dataset.cmTab);
+      if(b.dataset.cmView){showTab(b.dataset.cmView);return}
       if(b.dataset.cmMatrixPage){matrixPage=b.dataset.cmMatrixPage;renderMatrix();return}
       if(b.dataset.cmMatrixHidden!=null){matrixShowHidden=!matrixShowHidden;renderMatrix();return}
       if(b.dataset.cmModelKey){openMatrixModel(b.dataset.cmModelPage,b.dataset.cmModelProduct,b.dataset.cmModelKey);return}
@@ -245,6 +247,7 @@
       if(b.dataset.cmJob){close();env.task(b.dataset.cmJob)}
       if(b.dataset.cmJourney){close();env.journey(b.dataset.cmJourney)}
     });
+    root.addEventListener('change',e=>{const select=e.target.closest?.('[data-cm-matrix-select]');if(!select)return;matrixPage=select.value;renderMatrix()});
     [['cmSearch','q','input'],['cmSupplier','supplier','change'],['cmTransport','transport','change'],['cmState','status','change'],['cmHistory','history','change']].forEach(([id,key,event])=>el(id).addEventListener(event,()=>{filters[key]=key==='history'?el(id).checked:el(id).value;list()}));
     el('cmDrawer').addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();close()}if(e.key==='Tab'){const nodes=Array.from(el('cmDrawer').querySelectorAll('button,input,select,textarea,a[href]')).filter(n=>!n.disabled&&n.getClientRects().length);if(!nodes.length)return;const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
     return {render,open,close,editor,showTab,setCloseGuard:guard=>{closeGuard=guard}};
