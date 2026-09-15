@@ -99,19 +99,31 @@ def systemctl_show(unit: str, prop: str) -> str:
 
 
 def read_env_files(unit: str):
-    """把单元的 EnvironmentFile 链全部读出，返回 {var: (value, 来源文件)}。
+    """把单元的 EnvironmentFiles 链全部读出，返回 (env, 不可读清单, 缺失清单)。
 
-    前缀 `-` 表示文件不存在可忽略；读不到的文件（root-only）单独报告。
+    env: {var: (value, 来源文件)}。systemctl show 的列表属性名是复数
+    ``EnvironmentFiles``，``--value`` 下**每项占一行**，形如
+    ``/path (ignore_errors=no)``；``-`` 前缀或 ignore_errors=yes 表示文件可缺失。
     """
-    files = systemctl_show(unit, "EnvironmentFile").split()
     env = {}
     unreadable = []
-    for raw in files:
-        path = raw[1:] if raw.startswith("-") else raw
-        if not path:
+    missing = []
+    for raw in systemctl_show(unit, "EnvironmentFiles").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        ignore_errors = raw.startswith("-")
+        if ignore_errors:
+            raw = raw[1:]
+        if raw.endswith(")"):
+            head, _, tail = raw.rpartition(" (ignore_errors=")
+            if tail.endswith(")") and head:
+                ignore_errors = ignore_errors or tail[:-1] == "yes"
+                raw = head
+        if not raw:
             continue
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(raw, "r", encoding="utf-8") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line or line.startswith("#") or "=" not in line:
@@ -120,12 +132,13 @@ def read_env_files(unit: str):
                     key = key.strip()
                     if key.startswith("export "):
                         key = key[len("export "):].strip()
-                    env.setdefault(key, (value.strip().strip("'\""), path))
+                    env.setdefault(key, (value.strip().strip("'\""), raw))
         except PermissionError:
-            unreadable.append(path)
+            unreadable.append(raw)
         except OSError:
-            continue  # `-` 前缀允许不存在
-    return env, unreadable
+            if not ignore_errors:
+                missing.append(raw)
+    return env, unreadable, missing
 
 
 def read_proc_environ(pid: int):
@@ -174,7 +187,7 @@ def check(units, expect=None, strict=False, as_json=False):
             results[unit] = {"error": str(exc), "rows": []}
             exit_code = max(exit_code, 3)
             continue
-        env_files, unreadable = read_env_files(unit)
+        env_files, unreadable, missing = read_env_files(unit)
         proc_env = read_proc_environ(main_pid)
         rows = []
         for var, default in MANIFEST[unit]:
@@ -204,6 +217,14 @@ def check(units, expect=None, strict=False, as_json=False):
                     "note": "env 文件不可读：%s" % path,
                 })
                 exit_code = max(exit_code, 2 if not strict else 1)
+        if missing:
+            for path in missing:
+                rows.append({
+                    "var": "(envfile)", "expected": None, "actual": None,
+                    "default": "", "conclusion": "ERROR",
+                    "note": "env 文件缺失（单元标注必须存在）：%s" % path,
+                })
+                exit_code = max(exit_code, 1)
         results[unit] = {
             "state": active, "main_pid": main_pid, "rows": rows,
         }
