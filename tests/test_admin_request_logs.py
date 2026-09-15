@@ -1032,6 +1032,30 @@ class KeyPingTests(unittest.TestCase):
         self.assertEqual(ping.call_count, 1)
         self.assertEqual(ping.call_args.args[1], "https://mcp.heygen.com/mcp/v1/")
 
+    def test_heygen_ping_honors_explicit_api_wallet_mode(self):
+        import unittest.mock as mock
+
+        def env(names):
+            if "HEYGEN_BILLING_MODE" in names:
+                return "api"
+            if "HEYGEN_MCP_CREDENTIALS" in names:
+                return "/secure/unused-mcp.json"
+            if "HEYGEN_API_KEY" in names:
+                return "api-key"
+            return ""
+
+        with mock.patch.object(admin_api, "_env_value", side_effect=env), \
+                mock.patch.object(admin_api, "_key_ping_heygen_mcp") as mcp, \
+                mock.patch.object(admin_api, "_heygen_proxy_url", return_value=""), \
+                mock.patch.object(admin_api, "_ping_upstream", return_value={"ok": True}) as ping:
+            result = admin_api._key_ping_heygen()
+        self.assertEqual(result["components"], "API Key · API 钱包")
+        mcp.assert_not_called()
+        self.assertEqual(ping.call_args.args[1], "https://api.heygen.com/v2/user/remaining_quota")
+
+    def test_heygen_probe_version_tracks_billing_mode(self):
+        self.assertIn("HEYGEN_BILLING_MODE", admin_api._PROBE_CONFIG_ENVS["heygen"])
+
     def test_admin_exposes_oauth_routes_without_token_fields(self):
         source = pathlib.Path(admin_api.__file__).read_text(encoding="utf-8")
         self.assertIn('"/api/admin/heygen-oauth/start"', source)

@@ -219,16 +219,21 @@ def _video_environment_channel(key, credentials, probes, controls, now):
 
 def _pool_channel(provider, key, credentials, pool_keys, controls, now):
     item = credentials.get(key) or {}
-    keys = [x for x in (pool_keys or []) if x.get('provider') == provider]
+    keys = [x for x in (pool_keys or [])
+            if x.get('provider') == provider and x.get('managed') is not False]
     active = [x for x in keys if x.get('state') == 'active']
     usable = [x for x in active if x.get('health_status') != 'unhealthy']
     hosts = list(dict.fromkeys(_host(x.get('base_url')) for x in keys if _host(x.get('base_url'))))
     transports = {_transport(host) for host in hosts}
-    checked = max((int(x.get('last_checked_at') or 0) for x in keys), default=0)
     healthy = [x for x in usable if x.get('health_status') == 'healthy']
     if healthy:
-        auth = {'state': 'ok', 'label': '号池有鉴权通过的密钥', 'checked_at': checked or None}
+        checked = max((int(x.get('last_checked_at') or 0) for x in healthy), default=0)
+        auth = (_check({'status': 'auth_ok', 'checked_at': checked}, now) if checked else
+                {'state': 'unverified', 'label': '号池密钥尚未鉴权通过', 'checked_at': None})
+        if auth['state'] == 'ok':
+            auth['label'] = '号池有鉴权通过的密钥'
     elif keys:
+        checked = max((int(x.get('last_checked_at') or 0) for x in keys), default=0)
         auth = {'state': 'unverified', 'label': '号池密钥尚未鉴权通过', 'checked_at': checked or None}
     else:
         auth = {'state': 'unverified', 'label': '号池未配置', 'checked_at': None}
@@ -239,6 +244,7 @@ def _pool_channel(provider, key, credentials, pool_keys, controls, now):
         'connection_type': next(iter(transports)) if len(transports) == 1 else 'unknown',
         'base_host': ' / '.join(hosts), 'model': '',
         'credential_source': '后台密钥号池 · %d 个密钥，%d 个可轮转' % (len(keys), len(usable)),
+        'pool_size': len(keys), 'pool_usable': len(usable),
         'configured': bool(keys), 'enabled': bool(usable) and control.get('enabled') is not False,
         'auth': auth,
         'full': {'state': 'unverified', 'label': '未建立模型级成品证据', 'checked_at': None},
@@ -460,18 +466,20 @@ def _video_route(operation_id, capability, model, dependency, provider,
         candidate = _managed_channel(mapping.get('channel'), workspace, now)
     elif state == 'paused':
         primary = None
-    admitted = state != 'paused' and bool(primary and primary.get('enabled'))
+    admitted = state != 'paused' and bool(
+        primary and primary.get('enabled') and primary.get('configured')
+    )
     return {
         'operation_id': operation_id, 'capability': capability,
         'control_state': state, 'primary': primary, 'backup': backup,
         'candidate': candidate, 'admitted': admitted,
         'reason': ('管理员已暂停该操作' if state == 'paused' else
-                   '主渠道未启用或不存在' if not admitted else ''),
+                   '主渠道未配置、未启用或不存在' if not admitted else ''),
     }
 
 
 def _video_model(product, spec, workspace, credentials, probes, pool_keys,
-                 feature_enabled, now):
+                 feature_enabled, now, unavailable_reason='功能开关未开启'):
     operations = set(spec.get('operations') or [])
     modes = [mode for mode in (product.get('modes') or [])
              if not operations or mode.get('key') in operations]
@@ -494,7 +502,7 @@ def _video_model(product, spec, workspace, credentials, probes, pool_keys,
     admitted = feature_enabled and frontend_enabled and any(x['admitted'] for x in routes)
     reasons = []
     if not feature_enabled:
-        reasons.append('功能开关未开启')
+        reasons.append(unavailable_reason)
     if not frontend_enabled:
         reasons.append('前台当前未开放该模型')
     reasons.extend(route['reason'] for route in routes if route['reason'])
@@ -517,7 +525,8 @@ def _video_model(product, spec, workspace, credentials, probes, pool_keys,
     }
 
 
-def _video_matrix(workspace, credentials, probes, pool_keys, layout_state, features, now):
+def _video_matrix(workspace, credentials, probes, pool_keys, layout_state,
+                  features, runtime_health, now):
     entries = {x.get('key'): x for x in (layout_state.get('entries', {}).get('video') or [])}
     products = []
     for product in VIDEO_FUNCTIONS:
@@ -526,17 +535,28 @@ def _video_matrix(workspace, credentials, probes, pool_keys, layout_state, featu
             continue
         entry = entries.get(_VIDEO_ENTRY_KEYS.get(product['key']), {})
         enabled = features.get(_VIDEO_FEATURE_KEYS.get(product['key']), True)
+        health_key = (product.get('surface_visibility_key')
+                      or product.get('acceptance_health_key'))
+        runtime_available = (
+            runtime_health.get(health_key) is True
+            if health_key and runtime_health is not None else True
+        )
+        admission_enabled = enabled and runtime_available
+        unavailable_reason = (
+            '功能开关未开启' if not enabled else '前台运行时当前未开放'
+        )
         models = [
             _video_model(product, spec, workspace, credentials, probes,
-                         pool_keys, enabled, now)
+                         pool_keys, admission_enabled, now, unavailable_reason)
             for spec in specs
         ]
-        visible = bool(entry.get('visible')) and enabled
+        visible = bool(entry.get('visible')) and admission_enabled
         products.append({
             'key': product['key'], 'label': entry.get('label') or product['name'],
             'description': product.get('desc') or '',
             'visible': visible,
-            'visibility_reason': ('功能开关未开启' if not enabled else entry.get('reason') or ''),
+            'visibility_reason': (unavailable_reason if not admission_enabled
+                                  else entry.get('reason') or ''),
             'admitted': any(x['admitted'] for x in models),
             'attention': any(x['attention'] for x in models),
             'models': models, 'warning': '',
@@ -555,7 +575,7 @@ def _video_matrix(workspace, credentials, probes, pool_keys, layout_state, featu
 
 
 def build(workspace, key_rows, probes, layout_state, feature_rows, now=None,
-          provider_key_rows=None):
+          provider_key_rows=None, runtime_health=None):
     """Return one secret-free operator matrix spanning the image and video workbenches."""
     now = int(time.time() if now is None else now)
     credentials = {x.get('key'): x for x in key_rows or []}
@@ -563,7 +583,7 @@ def build(workspace, key_rows, probes, layout_state, feature_rows, now=None,
     image = _image_matrix(workspace, credentials, probes or {}, layout_state, features, now)
     video = _video_matrix(
         workspace, credentials, probes or {}, provider_key_rows or [],
-        layout_state, features, now,
+        layout_state, features, runtime_health, now,
     )
     # Keep the original image fields at the top level for clients deployed before
     # the multi-page view, while the admin UI consumes the explicit pages list.

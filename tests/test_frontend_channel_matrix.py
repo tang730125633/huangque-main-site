@@ -93,14 +93,21 @@ class FrontendChannelMatrixTests(unittest.TestCase):
                 ('minimax', 'https://metaso.cn/api/minimax'),
             ]
         ]
+        self.runtime_health = {
+            'sora_video_enabled': True,
+            'minimax_h3_video_enabled': True,
+            'omni_video_enabled': True,
+            'seedance_video_enabled': True,
+        }
 
-    def build(self):
+    def build(self, now=1000):
         return matrix.build(
             self.workspace, self.keys,
             {'openai': {'status': 'auth_ok', 'checked_at': 998},
              'gemini': {'status': 'auth_ok', 'checked_at': 998}},
-            self.layout, self.features, now=1000,
+            self.layout, self.features, now=now,
             provider_key_rows=self.provider_keys,
+            runtime_health=self.runtime_health,
         )
 
     def test_groups_frontend_products_into_model_tiers(self):
@@ -214,6 +221,10 @@ class FrontendChannelMatrixTests(unittest.TestCase):
             '后台密钥号池 · 1 个密钥，1 个可轮转',
         )
         self.assertEqual(
+            products['grok']['models'][0]['routes'][0]['primary']['pool_usable'],
+            1,
+        )
+        self.assertEqual(
             products['grok']['models'][0]['routes'][0]['primary']['connection_type'],
             'official',
         )
@@ -238,6 +249,48 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         self.assertEqual(sora['control_state'], 'managed')
         self.assertEqual(sora['primary']['name'], '乐创图片主线')
         self.assertNotIn('last4', json.dumps(video).lower())
+
+    def test_env_only_compatibility_key_is_not_a_paid_runtime_candidate(self):
+        self.provider_keys = [{
+            'id': 'env', 'provider': 'xai', 'label': '环境兼容线路',
+            'base_url': 'https://api.x.ai/v1', 'state': 'active',
+            'health_status': 'unknown', 'managed': False,
+        }]
+        video = next(page for page in self.build()['pages'] if page['page'] == 'video')
+        grok = next(item for item in video['products'] if item['key'] == 'grok')
+        route = grok['models'][0]['routes'][0]
+        self.assertFalse(route['primary']['configured'])
+        self.assertFalse(route['primary']['enabled'])
+        self.assertFalse(route['admitted'])
+        self.assertFalse(grok['admitted'])
+
+    def test_pool_auth_evidence_expires_and_uses_the_healthy_key_timestamp(self):
+        self.provider_keys[0]['last_checked_at'] = 100
+        self.provider_keys.append({
+            'id': 'xai-bad', 'provider': 'xai', 'label': '较新失败线路',
+            'base_url': 'https://api.x.ai/v1', 'state': 'active',
+            'health_status': 'unhealthy', 'last_checked_at': 99999,
+        })
+        video = next(page for page in self.build(now=90001)['pages'] if page['page'] == 'video')
+        route = next(item for item in video['products'] if item['key'] == 'grok')['models'][0]['routes'][0]
+        self.assertEqual(route['primary']['auth']['state'], 'stale')
+        self.assertEqual(route['primary']['auth']['checked_at'], 100)
+
+    def test_video_admission_requires_configured_credentials(self):
+        video = next(page for page in self.build()['pages'] if page['page'] == 'video')
+        talking = next(item for item in video['products'] if item['key'] == 'digital_ip')
+        self.assertFalse(talking['admitted'])
+        self.assertTrue(all(not route['admitted'] for route in talking['models'][0]['routes']))
+
+    def test_video_visibility_follows_the_same_runtime_health_as_the_frontend(self):
+        self.runtime_health['sora_video_enabled'] = False
+        self.runtime_health['omni_video_enabled'] = False
+        video = next(page for page in self.build()['pages'] if page['page'] == 'video')
+        products = {item['key']: item for item in video['products']}
+        for key in ('sora', 'omni'):
+            self.assertFalse(products[key]['visible'])
+            self.assertFalse(products[key]['admitted'])
+            self.assertIn('前台运行时当前未开放', products[key]['visibility_reason'])
 
 
 if __name__ == '__main__':
