@@ -408,7 +408,9 @@ class ProviderKeyPoolTests(unittest.TestCase):
     def test_key_catalog_maps_api_providers_to_frontend_features(self):
         with patch.dict(
             os.environ,
-            {"GEMINI_OMNI_BASE": "https://sg.huangquechuanmei.com/google"},
+            {"GEMINI_OFFICIAL_BASE": "https://generativelanguage.googleapis.com",
+             "GEMINI_BASE": "https://gemini-relay.example.com/google",
+             "GEMINI_OMNI_BASE": "https://sg.huangquechuanmei.com/google"},
         ):
             rows = {item["key"]: item for item in admin_api.key_status()}
         self.assertEqual(rows["gemini"]["name"], "Google Gemini API")
@@ -417,6 +419,12 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(rows["gemini"]["env_features"], ["图片生成 → 纳米香蕉"])
         self.assertEqual(rows["gemini"]["pool_features"], ["视频模块 → Omni 视频"])
         self.assertEqual(rows["gemini"]["pool_base_host"], "sg.huangquechuanmei.com")
+        self.assertEqual(rows["gemini"]["image_primary_base_host"],
+                         "generativelanguage.googleapis.com")
+        self.assertEqual(rows["gemini"]["image_fallback_base_host"],
+                         "gemini-relay.example.com")
+        self.assertEqual(rows["gemini"]["image_probe_base_host"],
+                         "gemini-relay.example.com")
         self.assertIn("视频模块 → 电影化身", rows["heygen"]["features"])
         self.assertEqual(rows["seedance"]["pool_provider"], "seedance")
 

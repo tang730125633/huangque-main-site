@@ -28,7 +28,7 @@ _ACTUAL_MODELS = {
 }
 _ENTRY_KEYS = {'openai': 'gpt', 'banana': 'banana', 'seedream': 'seedream', 'xiaole': 'xiaole'}
 _FEATURE_KEYS = {'openai': 'image', 'seedream': 'image', 'banana': 'banana', 'xiaole': 'image_xiaole'}
-_RETIRED = {'xiaole': '运行时已下架，保留历史入口和配置供排查'}
+_RETIRED = {}
 _OFFICIAL_HOSTS = {
     'api.openai.com', 'generativelanguage.googleapis.com',
     'ark.cn-beijing.volces.com', 'api.xiaolevideo.cn',
@@ -50,7 +50,14 @@ def _host(value):
 def _transport(host, declared='unknown'):
     if declared in {'official', 'relay'}:
         return declared
-    return 'official' if str(host).lower() in _OFFICIAL_HOSTS else ('relay' if host else 'unknown')
+    value = str(host or '').strip()
+    try:
+        hostname = urllib.parse.urlsplit(
+            value if '://' in value else '//' + value
+        ).hostname or ''
+    except ValueError:
+        hostname = ''
+    return 'official' if hostname.lower() in _OFFICIAL_HOSTS else ('relay' if host else 'unknown')
 
 
 def _check(check, now):
@@ -92,19 +99,26 @@ def _managed_channel(cid, workspace, now):
     }
 
 
-def _legacy_channel(key, credentials, probes, controls, now):
+def _legacy_channel(key, credentials, probes, controls, now, route='primary'):
     item = credentials.get(key) or {}
-    host = item.get('env_base_host') or item.get('pool_base_host') or ''
+    host = item.get('image_' + route + '_base_host') or (
+        item.get('env_base_host') or item.get('pool_base_host') or ''
+    )
+    probe = probes.get(key)
+    probe_host = item.get('image_probe_base_host') or host
+    route_probe = probe if not host or not probe_host or host == probe_host else None
     control = controls.get(key) or {}
     return {
-        'id': 'legacy:' + key, 'name': item.get('name') or key,
+        'id': 'legacy:' + key + ':' + route,
+        'name': (item.get('name') or key) + (' · 兜底' if route == 'fallback' else ''),
         'supplier': item.get('name') or key,
         'connection_type': _transport(host), 'base_host': host,
         'model': item.get('model') or '',
         'credential_source': '服务器环境变量 · ' + ' / '.join(item.get('required_env') or []),
         'configured': bool(item.get('configured')),
-        'enabled': item.get('accepts_new_jobs', True) is not False and control.get('enabled') is not False,
-        'auth': _check(probes.get(key), now),
+        'enabled': item.get('image_accepts_new_jobs', item.get('accepts_new_jobs', True)) is not False
+                   and control.get('enabled') is not False,
+        'auth': _check(route_probe, now),
         'full': {'state': 'unverified', 'label': '未建立模型级成品证据', 'checked_at': None},
         'source': 'legacy',
     }
@@ -112,19 +126,12 @@ def _legacy_channel(key, credentials, probes, controls, now):
 
 def _legacy_backup(key, credentials, probes, controls, now):
     """Expose an actual application fallback, not a network-egress hop."""
-    if key != 'openai':
-        return None
     item = credentials.get(key) or {}
-    primary_host = item.get('env_base_host') or ''
-    fallback_host = item.get('pool_base_host') or ''
+    primary_host = item.get('image_primary_base_host') or item.get('env_base_host') or ''
+    fallback_host = item.get('image_fallback_base_host') or ''
     if not fallback_host or fallback_host == primary_host:
         return None
-    fallback = _legacy_channel(key, credentials, probes, controls, now)
-    fallback.update({
-        'id': 'legacy:openai:fallback', 'name': 'OpenAI 图片兼容兜底',
-        'base_host': fallback_host, 'connection_type': _transport(fallback_host),
-    })
-    return fallback
+    return _legacy_channel(key, credentials, probes, controls, now, route='fallback')
 
 
 def _tier(product_key, mode):
@@ -232,6 +239,9 @@ def _lechuang_product(workspace, layout_entry, feature_enabled, now):
     mappings = [x for x in workspace.get('mappings', []) if x.get('kind') == 'image']
     channels = {x.get('id'): x for x in workspace.get('items', [])}
     mappings = [x for x in mappings if channels.get(x.get('channel'), {}).get('adapter') == 'lechuang_image']
+    published_models = set(layout_entry.get('models') or [])
+    mappings = [x for x in mappings
+                if str(x.get('label') or x.get('front') or '') in published_models]
     models = []
     for mapping in mappings:
         front = str(mapping.get('front') or '')

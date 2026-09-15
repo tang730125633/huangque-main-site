@@ -29,21 +29,31 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         }
         self.keys = [
             {'key': 'gemini', 'name': 'Google Gemini API', 'configured': True,
-             'required_env': ['GEMINI_API_KEY'], 'env_base_host': 'generativelanguage.googleapis.com'},
+             'required_env': ['GEMINI_API_KEY'],
+             'image_primary_base_host': 'generativelanguage.googleapis.com',
+             'image_fallback_base_host': 'gemini-relay.example.com',
+             'image_probe_base_host': 'gemini-relay.example.com'},
             {'key': 'openai', 'name': 'OpenAI API', 'configured': True,
-             'required_env': ['OPENAI_API_KEY'], 'env_base_host': 'api.openai.com',
-             'pool_base_host': 'relay.example.com'},
+             'required_env': ['OPENAI_API_KEY'],
+             'image_primary_base_host': 'api.openai.com',
+             'image_fallback_base_host': 'relay.example.com',
+             'image_probe_base_host': 'relay.example.com'},
             {'key': 'seedance', 'name': '火山方舟 API', 'configured': True,
-             'required_env': ['ARK_API_KEY'], 'env_base_host': 'ark.cn-beijing.volces.com'},
+             'required_env': ['ARK_API_KEY'],
+             'image_primary_base_host': 'ark.cn-beijing.volces.com',
+             'image_probe_base_host': 'ark.cn-beijing.volces.com'},
             {'key': 'xiaolevideo', 'name': '小乐视频 API', 'configured': True,
-             'required_env': ['XIAOLEVIDEO_API_KEY'], 'env_base_host': 'api.xiaolevideo.cn',
-             'accepts_new_jobs': False},
+             'required_env': ['XIAOLEVIDEO_API_KEY'],
+             'image_primary_base_host': 'api.xiaolevideo.cn',
+             'image_probe_base_host': 'api.xiaolevideo.cn',
+             'accepts_new_jobs': False, 'image_accepts_new_jobs': True},
         ]
         order = ['gpt', 'banana', 'seedream', 'lechuang', 'xiaole', 'zelong2']
         self.layout = {
             'layout': {'image': {'order': order, 'default': 'gpt'}},
             'entries': {'image': [
                 {'key': key, 'label': key, 'visible': key not in {'xiaole', 'zelong2'},
+                 'models': ['GPT Image 2.5'] if key == 'lechuang' else [],
                  'reason': '主站显示' if key not in {'xiaole', 'zelong2'} else '用户页隐藏'}
                 for key in order
             ]},
@@ -82,6 +92,17 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         self.assertEqual(openai['credential_source'], '服务器环境变量 · OPENAI_API_KEY')
         self.assertEqual(products['openai']['models'][0]['routes'][0]['backup']['base_host'],
                          'relay.example.com')
+        self.assertEqual(openai['auth']['state'], 'unverified')
+        self.assertEqual(products['openai']['models'][0]['routes'][0]['backup']['auth']['state'],
+                         'ok')
+        banana_route = products['banana']['models'][0]['routes'][0]
+        self.assertEqual(banana_route['primary']['base_host'],
+                         'generativelanguage.googleapis.com')
+        self.assertEqual(banana_route['primary']['connection_type'], 'official')
+        self.assertEqual(banana_route['primary']['auth']['state'], 'unverified')
+        self.assertEqual(banana_route['backup']['base_host'], 'gemini-relay.example.com')
+        self.assertEqual(banana_route['backup']['connection_type'], 'relay')
+        self.assertEqual(banana_route['backup']['auth']['state'], 'ok')
         lechuang = products['lechuang']['models'][0]
         self.assertEqual(lechuang['actual_model'], 'gpt-image-2.5-flare')
         self.assertEqual(lechuang['routes'][0]['primary']['connection_type'], 'relay')
@@ -99,13 +120,31 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         self.assertEqual(nb2['routes'][0]['primary']['name'], '乐创图片主线')
         self.assertEqual(nb2['routes'][1]['primary']['name'], 'Google Gemini API')
 
-    def test_retired_routes_are_never_reported_as_admitted(self):
+    def test_xiaole_follows_feature_flag_and_zelong_remains_retired(self):
         result = self.build()
         products = {item['key']: item for item in result['products']}
-        self.assertFalse(products['xiaole']['admitted'])
-        self.assertFalse(products['xiaole']['models'][0]['admitted'])
-        self.assertIn('运行时已下架', products['xiaole']['warning'])
+        self.assertTrue(products['xiaole']['admitted'])
+        self.assertTrue(products['xiaole']['models'][0]['admitted'])
+        self.assertEqual(products['xiaole']['warning'], '')
         self.assertFalse(products['zelong2']['admitted'])
+
+        self.features[-1]['enabled'] = False
+        products = {item['key']: item for item in self.build()['products']}
+        self.assertFalse(products['xiaole']['admitted'])
+        self.assertIn('功能开关未开启', products['xiaole']['models'][0]['reason'])
+
+    def test_lechuang_requires_published_frontend_parameter_entry(self):
+        lechuang_entry = next(
+            item for item in self.layout['entries']['image'] if item['key'] == 'lechuang'
+        )
+        lechuang_entry['models'] = []
+        product = next(item for item in self.build()['products'] if item['key'] == 'lechuang')
+        self.assertEqual(product['models'], [])
+        self.assertFalse(product['admitted'])
+        self.assertIn('尚无已发布', product['warning'])
+
+    def test_official_host_with_standard_port_is_not_mislabeled_as_relay(self):
+        self.assertEqual(matrix._transport('api.openai.com:443'), 'official')
 
 
 if __name__ == '__main__':
