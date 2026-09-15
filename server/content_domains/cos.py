@@ -107,6 +107,26 @@ def head(rel_key):
     return _client().head_object(Bucket=_BUCKET, Key=_object_key(rel_key))
 
 
+def download(full_key, dest_path):
+    """把桶内对象（完整键，如 huangque/video/xxx.mp4）下载到本地文件。
+
+    供补截等离线场景绕过过期签名链接直取视频本体；对象不存在/桶私有不影响
+    SDK 访问（走服务端密钥）。"""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    resp = _client().get_object(Bucket=_BUCKET, Key=str(full_key).lstrip("/"))
+    body = resp.get("Body")
+    if body is None:
+        raise RuntimeError("COS 返回空 Body")
+    get_stream_to_file = getattr(body, "get_stream_to_file", None)
+    if get_stream_to_file is not None:
+        get_stream_to_file(dest_path)
+        return
+    with open(dest_path, "wb") as fp:  # 老版本 SDK 兜底
+        for chunk in iter(lambda: body.read(1024 * 1024), b""):
+            fp.write(chunk)
+
+
 def put_bytes(data, rel_key, content_type=None, private=False):
     """把内存字节直接上传到 COS，返回可访问 URL。用于转存远程 URL(如采集视频 CDN 直链)。
     未启用或失败会抛异常，由调用方回退原链接。"""
