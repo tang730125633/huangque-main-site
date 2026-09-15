@@ -19,7 +19,13 @@ content_jobs.db 的 jobs 表被三个进程共写：
 """
 import hashlib
 import json
+import os
+import pathlib
+import shutil
 import sqlite3
+import subprocess
+import tempfile
+import threading
 import time
 import uuid
 from contextlib import closing
@@ -166,7 +172,126 @@ def set_done_with_video_outbox(jdb, job_id, username, kind, result=None, from_st
                 (int(job_id), str(username or ""), str(kind), now, now),
             )
         c.commit()
-        return cur.rowcount >= 1
+        claimed = cur.rowcount >= 1
+        if claimed:
+            _spawn_video_cover_worker(jdb, job_id, result)
+        return claimed
+
+
+# ---------------------------------------------------------------------------
+# 成片封面：任务 done 后异步截第 1 秒帧上传 COS，把 cover_url 写回 result。
+# fire-and-forget：任何失败都不影响任务终态，重试 2 次后放弃（补截脚本兜底）。
+# ---------------------------------------------------------------------------
+
+_COVER_RETRIES = 2
+_COVER_FFMPEG_TIMEOUT = 90
+
+
+def _cover_local_out_dir():
+    return pathlib.Path(os.environ.get("CONTENT_OUT") or "/home/ubuntu/content-api/content_out")
+
+
+def _video_cover_input(result):
+    """从成片 result 里解析出 ffmpeg 可吃的输入。
+
+    优先 https 直链（COS/CDN）；本地文件只接 OUT_DIR 内的相对路径（与
+    digital_human_v2._history_video_url 同口径，防路径穿越）。
+    返回 (输入, 来源类型)；解析不出返回 ("", "")。
+    """
+    if not isinstance(result, dict):
+        return "", ""
+    for key in ("video_url", "url"):
+        value = str(result.get(key) or "").strip()
+        if value.startswith("https://") or value.startswith("http://"):
+            return value, "url"
+    rel = str(result.get("video_file") or "").strip().replace("\\", "/")
+    if rel and not rel.startswith("/"):
+        out = _cover_local_out_dir().resolve()
+        try:
+            candidate = (out / rel).resolve()
+            candidate.relative_to(out)
+        except (ValueError, OSError):
+            return "", ""
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return str(candidate), "local"
+    return "", ""
+
+
+def _spawn_video_cover_worker(jdb, job_id, result):
+    """成片完成后异步生成封面。绝不抛异常回主流程。"""
+    try:
+        if not isinstance(result, dict) or result.get("cover_url"):
+            return
+        src, _kind = _video_cover_input(result)
+    except Exception:
+        return
+    if not src:
+        return
+    try:
+        threading.Thread(
+            target=_video_cover_worker,
+            args=(jdb, int(job_id), src),
+            name="hq-video-cover-%d" % int(job_id),
+            daemon=True,
+        ).start()
+    except Exception:
+        return
+
+
+def _video_cover_worker(jdb, job_id, src):
+    last_error = ""
+    for attempt in range(1 + _COVER_RETRIES):
+        try:
+            ffmpeg = shutil.which("ffmpeg")
+            if not ffmpeg:
+                print("[video-cover] ffmpeg 不在 PATH，跳过封面生成", flush=True)
+                return
+            with tempfile.TemporaryDirectory(prefix="hq-cover-") as td:
+                out_jpg = os.path.join(td, "cover.jpg")
+                cmd = [
+                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", "1", "-i", src,
+                    "-frames:v", "1", "-vf", "scale=854:-2:flags=lanczos",
+                    "-q:v", "4", out_jpg,
+                ]
+                subprocess.run(cmd, capture_output=True, timeout=_COVER_FFMPEG_TIMEOUT, check=True)
+                if not os.path.isfile(out_jpg) or os.path.getsize(out_jpg) <= 0:
+                    raise RuntimeError("ffmpeg 未产出封面文件")
+                from . import cos  # 懒导入：保住模块顶层「只依赖标准库」的承诺
+                cover_url = cos.upload(out_jpg, "video-covers/%d.jpg" % job_id, content_type="image/jpeg")
+            if not cover_url or not cover_url.startswith("http"):
+                raise RuntimeError("COS 上传未返回直链")
+            _write_cover_url(jdb, job_id, cover_url)
+            return
+        except Exception as exc:  # noqa: BLE001 —— 后台线程最后防线，绝不外抛
+            last_error = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+            time.sleep(2 * (attempt + 1))
+    print("[video-cover] job %d 封面生成失败（重试 %d 次）：%s"
+          % (job_id, _COVER_RETRIES, last_error), flush=True)
+
+
+def _write_cover_url(jdb, job_id, cover_url):
+    """把 cover_url 合入 result 写回；只认 done 行，CAS 防覆盖退款/删除。"""
+    with closing(jdb()) as c:
+        row = c.execute(
+            "SELECT result FROM jobs WHERE id=? AND status='done'", (int(job_id),)
+        ).fetchone()
+        if not row:
+            return
+        try:
+            result = json.loads(row["result"] or "{}")
+        except Exception:
+            result = {}
+        if not isinstance(result, dict):
+            result = {}
+        if result.get("cover_url") == cover_url:
+            return
+        result["cover_url"] = cover_url
+        c.execute(
+            "UPDATE jobs SET result=?, updated_at=? WHERE id=? AND status='done'",
+            (json.dumps(result, ensure_ascii=False), int(time.time()), int(job_id)),
+        )
+        c.commit()
 
 
 def set_terminal_with_video_outbox(jdb, job_id, status, result=None, error=None, from_states=("running",)):

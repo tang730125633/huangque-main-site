@@ -2270,6 +2270,7 @@ def history_response(username, limit=20, offset=0, db_factory=None):
                 "job_id": int(row["id"]),
                 "status": "done",
                 "video_url": video_url,
+                "cover_url": str(result.get("cover_url") or ""),
                 "text": text[:160],
                 "duration": _history_number(result.get("duration")),
                 "width": _history_number(result.get("width"), integer=True),

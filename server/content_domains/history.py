@@ -63,6 +63,7 @@ def expand_job_results(rows, limit, offset=0, include_failed=False):
                 "pitch": result.get("pitch"),
                 "volume": result.get("volume"),
                 "emotion": result.get("emotion"),
+                "cover_url": str(result.get("cover_url") or ""),
                 "created_at": row["created_at"],
             })
             if len(items) >= end:

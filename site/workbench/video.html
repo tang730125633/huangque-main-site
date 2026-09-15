@@ -2653,6 +2653,7 @@
       var jid=x.job_id!=null?x.job_id:x.id;
       if(jid!=null&&jid!=='') card.setAttribute('data-job',String(jid));
       var image=x.image_url||'../assets/cloud/logo-bird.png';
+      var cover=x.cover_url||image;
       var assetMode=String(x.mode||'').toLowerCase();
       var isTalking=!assetMode||assetMode==='text'||assetMode==='audio';
       var head=isTalking?'<div class="history-head"><img class="history-thumb" data-asset-src="'+esc(image)+'" alt="">'
@@ -2660,7 +2661,7 @@
         +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
         +'</button></div>':'';
       var preview=x.video_url
-        ?'<div class="blur-bg" data-bg-src="'+esc(image)+'"></div><img class="video-poster" data-asset-src="'+esc(image)+'" alt=""><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
+        ?'<div class="blur-bg" data-bg-src="'+esc(cover)+'"></div><img class="video-poster" data-asset-src="'+esc(cover)+'" alt=""><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
       var duration=videoDurationTag(x);
       var quality=videoQualityTag(x);
