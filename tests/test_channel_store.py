@@ -534,14 +534,14 @@ class PostgresModeTest(_ChannelFixture):
         self.assertIn("enabled", settings)
         self.assertIsInstance(settings["delivery"], dict)
         saved = channel_manager.save_notifications("m3c-test", dict(
-            enabled=True, endpoint="https://example.invalid/hook"))
+            enabled=True, endpoint="http://127.0.0.1:7777/hook"))
         self.assertTrue(saved["enabled"])
         self.assertEqual(saved["endpoint"], "已配置（隐藏）")
         self.assertEqual(channel_manager.notification_settings(True)["endpoint"],
-                         "https://example.invalid/hook")
+                         "http://127.0.0.1:7777/hook")
         with self._conn() as conn:
             stored = conn.execute("SELECT value FROM routing.settings WHERE id=1").fetchone()["value"]
-        self.assertNotIn("https://example.invalid/hook", stored)
+        self.assertNotIn("http://127.0.0.1:7777/hook", stored)
         with self.assertRaises(ValueError):
             channel_manager.save_notifications("m3c-test", dict(enabled=True, endpoint="http://x"))
 
