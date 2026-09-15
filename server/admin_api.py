@@ -864,6 +864,10 @@ def server_monitor_snapshot(force=False, now=None):
             if online and disk_usage >= 90:
                 alerts.append("磁盘空间紧张")
             name = str(node.get("name") or "未命名节点")
+            tags = {
+                tag.strip() for tag in str(node.get("tags") or "").lower().split(",")
+                if tag.strip()
+            }
             render = render_nodes.get(_render_node_key(name)) or {}
             gpu = render.get("gpu") if isinstance(render.get("gpu"), dict) else None
             gpu_memory = _komari_percent(
@@ -902,7 +906,8 @@ def server_monitor_snapshot(force=False, now=None):
                 "total_down": int(network.get("totalDown") or 0),
                 "uptime": int(sample.get("uptime") or 0),
                 "sampled_at": str(sample.get("updated_at") or ""),
-                "gpu_expected": "gpu" in str(node.get("tags") or "").lower().split(","),
+                "render_node": "template-render" in tags,
+                "gpu_expected": "gpu" in tags,
                 "gpu_name": str((gpu or {}).get("name") or node.get("gpu_name") or ""),
                 "gpu": gpu,
                 "render_online": render.get("online") if render else None,

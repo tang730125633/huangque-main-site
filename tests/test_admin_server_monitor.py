@@ -91,7 +91,25 @@ class AdminServerMonitorTests(unittest.TestCase):
             data = admin_api.server_monitor_snapshot(force=True, now=1000)
         self.assertEqual(48, data["items"][0]["gpu"]["utilization"])
         self.assertEqual(2, data["items"][0]["render_running"])
+        self.assertTrue(data["items"][0]["render_node"])
+        self.assertTrue(data["items"][0]["gpu_expected"])
         self.assertNotIn("tang", data["items"][0])
+
+    def test_cpu_only_template_worker_is_still_a_render_node(self):
+        nodes = [{
+            "uuid": "cpu-worker-id", "name": "CPU 模板渲染节点",
+            "tags": "template-render", "region": "云端",
+        }]
+        sample = [{
+            "updated_at": "1970-01-01T00:16:35Z", "cpu": {"usage": 72},
+            "ram": {}, "disk": {}, "network": {},
+        }]
+        with mock.patch.object(
+            admin_api, "_komari_get", side_effect=[nodes, sample]
+        ), mock.patch.object(admin_api, "_render_relay_nodes", return_value={}):
+            item = admin_api.server_monitor_snapshot(force=True, now=1000)["items"][0]
+        self.assertTrue(item["render_node"])
+        self.assertFalse(item["gpu_expected"])
 
     def test_admin_page_wires_server_module_and_read_only_endpoint(self):
         root = pathlib.Path(__file__).resolve().parents[1]
@@ -101,7 +119,8 @@ class AdminServerMonitorTests(unittest.TestCase):
         self.assertIn('data-module-tab="servers"', page)
         self.assertIn("/api/admin/server-monitor", page)
         self.assertIn('id="cloudFleetSummary"', page)
-        self.assertIn("item.role==='server'&&!item.gpu_expected", page)
+        self.assertIn("item.role==='server'&&!item.render_node", page)
+        self.assertIn("renderItems.map(renderNodeCard)", page)
         self.assertIn("cloudItems.map(serverCard)", page)
         self.assertNotIn("items.map(serverCard)", page)
         self.assertIn('path == "/api/admin/server-monitor"', api_source)
