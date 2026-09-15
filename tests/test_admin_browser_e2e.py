@@ -167,10 +167,13 @@ class AdminBrowserE2ETests(unittest.TestCase):
         self.assertIn("完整旅程已验收 · 6/6 + 8/8", source)
         self.assertIn("browser.job_id===run.job_id", source)
 
-    def test_channels_module_has_sidebar_entry(self):
+    def test_managed_channels_module_is_the_only_sidebar_entry(self):
         source = (Path(__file__).resolve().parents[1] / "site/admin/index.html").read_text(encoding="utf-8")
-        self.assertEqual(source.count('data-module-tab="channels"'), 1)
-        self.assertEqual(source.count('data-module="channels"'), 1)
+        self.assertEqual(source.count('<button class="side-nav-item" data-module-tab="managedChannels">'), 1)
+        self.assertEqual(source.count('<button class="side-nav-item" data-module-tab="channels">'), 0)
+        self.assertEqual(source.count('<section class="card span12 module-card" data-module="managedChannels"'), 1)
+        # The hidden legacy panel remains as the existing key-pool/detail host.
+        self.assertEqual(source.count('<section class="card span12 module-card" data-module="channels"'), 1)
 
 
 if __name__ == "__main__":
