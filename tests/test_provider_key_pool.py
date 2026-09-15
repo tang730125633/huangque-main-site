@@ -635,6 +635,9 @@ class ProviderKeyPoolTests(unittest.TestCase):
             "DeepSeek API · 视频创作助手", "model_options",
             "data-provider-key-replace", "data-server-key-reveal",
             "data-provider-key-delete",
+            'data-credential-kind="server_env"',
+            'data-credential-kind="provider_pool"',
+            "options.managementKind",
             "前端功能对应关系", "navigator.clipboard",
         ):
             self.assertIn(text, html)

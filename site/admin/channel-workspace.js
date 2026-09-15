@@ -138,10 +138,20 @@
       return {label:'可接单',state:'ok'};
     }
     const modelNeedsAction=(product,model)=>['bad','warn'].includes(modelStatus(product,model).state);
+    function modelManagers(model){
+      const seen=new Set();
+      return modelLegs(model).map(([,item])=>item).filter(item=>{
+        const management=item?.management,identity=management?.uid+'|'+management?.kind;if(!management?.uid||seen.has(identity))return false;seen.add(identity);return true;
+      });
+    }
     function manageAction(item){
       const management=item?.management;if(!management?.uid)return '';
-      const label=management.kind==='managed_channel'?'配置渠道、Key 与 Base URL':management.kind==='provider_pool'?'管理 API Key 与 Base URL':'查看服务器托管凭据';
-      return '<button type="button" class="mini" data-cm-route-manage="'+esc(management.uid)+'">'+esc(label)+'</button>';
+      if(management.kind==='managed_channel'){
+        const id=management.uid.replace(/^managed:/,'');
+        return '<button type="button" class="mini primary" data-edit="'+esc(id)+'">修改 API Key 与 Base URL</button>';
+      }
+      const label=management.kind==='provider_pool'?'修改 API Key 与 Base URL':'查看服务器托管凭据';
+      return '<button type="button" class="mini" data-cm-inline-route="'+esc(management.uid)+'">'+esc(label)+'</button>';
     }
     function channelDetail(item,prefix){
       if(!item)return '<div class="cm-route"><strong>'+esc(prefix+'：未配置')+'</strong></div>';
@@ -163,15 +173,22 @@
       if(!page||!product||!model)return;
       env.closeLegacy();closeGuard=null;selected=null;shell(product.label+' · '+model.label);
       const status=modelStatus(product,model);
+      const managers=modelManagers(model),legacyManagers=managers.map(item=>({item,target:rows.find(row=>row.uid===item.management.uid)})).filter(entry=>entry.target?.source==='legacy');
       const routes=(model.routes||[]).map(route=>'<section class="cm-model-route-detail"><h4>'+esc((route.capability||'生成')+' · '+({legacy:'现有线路',managed:'统一托管',shadow:'现有线路运行 / 影子观察',paused:'已暂停'}[route.control_state]||route.control_state))+'</h4>'
         +channelDetail(route.primary,'主渠道')+(route.backup?channelDetail(route.backup,'备用渠道'):'')+(route.candidate?channelDetail(route.candidate,'影子候选'):'')
         +(route.reason?'<p class="cm-matrix-detail-warning">'+esc(route.reason)+'</p>':'')+'</section>').join('');
+      const managedActions=managers.filter(item=>item.management.kind==='managed_channel').map(item=>'<button type="button" class="primary" data-edit="'+esc(item.management.uid.replace(/^managed:/,''))+'">修改 '+esc(item.name)+' 的 Key / Base URL</button>').join('');
+      const legacySwitch=legacyManagers.map((entry,index)=>'<button type="button" class="'+(index?'':'active')+'" data-cm-inline-route="'+esc(entry.item.management.uid)+'" data-cm-inline-kind="'+esc(entry.item.management.kind)+'" aria-pressed="'+String(!index)+'">'+esc(entry.item.name)+'</button>').join('');
+      const inline='<section class="cm-model-inline-config"><div class="cm-model-inline-head"><div><h3>直接配置当前模型</h3><p>只显示这个前端模型实际使用的线路。更换密钥会先鉴权，通过后再加入新线路。</p></div>'+managedActions+'</div>'
+        +(legacySwitch?'<nav class="cm-model-inline-tabs" aria-label="选择要配置的底层线路">'+legacySwitch+'</nav><div id="cmLegacyEditorHost"></div><div id="cmLegacyKeys"></div><details class="cm-model-inline-journeys"><summary>查看关联功能与测试入口</summary><div id="cmLegacyJourneys"></div></details>':'')
+        +(!legacySwitch&&!managedActions?'<p class="muted">当前模型没有可在线管理的渠道配置。</p>':'')+'</section>';
       el('cmDetail').innerHTML='<div class="cm-matrix-detail-head"><span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span>'
         +'<p>'+esc(page.label||matrixPageMeta.find(x=>x[0]===pageKey)?.[1]||pageKey)+' · '+esc(product.visible?'前台显示':'前台隐藏')+'</p>'
         +'<code>'+esc(model.actual_model||'实际模型待配置')+'</code>'
         +'<p>支持能力：'+esc((model.capabilities||[]).join(' / ')||'尚未登记')+'</p></div>'
-        +'<h3>真实渠道与验证证据</h3><p class="muted">可在线更换的线路会进入加密号池或版本化渠道编辑器；服务器环境变量只允许查看与核对，避免浏览器直接改写部署配置。</p>'+(routes||'<p class="muted">尚无路由。</p>')
+        +inline+'<h3>真实渠道与验证证据</h3><p class="muted">后台托管或号池线路可以在上方安全更换；服务器环境变量只允许查看与核对，避免浏览器直接改写部署配置。</p>'+(routes||'<p class="muted">尚无路由。</p>')
         +((model.warnings||[]).length?'<h3>需要处理</h3><div class="cm-matrix-detail-warning">'+esc(model.warnings.join('；'))+'</div>':'');
+      if(legacyManagers[0])env.detail(legacyManagers[0].target,{managementKind:legacyManagers[0].item.management.kind});
     }
     function renderMatrix(){
       const host=el('cmMatrix');if(!host)return;
@@ -185,7 +202,7 @@
         const routes=model.routes||[];
         const status=modelStatus(product,model);
         const statusView=status.state==='ok'?'<span class="cm-status-dot" title="可接单" aria-label="可接单"></span>':'<span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span>';
-        return '<button type="button" class="cm-switch-model '+(modelNeedsAction(product,model)?'attention':'')+'" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'"><span class="cm-switch-model-head"><b>'+esc(model.label)+'</b>'+statusView+'</span><code>'+esc(model.actual_model||'实际模型待配置')+'</code><span class="cm-switch-fact"><em>主渠道</em><strong>'+esc(compactValue(routes.map(route=>route.primary?.name||'未配置')))+'</strong></span><span class="cm-switch-fact"><em>接入方式</em><strong>'+esc(compactValue(routes.map(route=>route.primary?transportName(route.primary.connection_type):'未标注')))+'</strong></span><span class="cm-switch-fact"><em>备用渠道</em><strong>'+esc(backupSummary(model))+'</strong></span></button>';
+        return '<button type="button" class="cm-switch-model '+(modelNeedsAction(product,model)?'attention':'')+'" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'"><span class="cm-switch-model-head"><b>'+esc(model.label)+'</b>'+statusView+'</span><code>'+esc(model.actual_model||'实际模型待配置')+'</code><span class="cm-switch-fact"><em>主渠道</em><strong>'+esc(compactValue(routes.map(route=>route.primary?.name||'未配置')))+'</strong></span><span class="cm-switch-fact"><em>接入方式</em><strong>'+esc(compactValue(routes.map(route=>route.primary?transportName(route.primary.connection_type):'未标注')))+'</strong></span><span class="cm-switch-fact"><em>备用渠道</em><strong>'+esc(backupSummary(model))+'</strong></span><span class="cm-switch-model-action">点击配置渠道 <i aria-hidden="true">→</i></span></button>';
         }).join('');
         const state=product.visible?'前台显示':'前台隐藏';
         const hasIssue=(product.models||[]).some(model=>modelNeedsAction(product,model));
@@ -270,7 +287,7 @@
       if(b.dataset.cmMatrixPage){matrixPage=b.dataset.cmMatrixPage;renderMatrix();return}
       if(b.dataset.cmMatrixHidden!=null){matrixShowHidden=!matrixShowHidden;renderMatrix();return}
       if(b.dataset.cmModelKey){openMatrixModel(b.dataset.cmModelPage,b.dataset.cmModelProduct,b.dataset.cmModelKey);return}
-      if(b.dataset.cmRouteManage){const target=rows.find(c=>c.uid===b.dataset.cmRouteManage);if(target)open(target.uid);else toast('没有找到对应的渠道配置');return}
+      if(b.dataset.cmInlineRoute){const target=rows.find(c=>c.uid===b.dataset.cmInlineRoute);if(!target){toast('没有找到对应的渠道配置');return}env.closeLegacy();el('cmDetail').querySelectorAll('[data-cm-inline-route]').forEach(item=>{const active=item.dataset.cmInlineRoute===b.dataset.cmInlineRoute&&item.dataset.cmInlineKind===b.dataset.cmInlineKind;item.classList.toggle('active',active);item.setAttribute('aria-pressed',String(active))});env.detail(target,{managementKind:b.dataset.cmInlineKind||''});return}
       if(b.dataset.cmCategory){filters.category=b.dataset.cmCategory;list()}
       if(b.dataset.cmDetail)open(b.dataset.cmDetail);
       if(b.dataset.cmAction)env.lifecycle(rows.find(c=>c.uid===b.dataset.cmUid),b.dataset.cmAction);
