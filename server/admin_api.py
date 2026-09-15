@@ -262,6 +262,7 @@ KEY_GROUPS = [
      "image_primary_base_env": ["OPENAI_OFFICIAL_BASE"], "image_primary_base_default": "https://api.openai.com",
      "image_fallback_base_env": ["OPENAI_BASE"], "image_fallback_base_default": "https://api.openai.com",
      "image_probe_base_env": ["OPENAI_BASE"], "image_probe_base_default": "https://api.openai.com",
+     "image_primary_requires_egress": True,
      "env": ["OPENAI_API_KEY"], "pool_provider": "sora"},
     {"key": "gemini", "name": "Google Gemini API", "category": "图片生成 / 视频生成",
      "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频", "文案编导 → 链接提示词反推"],
@@ -271,6 +272,7 @@ KEY_GROUPS = [
      "image_primary_base_env": ["GEMINI_OFFICIAL_BASE"], "image_primary_base_default": "https://generativelanguage.googleapis.com",
      "image_fallback_base_env": ["GEMINI_BASE"], "image_fallback_base_default": "https://generativelanguage.googleapis.com",
      "image_probe_base_env": ["GEMINI_BASE"], "image_probe_base_default": "https://generativelanguage.googleapis.com",
+     "image_primary_requires_egress": True,
      "env": ["GEMINI_API_KEY"], "pool_provider": "omni"},
     {"key": "seedance", "name": "火山方舟 API", "category": "图片生成 / 视频生成",
      "features": ["图片生成 → 黄雀引擎 1（Seedream）", "视频模块 → Seedance 视频"],
@@ -2133,6 +2135,10 @@ def key_status():
                 "image_primary_base_host": _key_group_base_host(item, "image_primary", sources),
                 "image_fallback_base_host": _key_group_base_host(item, "image_fallback", sources),
                 "image_probe_base_host": _key_group_base_host(item, "image_probe", sources),
+                "image_primary_active": (
+                    not item.get("image_primary_requires_egress")
+                    or bool(egress.EGRESS_PRIMARY or egress.EGRESS_FALLBACK)
+                ),
                 "pool_provider": item.get("pool_provider"),
                 "model_env": item.get("model_env"),
                 "model": _key_group_model(item, sources),

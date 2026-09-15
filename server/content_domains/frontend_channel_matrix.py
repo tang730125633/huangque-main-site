@@ -125,8 +125,10 @@ def _legacy_channel(key, credentials, probes, controls, now, route='primary'):
 
 
 def _legacy_backup(key, credentials, probes, controls, now):
-    """Expose an actual application fallback, not a network-egress hop."""
+    """Expose the runtime fallback only when the official route is active."""
     item = credentials.get(key) or {}
+    if item.get('image_primary_active') is False:
+        return None
     primary_host = item.get('image_primary_base_host') or item.get('env_base_host') or ''
     fallback_host = item.get('image_fallback_base_host') or ''
     if not fallback_host or fallback_host == primary_host:
@@ -161,8 +163,11 @@ def _route_for_mode(product, mode, workspace, credentials, probes, now):
     mapping = next((x for x in workspace.get('operation_mappings', [])
                     if x.get('operation_id') == op_id), None)
     legacy_key = (product.get('dependencies') or [{}])[0].get('key')
+    credential = credentials.get(legacy_key) or {}
+    route = ('fallback' if credential.get('image_primary_active') is False
+             and credential.get('image_fallback_base_host') else 'primary')
     legacy = _legacy_channel(legacy_key, credentials, probes,
-                             workspace.get('legacy_controls') or {}, now)
+                             workspace.get('legacy_controls') or {}, now, route=route)
     legacy['model'] = _actual_model(product['key'], _tier(product['key'], mode))
     state = str((mapping or {}).get('state') or 'legacy')
     primary = legacy
@@ -239,9 +244,9 @@ def _lechuang_product(workspace, layout_entry, feature_enabled, now):
     mappings = [x for x in workspace.get('mappings', []) if x.get('kind') == 'image']
     channels = {x.get('id'): x for x in workspace.get('items', [])}
     mappings = [x for x in mappings if channels.get(x.get('channel'), {}).get('adapter') == 'lechuang_image']
-    published_models = set(layout_entry.get('models') or [])
+    published_models = set(layout_entry.get('model_keys') or [])
     mappings = [x for x in mappings
-                if str(x.get('label') or x.get('front') or '') in published_models]
+                if str(x.get('front') or '') in published_models]
     models = []
     for mapping in mappings:
         front = str(mapping.get('front') or '')
@@ -290,7 +295,8 @@ def build(workspace, key_rows, probes, layout_state, feature_rows, now=None):
         enabled = features.get(feature_key, True) if feature_key else True
         models = _model_rows(product, workspace, credentials, probes or {}, enabled, now)
         products.append({
-            'key': product['key'], 'label': product['name'], 'description': product.get('desc') or '',
+            'key': product['key'], 'label': entry.get('label') or product['name'],
+            'description': product.get('desc') or '',
             'visible': bool(entry.get('visible')), 'visibility_reason': entry.get('reason') or '',
             'admitted': any(x['admitted'] for x in models), 'models': models,
             'attention': any(x['attention'] for x in models),

@@ -32,12 +32,14 @@ class FrontendChannelMatrixTests(unittest.TestCase):
              'required_env': ['GEMINI_API_KEY'],
              'image_primary_base_host': 'generativelanguage.googleapis.com',
              'image_fallback_base_host': 'gemini-relay.example.com',
-             'image_probe_base_host': 'gemini-relay.example.com'},
+             'image_probe_base_host': 'gemini-relay.example.com',
+             'image_primary_active': True},
             {'key': 'openai', 'name': 'OpenAI API', 'configured': True,
              'required_env': ['OPENAI_API_KEY'],
              'image_primary_base_host': 'api.openai.com',
              'image_fallback_base_host': 'relay.example.com',
-             'image_probe_base_host': 'relay.example.com'},
+             'image_probe_base_host': 'relay.example.com',
+             'image_primary_active': True},
             {'key': 'seedance', 'name': '火山方舟 API', 'configured': True,
              'required_env': ['ARK_API_KEY'],
              'image_primary_base_host': 'ark.cn-beijing.volces.com',
@@ -54,6 +56,7 @@ class FrontendChannelMatrixTests(unittest.TestCase):
             'entries': {'image': [
                 {'key': key, 'label': key, 'visible': key not in {'xiaole', 'zelong2'},
                  'models': ['GPT Image 2.5'] if key == 'lechuang' else [],
+                 'model_keys': ['gpt-image-2.5-flare'] if key == 'lechuang' else [],
                  'reason': '主站显示' if key not in {'xiaole', 'zelong2'} else '用户页隐藏'}
                 for key in order
             ]},
@@ -137,11 +140,33 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         lechuang_entry = next(
             item for item in self.layout['entries']['image'] if item['key'] == 'lechuang'
         )
-        lechuang_entry['models'] = []
+        lechuang_entry['model_keys'] = []
         product = next(item for item in self.build()['products'] if item['key'] == 'lechuang')
         self.assertEqual(product['models'], [])
         self.assertFalse(product['admitted'])
         self.assertIn('尚无已发布', product['warning'])
+
+    def test_lechuang_uses_stable_front_key_when_labels_collide(self):
+        self.workspace['items'].append(dict(
+            self.channel, id='unpublished-image', model='unpublished-model'
+        ))
+        self.workspace['mappings'].append({
+            'kind': 'image', 'front': 'unpublished-front', 'label': 'GPT Image 2.5',
+            'channel': 'unpublished-image', 'backup': '', 'enabled': True,
+        })
+        product = next(item for item in self.build()['products'] if item['key'] == 'lechuang')
+        self.assertEqual([item['key'] for item in product['models']], ['gpt-image-2.5-flare'])
+
+    def test_no_egress_proxy_promotes_relay_to_the_only_primary(self):
+        for key in ('openai', 'gemini'):
+            next(item for item in self.keys if item['key'] == key)['image_primary_active'] = False
+        products = {item['key']: item for item in self.build()['products']}
+        openai = products['openai']['models'][0]['routes'][0]
+        banana = products['banana']['models'][0]['routes'][0]
+        self.assertEqual(openai['primary']['base_host'], 'relay.example.com')
+        self.assertIsNone(openai['backup'])
+        self.assertEqual(banana['primary']['base_host'], 'gemini-relay.example.com')
+        self.assertIsNone(banana['backup'])
 
     def test_official_host_with_standard_port_is_not_mislabeled_as_relay(self):
         self.assertEqual(matrix._transport('api.openai.com:443'), 'official')

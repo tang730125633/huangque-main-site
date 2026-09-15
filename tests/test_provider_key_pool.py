@@ -445,6 +445,17 @@ class ProviderKeyPoolTests(unittest.TestCase):
             deepseek["model_options"],
         )
 
+    def test_image_official_route_activity_follows_egress_configuration(self):
+        for primary, fallback, expected in (
+            ('', '', False), ('http://127.0.0.1:10809', '', True),
+            ('', 'http://127.0.0.1:7897', True),
+        ):
+            with patch.object(admin_api.egress, 'EGRESS_PRIMARY', primary), \
+                 patch.object(admin_api.egress, 'EGRESS_FALLBACK', fallback):
+                rows = {item['key']: item for item in admin_api.key_status()}
+            self.assertEqual(rows['openai']['image_primary_active'], expected)
+            self.assertEqual(rows['gemini']['image_primary_active'], expected)
+
     def test_deepseek_probe_is_fixed_to_official_origin_without_redirects(self):
         with patch.dict(os.environ, {
             "DEEPSEEK_API_KEY": "deepseek-test-key",
