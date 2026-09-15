@@ -173,14 +173,19 @@ HQ_DATABASE_URL=postgresql://huangque_creator:…@127.0.0.1:5432/huangque
    历史行不影响新写入（`state='active'` 的记录迁移后会按租约自然过期）。
 6. `systemctl restart huangque-creator-agent`；日志里不得出现 `HQ_CREATOR_STORE` /
    `ModuleNotFoundError` / `permission denied for schema agent`。
-7. 验证：`curl -fsS http://127.0.0.1:8114/health`（`database_writable`、
+7. **权威校验门禁**：sudo 跑 `scripts/check_store_authority.py --unit
+   huangque-creator-agent` 必须全绿（任一 ERROR 立即回滚），启动日志应是 INFO
+   `authority announced: mode=postgres`（见 `postgresql-cutover-authority-guard.md`）。
+8. 验证：`curl -fsS http://127.0.0.1:8114/health`（`database_writable`、
    `model_usage_store` 为 true）；真实账号走一轮 bootstrap → 一段对话 → 建批次 → 报价
    → 确认；`psql` 查 `agent.creator_messages` / `creator_batches` 落到新值且
    `updated_at` 秒级时间戳正确。
-8. 观察 48 小时：`ops.data_migration_runs` 无新失败；服务日志无 5xx 尖峰；
+9. 观察 48 小时：`ops.data_migration_runs` 无新失败；服务日志无 5xx 尖峰；
    `creator_model_calls` 的限流仍然生效（连点两次模型请求应被「今日模型请求次数已达上限」
    之类的话术挡住，而不是无限制放行）。
-9. SQLite 归档：`creator_agent.db` 改名保留（不删除），确认无进程再打开（`lsof`）；
+10. SQLite 冰冻监控：切写后 1 小时每 10 分钟查 `creator_agent.db` mtime/行数必须
+    「冻住」（见 `postgresql-cutover-authority-guard.md`），然后才准归档。
+11. SQLite 归档：`creator_agent.db` 改名保留（不删除），确认无进程再打开（`lsof`）；
    若要彻底断掉旧路径，再摘 `CREATOR_AGENT_DB`（回滚时需要它）。
 
 ## 回滚
@@ -196,7 +201,9 @@ HQ_DATABASE_URL=postgresql://huangque_creator:…@127.0.0.1:5432/huangque
 ## 停止条件（任一触发立即停并向老板报告）
 
 - 影子核对任何一行不一致；六表行数或主键集合不一致。
-- 切换期间 SQLite 出现新的 `updated_at`（说明仍有进程在写旧库，即双权威）。
+- 切换期间 SQLite 出现新的 `updated_at`（说明仍有进程在写旧库，即双权威）；SQLite
+  冰冻监控 1 小时内 mtime 前进或行数增长（见 `postgresql-cutover-authority-guard.md`）。
+- 权威校验器对 `huangque-creator-agent` 报 ERROR（进程与配置不一致 = 双权威风险）。
 - 回填或运行时报错无法解释；`permission denied` / `relation does not exist` 之类
   说明部署或迁移没对齐。
 - 模型调用账本失效（限流失效或误封），或 `/health` 的 `database_writable` /

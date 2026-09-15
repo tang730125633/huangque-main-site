@@ -120,13 +120,18 @@ fail-closed 抛错：
    `Environment=`）：`HQ_CHANNEL_STORE=postgres`、`HQ_DATABASE_URL=postgresql://…`。
    密码只落服务器受保护 env，不进 git、不进聊天。
 4. 三个服务同版本同开关一起重启；启动即检查日志无 `HQ_CHANNEL_STORE` / import 报错。
-5. 后台验证：渠道列表（`overview`）→ 改一次渠道配置（写 `channels`/`versions`/`schedule`/
+5. **权威校验门禁**：sudo 跑 `scripts/check_store_authority.py --expect postgres`
+   必须全绿（任一 ERROR 立即回滚），启动日志应是 INFO
+   `authority announced: mode=postgres`（见 `postgresql-cutover-authority-guard.md`）。
+6. 后台验证：渠道列表（`overview`）→ 改一次渠道配置（写 `channels`/`versions`/`schedule`/
    `events`）→ 发布一次功能映射 → 跑一次连接测试（`runs`）→ `psql` 查对应行；
    再用 `python scripts/migrate_routing_channels.py --source <快照>` 确认 dry-run 只有
    变化的那几行。任何一步失败立即回滚开关。
-6. 观察 48 小时：接单捕获、验收（`acceptance_guard`）、任务恢复态、后台渠道页、
+7. 观察 48 小时：接单捕获、验收（`acceptance_guard`）、任务恢复态、后台渠道页、
    参数/报价、托管任务执行无异常；`ops.data_migration_runs` 无新失败。
-7. SQLite 归档：`channel_management.db` 改名保留（不删除），确认无进程再打开
+8. SQLite 冰冻监控：切写后 1 小时每 10 分钟查 `channel_management.db` mtime/行数
+   必须「冻住」（见 `postgresql-cutover-authority-guard.md`），然后才准归档。
+9. SQLite 归档：`channel_management.db` 改名保留（不删除），确认无进程再打开
    （`lsof /home/ubuntu/content-api/channel_management.db`）。
 
 ## 回滚
@@ -201,7 +206,9 @@ fail-closed 抛错：
 
 - 影子核对任何一行不一致；表行数/主键集合不一致。
 - `db()` 抛错出现在日志里（说明还有模块在直连旧库）：先回滚开关，再排查。
-- 切换期间 SQLite 出现新的 `updated`/`created`（说明仍有进程在写旧库）。
+- 切换期间 SQLite 出现新的 `updated`/`created`（说明仍有进程在写旧库）；SQLite
+  冰冻监控 1 小时内 mtime 前进或行数增长（见 `postgresql-cutover-authority-guard.md`）。
+- 权威校验器 `--expect postgres` 非全绿（进程与配置不一致 = 双权威风险）。
 - 回填或运行时报错无法解释；锁等待影响用户请求。
 - 备份不可恢复；双权威并存（三个服务的 `HQ_CHANNEL_STORE` 不一致）。
 

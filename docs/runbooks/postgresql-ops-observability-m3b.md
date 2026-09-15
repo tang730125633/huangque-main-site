@@ -119,13 +119,18 @@ python scripts/migrate_ops_observability.py \
 4. 同时重启 `huangque-content` 与 `huangque-admin`。启动即检查日志无 `HQ_OBS_STORE` /
    import 报错；启动后可先自检一次：
    `HQ_OBS_STORE=postgres python3 -c "from content_domains import observability_store as s; print(s.mode())"`。
-5. 端到端验证：跑一次短视频生成任务 → 后台任务详情能看到证据链且 `psql` 里
+5. **权威校验门禁**：sudo 跑 `scripts/check_store_authority.py --expect postgres`
+   必须全绿（任一 ERROR 立即回滚），启动日志应是 INFO
+   `authority announced: mode=postgres`（见 `postgresql-cutover-authority-guard.md`）。
+6. 端到端验证：跑一次短视频生成任务 → 后台任务详情能看到证据链且 `psql` 里
    `ops.traces` 落行；再让 admin 的服务监控产生一条事件 → `ops.alert_outbox` 落行、
    下一次 `dispatch()` 后状态变 `sent`（或按退避变 `pending`）。
-6. 观察 48 小时：接单/生成/下载证据链不断、后台证据页无异常、告警条数不再增长为
+7. 观察 48 小时：接单/生成/下载证据链不断、后台证据页无异常、告警条数不再增长为
    `failed`、`ops.data_migration_runs` 无新失败。SQLite 侧 `task_trace` / `alert_outbox`
    不应再出现新的 `updated`（说明没有旁路还在写旧库）。
-7. SQLite 归档：`runtime_observability.db` 改名保留（不删除），`HQ_OBSERVABILITY_DB`
+8. SQLite 冰冻监控：切写后 1 小时每 10 分钟查 `runtime_observability.db` mtime/行数
+   必须「冻住」（见 `postgresql-cutover-authority-guard.md`），然后才准归档。
+9. SQLite 归档：`runtime_observability.db` 改名保留（不删除），`HQ_OBSERVABILITY_DB`
    保留指向（停写后仅供回滚），确认 `lsof` 无进程长期持有。
 
 ## 回滚
@@ -141,7 +146,9 @@ python scripts/migrate_ops_observability.py \
 ## 停止条件（任一触发立即停并向老板报告）
 
 - 影子核对任何一行不一致；行数/主键集合不一致。
-- 切换期间 SQLite 出现新的 `updated`（说明仍有进程在写旧库）。
+- 切换期间 SQLite 出现新的 `updated`（说明仍有进程在写旧库）；SQLite 冰冻监控
+  1 小时内 mtime 前进或行数增长（见 `postgresql-cutover-authority-guard.md`）。
+- 权威校验器 `--expect postgres` 非全绿（进程与配置不一致 = 双权威风险）。
 - 回填或运行时报错无法解释；PG 锁等待影响用户请求；证据链在后台断档。
 - 告警大面积 `failed`（说明通知投递链路坏了，不只是记录问题）。
 - 备份不可恢复；双权威并存（同一时刻两处 `HQ_OBS_STORE` 不一致）。

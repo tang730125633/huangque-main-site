@@ -92,6 +92,8 @@ jobs:
           python -m unittest discover -s tests -p 'test_leads_store.py' -v
           python -m unittest discover -s tests -p 'test_tikhub_cache.py' -v
           python -m unittest discover -s tests -p 'test_creator_pg_store.py' -v
+          python -m unittest discover -s tests -p 'test_auth_identity_migration.py' -v
+          python -m unittest discover -s tests -p 'test_auth_ledger_migration.py' -v
           python -m unittest discover -s tests -p 'test_sqlite_inventory.py' -v
           python scripts/sqlite_inventory.py --check
           sh -n deploy/postgres/backup.sh
