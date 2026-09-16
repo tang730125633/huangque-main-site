@@ -1,0 +1,1480 @@
+{
+  "harness": "pay_idempotency_stress",
+  "scope": "staging-only",
+  "database": "huangque_staging",
+  "run_id": "fix04",
+  "started_at": 1789552779,
+  "params": {
+    "replays": 20,
+    "workers": 6,
+    "threads": 16,
+    "repeat": 8
+  },
+  "purged_before": {
+    "ledger.points_audit": 0,
+    "ledger.virtual_pay_orders": 0,
+    "ledger.recharge_orders": 0,
+    "ledger.membership_recharge_records": 0,
+    "identity.users": 0
+  },
+  "table_counts_before": {
+    "identity.users": 133,
+    "ledger.points_audit": 8945,
+    "ledger.recharge_orders": 71,
+    "ledger.virtual_pay_orders": 41
+  },
+  "scenarios": [
+    {
+      "scenario": "A 虚拟支付回调串行重放",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "credited_exactly_once": true,
+        "order_status_credited": true
+      },
+      "observations": {
+        "label": "A 虚拟支付回调串行重放",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "credited_exactly_once": true,
+          "order_status_credited": true
+        }
+      },
+      "notes": [],
+      "name": "A",
+      "elapsed_ms": 193
+    },
+    {
+      "scenario": "B 虚拟支付单进程多线程重放",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "credited_exactly_once": true,
+        "no_worker_errors": true
+      },
+      "observations": {
+        "label": "B 虚拟支付单进程多线程重放",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "credited_exactly_once": true,
+          "no_worker_errors": true
+        }
+      },
+      "notes": [],
+      "name": "B",
+      "elapsed_ms": 1926
+    },
+    {
+      "scenario": "C 虚拟支付跨进程并发重放",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "credited_exactly_once": true
+      },
+      "observations": {
+        "label": "C 虚拟支付跨进程并发重放",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 2000,
+            "balance_delta": 1000,
+            "expected_balance_delta": 1000,
+            "ledger_sum_all": 1000,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "credited_exactly_once": true
+        }
+      },
+      "notes": [],
+      "name": "C",
+      "elapsed_ms": 7566
+    },
+    {
+      "scenario": "D 同用户多订单跨进程并发入账",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "each_order_credited_once": true
+      },
+      "observations": {
+        "label": "D 同用户多订单跨进程并发入账",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "each_order_credited_once": true
+        }
+      },
+      "notes": [],
+      "name": "D",
+      "elapsed_ms": 3654
+    },
+    {
+      "scenario": "E 乱序竞争（重放+同用户多单+无关账务）",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "each_order_credited_once": true,
+        "other_user_exactly_once": true
+      },
+      "observations": {
+        "label": "E 乱序竞争（重放+同用户多单+无关账务）",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 2,
+            "expected_ledger_rows": 2,
+            "balance_before": 1000,
+            "balance_after": 4000,
+            "balance_delta": 3000,
+            "expected_balance_delta": 3000,
+            "ledger_sum_all": 3000,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "each_order_credited_once": true,
+          "other_user_exactly_once": true
+        }
+      },
+      "notes": [],
+      "name": "E",
+      "elapsed_ms": 5266
+    },
+    {
+      "scenario": "F 充值审批串行重复触发",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "credited_exactly_once": true
+      },
+      "observations": {
+        "label": "F 充值审批串行重复触发",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "credited_exactly_once": true
+        }
+      },
+      "notes": [],
+      "name": "F",
+      "elapsed_ms": 153
+    },
+    {
+      "scenario": "G 充值审批跨进程并发触发",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "credited_exactly_once": true,
+        "transaction_id_unique": true
+      },
+      "observations": {
+        "label": "G 充值审批跨进程并发触发",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1250,
+            "balance_delta": 250,
+            "expected_balance_delta": 250,
+            "ledger_sum_all": 250,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "credited_exactly_once": true,
+          "transaction_id_unique": true
+        }
+      },
+      "notes": [],
+      "name": "G",
+      "elapsed_ms": 8640
+    },
+    {
+      "scenario": "H 同一微信流水审批两张单",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "duplicate_transaction_id_rejected": true
+      },
+      "observations": {
+        "label": "H 同一微信流水审批两张单",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1100,
+            "balance_delta": 100,
+            "expected_balance_delta": 100,
+            "ledger_sum_all": 100,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "duplicate_transaction_id_rejected": true
+        }
+      },
+      "notes": [],
+      "name": "H",
+      "elapsed_ms": 3816
+    },
+    {
+      "scenario": "I transaction_key 退点跨进程重放",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "credited_exactly_once": true
+      },
+      "observations": {
+        "label": "I transaction_key 退点跨进程重放",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1000,
+            "balance_after": 1030,
+            "balance_delta": 30,
+            "expected_balance_delta": 30,
+            "ledger_sum_all": 30,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "credited_exactly_once": true
+        }
+      },
+      "notes": [],
+      "name": "I",
+      "elapsed_ms": 7623
+    },
+    {
+      "scenario": "J transaction_key 换金额重放",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "no_extra_ledger_row": true,
+        "second_call_rejected": true
+      },
+      "observations": {
+        "label": "J transaction_key 换金额重放",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1040,
+            "balance_after": 1040,
+            "balance_delta": 0,
+            "expected_balance_delta": 0,
+            "ledger_sum_all": 40,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "no_extra_ledger_row": true,
+          "second_call_rejected": true
+        }
+      },
+      "notes": [],
+      "name": "J",
+      "elapsed_ms": 59
+    },
+    {
+      "scenario": "K 微信支付退款回调跨进程重放",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "refunded_exactly_once": true,
+        "order_status_refunded": true
+      },
+      "observations": {
+        "label": "K 微信支付退款回调跨进程重放",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 1250,
+            "balance_after": 1000,
+            "balance_delta": -250,
+            "expected_balance_delta": -250,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "refunded_exactly_once": true,
+          "order_status_refunded": true
+        }
+      },
+      "notes": [],
+      "name": "K",
+      "elapsed_ms": 7627
+    },
+    {
+      "scenario": "L 虚拟支付退款通知跨进程重放",
+      "verdict": "PASS",
+      "checks": {
+        "ledger_chain_continuous": true,
+        "ledger_reaches_balance": true,
+        "ledger_sum_matches_balance": true,
+        "balance_moved_expected": true,
+        "refunded_exactly_once": true,
+        "order_status_refunded": true,
+        "balance_back_to_base": true
+      },
+      "observations": {
+        "label": "L 虚拟支付退款通知跨进程重放",
+        "repeats": 8,
+        "failed_repeats": 0,
+        "excess_ledger_row_repeats": 0,
+        "per_repeat": [
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          },
+          {
+            "verdict": "PASS",
+            "ledger_rows_for_this_payment": 1,
+            "expected_ledger_rows": 1,
+            "balance_before": 2000,
+            "balance_after": 1000,
+            "balance_delta": -1000,
+            "expected_balance_delta": -1000,
+            "ledger_sum_all": 0,
+            "ledger_chain_ok": true
+          }
+        ],
+        "sample_failure": null,
+        "sample_pass_checks": {
+          "ledger_chain_continuous": true,
+          "ledger_reaches_balance": true,
+          "ledger_sum_matches_balance": true,
+          "balance_moved_expected": true,
+          "refunded_exactly_once": true,
+          "order_status_refunded": true,
+          "balance_back_to_base": true
+        }
+      },
+      "notes": [],
+      "name": "L",
+      "elapsed_ms": 8113
+    }
+  ],
+  "purged_after": {
+    "ledger.points_audit": 144,
+    "ledger.virtual_pay_orders": 64,
+    "ledger.recharge_orders": 40,
+    "ledger.membership_recharge_records": 0,
+    "identity.users": 104
+  },
+  "table_counts_after": {
+    "identity.users": 133,
+    "ledger.points_audit": 8945,
+    "ledger.recharge_orders": 71,
+    "ledger.virtual_pay_orders": 41
+  },
+  "finished_at": 1789552833,
+  "summary": {
+    "scenarios": 12,
+    "passed": 12,
+    "failed": 0,
+    "failed_names": []
+  }
+}
