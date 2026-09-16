@@ -112,14 +112,6 @@
     const compactValue=(values,empty='未配置')=>{
       const items=unique(values);return items.length>1?'按能力分流':items[0]||empty;
     };
-    function routeBackup(route){
-      if(route.backup)return route.backup.name;
-      const count=route.primary?.source==='pool'?Number(route.primary.pool_usable||0):0;
-      return count>1?'号池轮转（'+count+' 个）':'无';
-    }
-    function backupSummary(model){
-      return compactValue((model.routes||[]).map(routeBackup),'无');
-    }
     function modelStatus(product,model){
       if(!product.visible||model.visible===false)return {label:'前台隐藏',state:'muted'};
       if(!model.admitted){
@@ -166,6 +158,14 @@
         +'<small>鉴权：'+esc(item.auth?.label||'未验证')+'（'+esc(date(item.auth?.checked_at))+ '）</small>'
         +'<small>成品：'+esc(item.full?.label||'未验证')+'（'+esc(date(item.full?.checked_at))+ '）</small>'+manageAction(item)+'</div>';
     }
+    function routeOverview(item){
+      if(!item)return '<div class="cm-current-route empty">当前模型尚未配置主渠道。</div>';
+      const baseUrls=(item.base_urls||[]).filter(Boolean);
+      const base=baseUrls[0]||(item.base_host?'https://'+item.base_host:'未配置');
+      const proof=item.auth?.label||'未验证';
+      return '<article class="cm-current-route"><div class="cm-current-route-head"><div><span>当前主渠道</span><h3>'+esc(item.name||'未命名渠道')+'</h3></div><span class="cm-transport '+esc(item.connection_type||'unknown')+'">'+esc(transportName(item.connection_type))+'</span></div>'
+        +'<dl><div><dt>供应商</dt><dd>'+esc(item.supplier||'未标注')+'</dd></div><div><dt>Base URL</dt><dd><code>'+esc(base)+'</code></dd></div><div><dt>凭据来源</dt><dd>'+esc(item.credential_source||'尚未登记')+'</dd></div><div><dt>验证状态</dt><dd>'+esc(proof)+'</dd></div></dl>'+manageAction(item)+'</article>';
+    }
     function openMatrixModel(pageKey,productKey,modelKey){
       const page=matrixPages().find(item=>item.page===pageKey);
       const product=(page?.products||[]).find(item=>item.key===productKey);
@@ -179,15 +179,17 @@
         +(route.reason?'<p class="cm-matrix-detail-warning">'+esc(route.reason)+'</p>':'')+'</section>').join('');
       const managedActions=managers.filter(item=>item.management.kind==='managed_channel').map(item=>'<button type="button" class="primary" data-cm-managed-edit="'+esc(item.management.uid.replace(/^managed:/,''))+'">修改 '+esc(item.name)+' 的 Key / Base URL</button>').join('');
       const legacySwitch=legacyManagers.map((entry,index)=>'<button type="button" class="'+(index?'':'active')+'" data-cm-inline-route="'+esc(entry.item.management.uid)+'" data-cm-inline-kind="'+esc(entry.item.management.kind)+'" aria-pressed="'+String(!index)+'">'+esc(entry.item.name)+'</button>').join('');
-      const inline='<section class="cm-model-inline-config"><div class="cm-model-inline-head"><div><h3>直接配置当前模型</h3><p>只显示这个前端模型实际使用的线路。更换密钥会先鉴权，通过后再加入新线路。</p></div>'+managedActions+'</div>'
+      const inline='<section class="cm-model-inline-config"><div class="cm-model-inline-head"><div><span>凭据与连接配置</span><h3>修改当前模型使用的线路</h3><p>更换密钥会先验证，通过后才保存；验证失败时保留原配置。</p></div>'+managedActions+'</div>'
         +(legacySwitch?'<nav class="cm-model-inline-tabs" aria-label="选择要配置的底层线路">'+legacySwitch+'</nav><div id="cmLegacyEditorHost"></div><div id="cmLegacyKeys"></div><details class="cm-model-inline-journeys"><summary>查看关联功能与测试入口</summary><div id="cmLegacyJourneys"></div></details>':'')
         +(!legacySwitch&&!managedActions?'<p class="muted">当前模型没有可在线管理的渠道配置。</p>':'')+'</section>';
+      const currentRoutes=modelLegs(model,['primary']).map(([,item])=>routeOverview(item)).join('');
       el('cmDetail').innerHTML='<div class="cm-matrix-detail-head"><span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span>'
         +'<p>'+esc(page.label||matrixPageMeta.find(x=>x[0]===pageKey)?.[1]||pageKey)+' · '+esc(product.visible?'前台显示':'前台隐藏')+'</p>'
         +'<code>'+esc(model.actual_model||'实际模型待配置')+'</code>'
         +'<p>支持能力：'+esc((model.capabilities||[]).join(' / ')||'尚未登记')+'</p></div>'
-        +inline+'<h3>真实渠道与验证证据</h3><p class="muted">后台托管或号池线路可以在上方安全更换；服务器环境变量只允许查看与核对，避免浏览器直接改写部署配置。</p>'+(routes||'<p class="muted">尚无路由。</p>')
-        +((model.warnings||[]).length?'<h3>需要处理</h3><div class="cm-matrix-detail-warning">'+esc(model.warnings.join('；'))+'</div>':'');
+        +'<section class="cm-current-routes">'+(currentRoutes||'<div class="empty">尚无主渠道。</div>')+'</section>'
+        +((model.warnings||[]).length?'<div class="cm-matrix-detail-warning"><b>需要处理</b><span>'+esc(model.warnings.join('；'))+'</span></div>':'')
+        +inline+'<details class="cm-model-advanced"><summary><span>备用线路、能力与验证详情</span><small>按需展开</small></summary><div class="cm-model-advanced-body">'+(routes||'<p class="muted">尚无路由。</p>')+'</div></details>';
       if(legacyManagers[0])env.detail(legacyManagers[0].target,{managementKind:legacyManagers[0].item.management.kind});
     }
     function renderMatrix(){
@@ -196,33 +198,42 @@
       if(!pages.some(page=>page.page===matrixPage))matrixPage=pages[0]?.page||'image';
       const matrix=pages.find(page=>page.page===matrixPage)||pages[0]||{},summary=matrix.summary||{},allProducts=matrix.products||[];
       const issueCount=allProducts.reduce((total,product)=>total+(product.models||[]).filter(model=>modelNeedsAction(product,model)).length,0);
-      const products=allProducts.map(product=>({...product,models:(product.models||[]).filter(model=>matrixShowHidden||(product.visible&&model.visible!==false))})).filter(product=>matrixShowHidden||product.visible).filter(product=>matrixShowHidden||product.models.length);
-      const productCards=products.map(product=>{
+      const visibleProducts=allProducts.map(product=>({...product,models:(product.models||[]).filter(model=>product.visible&&model.visible!==false)})).filter(product=>product.visible&&product.models.length);
+      const hiddenProducts=allProducts.map(product=>({...product,models:(product.models||[]).filter(model=>!product.visible||model.visible===false)})).filter(product=>product.models.length||!product.visible);
+      const renderProduct=(product,hidden=false)=>{
         const cards=(product.models||[]).map(model=>{
         const routes=model.routes||[];
         const status=modelStatus(product,model);
         const statusView=status.state==='ok'?'<span class="cm-status-dot" title="可接单" aria-label="可接单"></span>':'<span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span>';
-        return '<button type="button" class="cm-switch-model '+(modelNeedsAction(product,model)?'attention':'')+'" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'"><span class="cm-switch-model-head"><b>'+esc(model.label)+'</b>'+statusView+'</span><code>'+esc(model.actual_model||'实际模型待配置')+'</code><span class="cm-switch-fact"><em>主渠道</em><strong>'+esc(compactValue(routes.map(route=>route.primary?.name||'未配置')))+'</strong></span><span class="cm-switch-fact"><em>接入方式</em><strong>'+esc(compactValue(routes.map(route=>route.primary?transportName(route.primary.connection_type):'未标注')))+'</strong></span><span class="cm-switch-fact"><em>备用渠道</em><strong>'+esc(backupSummary(model))+'</strong></span><span class="cm-switch-model-action">点击配置渠道 <i aria-hidden="true">→</i></span></button>';
+        const channel=compactValue(routes.map(route=>route.primary?.name||'未配置'));
+        const transport=compactValue(routes.map(route=>route.primary?transportName(route.primary.connection_type):'未标注'));
+        return '<button type="button" class="cm-switch-model '+(modelNeedsAction(product,model)?'attention':'')+'" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'"><span class="cm-switch-model-head"><b>'+esc(model.label)+'</b>'+statusView+'</span><code>'+esc(model.actual_model||'实际模型待配置')+'</code><span class="cm-switch-channel"><span><em>当前渠道</em><strong>'+esc(channel)+'</strong></span><i>'+esc(transport)+'</i></span><span class="cm-switch-model-action">查看与配置 <i aria-hidden="true">→</i></span></button>';
         }).join('');
-        const state=product.visible?'前台显示':'前台隐藏';
+        const state=hidden?'前台隐藏':'前台显示';
         const hasIssue=(product.models||[]).some(model=>modelNeedsAction(product,model));
-        return '<section class="cm-switch-product '+(hasIssue?'attention':'')+'"><div class="cm-switch-product-head"><div><h4>'+esc(product.label)+'</h4><p>'+esc(product.description||product.visibility_reason||'前端产品')+'</p></div><span class="cm-matrix-pill '+(product.visible?'ok':'')+'">'+esc(state)+'</span></div><div class="cm-switch-models">'+(cards||'<p class="cm-matrix-empty">'+esc(product.warning||'当前没有已登记模型。')+'</p>')+'</div></section>';
-      }).join('');
+        return '<section class="cm-switch-product '+(hidden?'hidden ':'')+(hasIssue?'attention':'')+'"><div class="cm-switch-product-head"><div><h4>'+esc(product.label)+'</h4><p>'+esc(product.description||product.visibility_reason||'前端产品')+'</p></div><span class="cm-matrix-pill '+(hidden?'muted':'ok')+'">'+esc(state)+'</span></div><div class="cm-switch-models">'+(cards||'<p class="cm-matrix-empty">'+esc(product.warning||'当前没有已登记模型。')+'</p>')+'</div></section>';
+      };
+      const productCards=visibleProducts.map(product=>renderProduct(product)).join('');
+      const hiddenCards=hiddenProducts.map(product=>renderProduct(product,true)).join('');
       const activeGroup=matrixGroupForPage(matrixPage);matrixGroupSelection[activeGroup.key]=matrixPage;
       const groupStats=group=>{
         const groupPages=group.pages.map(key=>pages.find(page=>page.page===key)).filter(Boolean);
-        const modelCount=groupPages.reduce((total,page)=>total+Number(page.summary?.models||0),0);
+        const productCount=groupPages.reduce((total,page)=>total+Number(page.summary?.products||0),0);
         const issueCount=groupPages.reduce((total,page)=>total+(page.products||[]).reduce((sum,product)=>sum+(product.models||[]).filter(model=>modelNeedsAction(product,model)).length,0),0);
-        return {modelCount,issueCount};
+        return {productCount,issueCount};
       };
-      const sidebar='<div class="cm-business-label">业务板块</div>'+matrixPageGroups.map(group=>{const stats=groupStats(group),active=group.key===activeGroup.key;return '<button type="button" class="cm-business-item '+(active?'active':'')+'" data-cm-matrix-group="'+esc(group.key)+'" aria-current="'+(active?'page':'false')+'"><span><b>'+esc(group.label)+'</b><small>'+stats.modelCount+' 个'+esc(group.unit)+'</small></span>'+(stats.issueCount?'<em>'+stats.issueCount+' 项异常</em>':'')+'</button>'}).join('');
+      const hiddenTotal=pages.reduce((total,page)=>total+(page.products||[]).reduce((sum,product)=>sum+(product.models||[]).filter(model=>!product.visible||model.visible===false).length,0),0);
+      const sidebar='<div class="cm-business-label">业务板块</div>'+matrixPageGroups.map(group=>{const stats=groupStats(group),active=group.key===activeGroup.key;return '<button type="button" class="cm-business-item '+(active?'active':'')+'" data-cm-matrix-group="'+esc(group.key)+'" aria-current="'+(active?'page':'false')+'"><span><b>'+esc(group.label)+'</b><small>'+stats.productCount+' 个产品 / 服务</small></span>'+(stats.issueCount?'<em>'+stats.issueCount+' 项异常</em>':'')+'</button>'}).join('')+'<div class="cm-business-divider"></div><button type="button" class="cm-business-item cm-business-hidden" data-cm-matrix-hidden aria-pressed="'+String(matrixShowHidden)+'"><span><b>隐藏与历史</b><small>'+hiddenTotal+' 个模型 / 服务</small></span></button>';
       const groupPages=activeGroup.pages.map(key=>pages.find(page=>page.page===key)).filter(Boolean);
       const subnav=groupPages.length>1?'<nav class="cm-subfunction-tabs" aria-label="'+esc(activeGroup.label)+'功能">'+groupPages.map(page=>'<button type="button" data-cm-matrix-page="'+esc(page.page)+'" aria-pressed="'+String(page.page===matrixPage)+'" class="'+(page.page===matrixPage?'active':'')+'"><span>'+esc(page.label||page.page)+'</span><small>'+Number(page.summary?.models||0)+'</small></button>').join('')+'</nav>':'';
       const mobile=matrixPageGroups.map(group=>'<optgroup label="'+esc(group.label)+'">'+group.pages.map(key=>pages.find(page=>page.page===key)).filter(Boolean).map(page=>'<option value="'+esc(page.page)+'" '+(page.page===matrixPage?'selected':'')+'>'+esc(page.label||page.page)+' · '+Number(page.summary?.models||0)+' 个</option>').join('')+'</optgroup>').join('');
-      host.innerHTML='<div class="cm-function-workspace"><aside class="cm-function-sidebar" aria-label="业务板块">'+sidebar+'</aside><div class="cm-function-content"><label class="cm-function-mobile">选择业务功能<select data-cm-matrix-select aria-label="选择业务功能">'+mobile+'</select></label><div class="cm-function-heading"><div><span>'+esc(activeGroup.label)+'</span><h3>'+esc(matrix.label||matrix.page||'前端模型与渠道')+'</h3><p class="muted">点击具体模型，查看并管理渠道、API Key、Base URL 与验证证据。</p></div><div class="actions"><button type="button" data-cm-view="layout">调整前台展示</button><button type="button" class="cm-hidden-toggle '+(matrixShowHidden?'active':'')+'" data-cm-matrix-hidden aria-pressed="'+String(matrixShowHidden)+'">'+(matrixShowHidden?'隐藏停用项':'显示隐藏 / 停用项')+'</button></div></div>'+subnav
-        +'<div class="cm-matrix-summary"><div><span>前端产品</span><b>'+Number(summary.products||0)+'</b></div><div><span>模型 / 服务</span><b>'+Number(summary.models||0)+'</b></div><div><span>允许接单</span><b>'+Number(summary.admitted_models||0)+'</b></div><div><span>异常</span><b>'+issueCount+'</b></div></div>'
+      const visibleModels=visibleProducts.flatMap(product=>(product.models||[]).map(model=>[product,model]));
+      const normalCount=visibleModels.filter(([product,model])=>model.admitted&&!modelNeedsAction(product,model)).length;
+      host.innerHTML='<div class="cm-function-workspace"><aside class="cm-function-sidebar" aria-label="业务板块">'+sidebar+'</aside><div class="cm-function-content"><label class="cm-function-mobile">选择业务功能<select data-cm-matrix-select aria-label="选择业务功能">'+mobile+'</select></label><div class="cm-function-heading"><div><span>'+esc(activeGroup.label)+'</span><h3>'+esc(matrix.label||matrix.page||'前端模型与渠道')+'</h3><p class="muted">按前端产品查看模型；点击模型即可管理渠道、API Key 与 Base URL。</p></div><div class="actions"><button type="button" data-cm-view="layout">调整前台展示</button></div></div>'+subnav
+        +'<div class="cm-overview-strip"><span><i class="ok"></i>可接单 <b>'+normalCount+'</b></span><span><i class="warn"></i>需要处理 <b>'+issueCount+'</b></span><span><i class="muted"></i>前台隐藏 <b>'+hiddenProducts.reduce((total,product)=>total+(product.models||[]).length,0)+'</b></span><small>'+Number(summary.products||0)+' 个产品 · '+Number(summary.models||0)+' 个模型 / 服务</small></div>'
         +(matrix.precision==='service'?'<p class="cm-precision-note">本板块按已登记的真实前端功能与依赖服务展示；尚未建立独立模型档位的功能会标为“服务配置”。</p>':'')
-        +'<div class="cm-switch-products">'+(productCards||'<div class="empty">当前板块没有'+(matrixShowHidden?'已登记':'前台显示')+'的模型或服务。</div>')+'</div></div></div>';
+        +'<div class="cm-switch-products">'+(productCards||'<div class="empty">当前板块没有前台显示的模型或服务。</div>')+'</div>'
+        +(hiddenCards?'<details class="cm-hidden-products" '+(matrixShowHidden?'open':'')+'><summary><span><b>前台隐藏与历史</b><small>不会出现在用户主页面，但仍保留配置与记录</small></span><em>'+hiddenProducts.reduce((total,product)=>total+(product.models||[]).length,0)+'</em></summary><div class="cm-switch-products">'+hiddenCards+'</div></details>':'')+'</div></div>';
     }
     function list(){
       const visible=C.filter(rows,filters);
