@@ -126,7 +126,7 @@ class InviteRegistrationTests(unittest.TestCase):
         conn.close()
         result, err = self.auth.register_account("legacy", "secret123")
         self.assertIsNone(err)
-        self.assertEqual(result["user"]["points"], 16)
+        self.assertEqual(result["user"]["points"], 0)  # 积分制度整体移出（09-16）：注册不赠点
         conn = self._connect()
         try:
             self.assertEqual(
@@ -151,7 +151,7 @@ class InviteRegistrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(set(body), {"user", "invite_bound"})
         self.assertTrue(body["invite_bound"])
-        self.assertEqual(body["user"]["points"], 16)
+        self.assertEqual(body["user"]["points"], 0)  # 积分制度整体移出（09-16）：注册不赠点
         self.assertNotIn("invite", body["user"])
         self.assertIn("HttpOnly", headers.get("Set-Cookie") or "")
 
@@ -197,7 +197,7 @@ class InviteRegistrationTests(unittest.TestCase):
         self.assertEqual(set(body), {"token", "user", "invite_bound", "inviter"})
         self.assertTrue(body["invite_bound"])
         self.assertEqual(body["inviter"]["name"], "inviter")
-        self.assertEqual(body["user"]["points"], 16)
+        self.assertEqual(body["user"]["points"], 0)  # 积分制度整体移出（09-16）：注册不赠点
         self.assertNotIn("invite", body["user"])
         conn = self._connect()
         try:
@@ -260,6 +260,47 @@ class InviteRegistrationTests(unittest.TestCase):
             )
         finally:
             conn.close()
+
+    def test_orphan_invite_code_is_rejected(self):
+        """邀请码=注册准入证（09-16）：inviter 被物理删除后，其码立即失效。
+
+        validate_code 的 JOIN users 本来就是硬闸门（孤儿码永远验证不过）；
+        此测试把这条不变量锁死，防止未来把 JOIN 改弱。
+        """
+        code = self._invite_code()
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM users WHERE username='inviter'")
+            conn.commit()
+        finally:
+            conn.close()
+        result, err = self.auth.register_account(
+            "orphan_probe", "secret123", invite_code=code,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(err["code"], "invalid_code")
+        conn = self._connect()
+        try:
+            self.assertFalse(
+                conn.execute("SELECT 1 FROM users WHERE username='orphan_probe'").fetchone()
+            )
+        finally:
+            conn.close()
+
+    def test_banned_inviter_code_is_rejected(self):
+        """邀请码=注册准入证（09-16）：inviter 账号状态离开 active，其码立即失效。"""
+        code = self._invite_code()
+        conn = self._connect()
+        try:
+            conn.execute("UPDATE users SET account_status='banned' WHERE username='inviter'")
+            conn.commit()
+        finally:
+            conn.close()
+        result, err = self.auth.register_account(
+            "banned_probe", "secret123", invite_code=code,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(err["code"], "invalid_code")
 
     def test_concurrent_same_username_creates_one_complete_registration(self):
         code = self._invite_code()
