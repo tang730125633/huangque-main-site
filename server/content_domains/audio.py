@@ -337,6 +337,19 @@ def clear_voice_preview(username, slot_id):
         c.commit()
     return removed
 
+def _signed_preview(row):
+    """DB 存的试听样音是 COS 私有桶无签名直链，返回前端前实时补签名。"""
+    url = (row["preview_url"] if row else None) or ""
+    if not str(url).startswith("http"):
+        return url or None
+    try:
+        if cos.enabled() and row["preview_file"]:
+            return cos.object_url(row["preview_file"], private=True)
+    except Exception as e:
+        print("[audio-clone] COS 签名刷新失败: %s" % e, flush=True)
+    return url
+
+
 def check_clone_status(username, slot_id, attempt_id=None):
     """Return only the state owned by ``attempt_id`` when one is supplied."""
     username = (username or "").strip()
@@ -351,7 +364,7 @@ def check_clone_status(username, slot_id, attempt_id=None):
                    clone_upload_response, updated_at
             FROM audio_voice_slots
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
-        voice = c.execute("""SELECT display_name, provider_voice, preview_url FROM audio_voices
+        voice = c.execute("""SELECT display_name, provider_voice, preview_url, preview_file FROM audio_voices
             WHERE id=? AND username=? AND slot_id=?""",
             (slot["voice_id"] if slot else -1, username, slot_id)).fetchone()
     if not slot:
@@ -387,17 +400,17 @@ def check_clone_status(username, slot_id, attempt_id=None):
                            voice["provider_voice"], voice["preview_url"]))
             c.commit()
         if cur.rowcount == 1:
-            return response("ready", preview_url=voice["preview_url"])
+            return response("ready", preview_url=_signed_preview(voice))
         with closing(adb()) as c:
             _ensure_clone_attempt_columns(c)
-            current = c.execute("""SELECT s.status, s.clone_error, s.clone_attempt_id, v.preview_url
+            current = c.execute("""SELECT s.status, s.clone_error, s.clone_attempt_id, v.preview_url, v.preview_file
                 FROM audio_voice_slots s LEFT JOIN audio_voices v ON v.id=s.voice_id
                 WHERE s.username=? AND s.slot_id=?""", (username, slot_id)).fetchone()
         if expected_attempt_id and (not current or str(current["clone_attempt_id"] or "") != expected_attempt_id):
             raise CloneAttemptError("本次声音复刻操作已被更新，请重新附加样音后重试")
         result = response((current["status"] if current else "training") or "training")
         if current and current["preview_url"]:
-            result["preview_url"] = current["preview_url"]
+            result["preview_url"] = _signed_preview(current)
         if current and current["clone_error"]:
             result["clone_error"] = current["clone_error"]
         return result
