@@ -683,16 +683,22 @@ class _PgConnection:
 
     def _finish_tx(self, commit: bool) -> None:
         self._discard_cursor()
-        self._release_write_lock()
         conn = self._conn
-        if conn is None:
-            return
-        if not self._in_transaction(conn):
-            return  # 无活动事务：no-op（SQLite 里多余 commit/rollback 无害）
-        if commit:
-            conn.commit()
-        else:
-            conn.rollback()
+        try:
+            if conn is None:
+                return
+            if not self._in_transaction(conn):
+                return  # 无活动事务：no-op（SQLite 里多余 commit/rollback 无害）
+            if commit:
+                conn.commit()
+            else:
+                conn.rollback()
+        finally:
+            # 写锁必须持有到 PG 的 COMMIT/ROLLBACK 真正返回：先释放再提交会留下一个
+            # 「别人已经能进写临界区、但我们的提交还没生效」的窗口 —— 并发的重放/回放
+            # 会在这个窗口里读到提交前的旧状态，各记一笔（点双花，见
+            # scripts/pay_idempotency_stress.py 场景 B）。
+            self._release_write_lock()
 
     def _acquire_write_lock(self) -> None:
         if not self._owns_lock:

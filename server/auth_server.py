@@ -2285,6 +2285,27 @@ def _write_audit(c, who_admin, username, delta, before, after, reason, transacti
         (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time()), transaction_key))
 
 
+def _row_lock_suffix(conn):
+    """PG 行锁后缀：把「读状态 → 判断 → 记账」升级成行级串行。
+
+    SQLite 下 ``BEGIN IMMEDIATE`` 拿到的是整库写锁；PG 后端（content_domains/
+    auth_store.py）只能把它降级为**进程内**写锁，文件头写明「跨进程一致性由 PG
+    行锁 / 唯一约束兜底」。支付回调的重放/并发来自微信重推、客户端确认、兜底查单
+    线程，可能落在不同进程里 —— 所以每条「先读订单状态、再决定是否入账」的路径在
+    PG 下都必须显式加 ``FOR UPDATE``，否则两边都读到旧状态、各记一笔流水
+    （实证见 scripts/pay_idempotency_stress.py 场景 B/C/G）。
+    """
+    return " FOR UPDATE" if getattr(conn, "dialect", None) == "postgres" else ""
+
+
+def _select_locked(conn, sql, params):
+    """加行锁的行读；SQLite 路径逐字节不变（不追加后缀）。"""
+    return conn.execute(sql + _row_lock_suffix(conn), params).fetchone()
+
+
+_PAYMENT_DUPLICATE_ERRORS = (sqlite3.IntegrityError, _auth_store.IntegrityError)
+
+
 def deduct_points(username, amount, reason="", transaction_key="", apply_balance=True):
     """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
 
@@ -3784,7 +3805,9 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        order = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
+        # PG 下锁订单行：pending -> approved 的状态机是入账幂等护栏，必须在事务里
+        # 读到别人已提交的最新状态（重复回调/管理员重复点审批都靠它）。
+        order = _select_locked(c, "SELECT * FROM recharge_orders WHERE order_id=?", (order_id,))
         if not order:
             c.rollback()
             return None, "not_found"
@@ -3801,7 +3824,8 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
                 return None, "transaction_in_use"
         now = int(time.time())
         if action == "approve":
-            user = c.execute("SELECT * FROM users WHERE username=?", (order["username"],)).fetchone()
+            # 锁用户行：余额快照 + 读改写与并发的其它入账串行（丢失更新防护）。
+            user = _select_locked(c, "SELECT * FROM users WHERE username=?", (order["username"],))
             if not user:
                 c.rollback()
                 return None, "user_not_found"
@@ -3817,11 +3841,9 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
             after = before + delta
             if delta:
                 c.execute("UPDATE users SET points=? WHERE username=?", (after, order["username"]))
-                c.execute(
-                    """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
-                       VALUES(?,?,?,?,?,?,?)""",
-                    (who_admin, order["username"], delta, before, after, "充值审批: %s %s" % (order_id, reason), now),
-                )
+                _write_audit(c, who_admin, order["username"], delta, before, after,
+                             "充值审批: %s %s" % (order_id, reason),
+                             "recharge-approve:" + order_id)
             if order_type in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
                 _, membership_err = _activate_experience_membership(
                     c, order["username"], who_admin,
@@ -3845,6 +3867,11 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
         row = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
         c.commit()
         return public_recharge_order(row), None
+    except _PAYMENT_DUPLICATE_ERRORS:
+        # transaction_id / transaction_key 唯一索引挡下「同一笔微信流水审批两张单」：
+        # 并发的第二笔在这里退化为明确错误，订单保持 pending 待人工核对。
+        c.rollback()
+        return None, "transaction_in_use"
     except Exception:
         c.rollback()
         raise
@@ -4215,7 +4242,10 @@ def confirm_virtual_pay_order(username, order_id, verified_wx_order=None):
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        fresh = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=? AND username=?", (order_id, username)).fetchone()
+        # PG 下锁订单行：状态机就是幂等护栏，必须在事务里读到别人已提交的最新状态。
+        fresh = _select_locked(
+            c, "SELECT * FROM virtual_pay_orders WHERE order_id=? AND username=?",
+            (order_id, username))
         if not fresh:
             c.rollback()
             return None, "not_found"
@@ -4223,7 +4253,9 @@ def confirm_virtual_pay_order(username, order_id, verified_wx_order=None):
             c.rollback()
             return public_virtual_pay_order(fresh), None
         if fresh["status"] != "credited":
-            user = c.execute("SELECT points FROM users WHERE username=?", (username,)).fetchone()
+            # 锁用户行：余额快照和「读-改-写」必须与并发的其它入账串行，
+            # 否则同用户两笔订单会互相覆盖（丢失更新）。
+            user = _select_locked(c, "SELECT points FROM users WHERE username=?", (username,))
             if not user:
                 c.rollback()
                 return None, "user_not_found"
@@ -4233,7 +4265,9 @@ def confirm_virtual_pay_order(username, order_id, verified_wx_order=None):
             now = int(time.time())
             if delta:
                 c.execute("UPDATE users SET points=? WHERE username=?", (after, username))
-                _write_audit(c, SYSTEM_ACTOR, username, delta, before, after, "微信虚拟支付: " + order_id)
+                _write_audit(c, SYSTEM_ACTOR, username, delta, before, after,
+                             "微信虚拟支付: " + order_id,
+                             "virtual-pay-credit:" + order_id)
             if (fresh["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
                 _, membership_err = _activate_experience_membership(
                     c, username, SYSTEM_ACTOR,
@@ -4252,6 +4286,12 @@ def confirm_virtual_pay_order(username, order_id, verified_wx_order=None):
                  str(wx_order.get("wxpay_order_id") or ""), json.dumps(wx_order, ensure_ascii=False), order_id),
             )
         c.commit()
+    except _PAYMENT_DUPLICATE_ERRORS:
+        # 同一笔支付已被并发的另一事务入账：transaction_key 唯一索引把它挡在数据库层，
+        # 这里退化成「幂等返回」，绝不重复加点。
+        c.rollback()
+        fresh = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone()
+        return (public_virtual_pay_order(fresh), None) if fresh else (None, "not_found")
     except Exception:
         c.rollback()
         raise
@@ -4384,7 +4424,7 @@ def _revert_membership_order(c, order, now):
         "SELECT * FROM membership_recharge_records WHERE request_id=?",
         ("membership-order:" + order_id,),
     ).fetchone()
-    user = c.execute("SELECT * FROM users WHERE username=?", (order["username"],)).fetchone()
+    user = _select_locked(c, "SELECT * FROM users WHERE username=?", (order["username"],))
     if not recharge or not user or int(user["membership_expires_at"] or 0) != int(recharge["after_expires_at"] or 0):
         return "refund_review", "退款不覆盖后续会员变更，需人工核对权益"
     points = int(order["points"] or 0)
@@ -4423,6 +4463,7 @@ def _revert_membership_order(c, order, now):
             _write_audit(
                 c, SYSTEM_ACTOR, order["username"], -points, before_points, before_points - points,
                 "会员首购退款: " + order_id,
+                "membership-refund:" + order_id,
             )
         c.execute(
             "UPDATE users SET membership_tier='',membership_started_at=NULL,membership_expires_at=NULL WHERE username=?",
@@ -4441,7 +4482,7 @@ def refund_recharge_order(order_id, refund):
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        order = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (str(order_id or ""),)).fetchone()
+        order = _select_locked(c, "SELECT * FROM recharge_orders WHERE order_id=?", (str(order_id or ""),))
         if not order:
             c.rollback()
             return None, "not_found"
@@ -4465,14 +4506,16 @@ def refund_recharge_order(order_id, refund):
         elif (order["order_type"] or "points") in (MEMBERSHIP_ORDER_TYPE, MEMBERSHIP_RENEWAL_ORDER_TYPE):
             status, detail = _revert_membership_order(c, order, int(time.time()))
         else:
-            user = c.execute("SELECT points FROM users WHERE username=?", (order["username"],)).fetchone()
+            user = _select_locked(c, "SELECT points FROM users WHERE username=?", (order["username"],))
             points = int(order["points"] or 0)
             if not user or int(user["points"] or 0) < points:
                 status, detail = "refund_review", "点数余额不足，需人工核对退款"
             else:
                 before = int(user["points"] or 0)
                 c.execute("UPDATE users SET points=? WHERE username=?", (before - points, order["username"]))
-                _write_audit(c, SYSTEM_ACTOR, order["username"], -points, before, before - points, "微信支付退款: " + order["order_id"])
+                _write_audit(c, SYSTEM_ACTOR, order["username"], -points, before, before - points,
+                             "微信支付退款: " + order["order_id"],
+                             "recharge-refund:" + order["order_id"])
                 status, detail = "refunded", ""
         c.execute(
             "UPDATE recharge_orders SET status=?,reviewed_by=?,reviewed_at=?,review_note=? WHERE order_id=?",
@@ -4484,6 +4527,9 @@ def refund_recharge_order(order_id, refund):
     except (TypeError, ValueError):
         c.rollback()
         return None, "refund_mismatch"
+    except _PAYMENT_DUPLICATE_ERRORS:
+        c.rollback()
+        return None, "transaction_in_use"
     except Exception:
         c.rollback()
         raise
@@ -4498,7 +4544,7 @@ def refund_virtual_pay_order(message):
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        fresh = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (row["order_id"],)).fetchone()
+        fresh = _select_locked(c, "SELECT * FROM virtual_pay_orders WHERE order_id=?", (row["order_id"],))
         if not fresh:
             c.rollback()
             return None, "not_found"
@@ -4513,7 +4559,7 @@ def refund_virtual_pay_order(message):
             c.commit()
             return public_virtual_pay_order(final), None
         if fresh["status"] == "credited":
-            user = c.execute("SELECT points FROM users WHERE username=?", (fresh["username"],)).fetchone()
+            user = _select_locked(c, "SELECT points FROM users WHERE username=?", (fresh["username"],))
             if not user:
                 c.rollback()
                 return None, "user_not_found"
@@ -4524,6 +4570,7 @@ def refund_virtual_pay_order(message):
             _write_audit(
                 c, SYSTEM_ACTOR, fresh["username"], delta, before, after,
                 "微信虚拟支付退款: " + fresh["order_id"],
+                "virtual-pay-refund:" + fresh["order_id"],
             )
         c.execute(
             "UPDATE virtual_pay_orders SET status='refunded',last_error='' WHERE order_id=?",
@@ -4532,6 +4579,9 @@ def refund_virtual_pay_order(message):
         final = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (fresh["order_id"],)).fetchone()
         c.commit()
         return public_virtual_pay_order(final), None
+    except _PAYMENT_DUPLICATE_ERRORS:
+        c.rollback()
+        return None, "transaction_in_use"
     except Exception:
         c.rollback()
         raise
