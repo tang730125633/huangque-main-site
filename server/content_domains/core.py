@@ -4318,6 +4318,9 @@ class H(BaseHTTPRequestHandler):
                         allow_shared_materials=(
                             matrix_template_domain.shared_materials_allowed(user)
                         ),
+                        public_only_materials=(
+                            matrix_template_domain.public_only_materials(user)
+                        ),
                     )
                 elif kind == "breakdown":
                     from . import breakdown as breakdown_domain

@@ -8464,6 +8464,15 @@ class H(BaseHTTPRequestHandler):
             try:
                 card = c.execute("SELECT avatar_key FROM business_cards WHERE user_id=?", (row["id"],)).fetchone()
                 user["avatar"] = business_cards._media_url(card["avatar_key"]) if card else ""
+                try:
+                    # 素材范围标记（2026-09-17）：一次性邀请码注册的账号只能用
+                    # 公网素材（content-api 据此下发 material_scope）。查询异常
+                    # 按「不受限」处理并打日志（fail-open，不阻塞登录）。
+                    user["single_use_invite"] = invites.single_use_invite_bound(c, row["id"])
+                except Exception as exc:
+                    print("[auth] single_use_invite 查询失败（按不受限处理）：%s"
+                          % str(exc)[:160], flush=True)
+                    user["single_use_invite"] = False
             finally:
                 c.close()
             user["initial_password"] = initial_password_change_required(row)
