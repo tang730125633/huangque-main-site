@@ -74,6 +74,7 @@ test('unknown provider category stays explicit',()=>{
 });
 test('admin scripts parse together and channel entry is unique',()=>{
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
+  assert.match(html,/\.cm-business-tabs\{[^}]*overflow-x:auto;overflow-y:hidden[^}]*\}/);
   for(const m of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))if(m[1].trim())new vm.Script(m[1]);
   for(const file of ['channel-workspace.js','channel-manager.js'])new vm.Script(fs.readFileSync(path.join(__dirname,'../site/admin',file),'utf8'));
   assert.equal((html.match(/data-module-tab="managedChannels"/g)||[]).length,1);
