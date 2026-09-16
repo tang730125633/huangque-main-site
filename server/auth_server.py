@@ -5934,7 +5934,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
-        if _is_growth_request(p) and not feature_flags.growth_program_enabled():
+        # 批量生成注册准入码（一次性邀请码）随注册机制开放，不受 growth 开关约束
+        # （2026-09-17 老板发首批 100 人的需求；与 config 同一「注册准入」性质）。
+        if p != "/api/auth/admin/invite/codes" and _is_growth_request(p) and not feature_flags.growth_program_enabled():
             return self._send(503, {
                 "detail": "内测期间拉新与奖励活动暂不开放",
                 "code": "growth_program_disabled",
@@ -7698,6 +7700,40 @@ class H(BaseHTTPRequestHandler):
             if err == "not_found":
                 return self._send(404, {"detail": "好友申请不存在"})
             return self._send(200, {"ok": True, **data})
+        if p == "/api/auth/admin/invite/codes":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            c = db()
+            try:
+                inviter_username = str(d.get("inviter_username") or "").strip()
+                inviter_id = int(admin["id"])
+                if inviter_username and inviter_username != admin["username"]:
+                    row = c.execute(
+                        "SELECT id FROM users WHERE username=?", (inviter_username,)
+                    ).fetchone()
+                    if not row:
+                        raise invites.InviteError(
+                            "inviter_not_found", "邀请人账号不存在", 404)
+                    inviter_id = int(row["id"])
+                batch = invites.admin_bulk_create_codes(
+                    c, inviter_id, d.get("count"), d.get("batch_label") or "",
+                )
+                c.commit()
+                return self._send(200, {"ok": True, "batch": batch})
+            except invites.InviteError as exc:
+                c.rollback()
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "邀请码生成失败"})
+            finally:
+                c.close()
         self._send(404, {"detail": "not found"})
 
     def do_PUT(self):

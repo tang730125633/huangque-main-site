@@ -70,11 +70,23 @@ def init_schema(conn, now=None):
         code TEXT NOT NULL UNIQUE,
         short_slug TEXT,
         status TEXT NOT NULL DEFAULT 'active',
+        single_use INTEGER NOT NULL DEFAULT 0,
+        batch_label TEXT,
         created_at INTEGER NOT NULL
     )""")
+    # 老库索引条件是只按 status='active'（一人一 active 码）：
+    # 一次性邀请码允许一人多个 active 码，必须重建为加 single_use=0 的版本。
+    conn.execute("DROP INDEX IF EXISTS idx_invite_codes_active_user")
     conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_codes_active_user
-                    ON invite_codes(campaign_id, inviter_user_id) WHERE status='active'""")
+                    ON invite_codes(campaign_id, inviter_user_id)
+                    WHERE status='active' AND single_use=0""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_invite_codes_lookup ON invite_codes(code, status)")
+    # 老 SQLite 库补列（2026-09-17 一次性邀请码批次功能）
+    code_cols = {row["name"] for row in conn.execute("PRAGMA table_info(invite_codes)").fetchall()}
+    if "single_use" not in code_cols:
+        conn.execute("ALTER TABLE invite_codes ADD COLUMN single_use INTEGER NOT NULL DEFAULT 0")
+    if "batch_label" not in code_cols:
+        conn.execute("ALTER TABLE invite_codes ADD COLUMN batch_label TEXT")
     conn.execute("""CREATE TABLE IF NOT EXISTS user_invites(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         campaign_id INTEGER NOT NULL,
@@ -1044,6 +1056,48 @@ def ensure_user_code(conn, user_id, now=None, enforce_membership=True):
     return conn.execute("SELECT * FROM invite_codes WHERE code=?", (code,)).fetchone()
 
 
+def admin_bulk_create_codes(conn, inviter_user_id, count, batch_label="", now=None):
+    """管理员批量生成「一次性」邀请码：一码一人，注册绑定后即作废（status='used'）。
+
+    与 ensure_user_code 的永久码（一人一个、可反复使用）并存：
+    唯一索引只约束 permanent 码（single_use=0），一次性码不限数量。
+    """
+    now = int(now or time.time())
+    try:
+        count = int(count or 0)
+    except (TypeError, ValueError):
+        raise InviteError("invalid_count", "邀请码数量无效", 400)
+    if not 1 <= count <= 1000:
+        raise InviteError("invalid_count", "一次生成 1~1000 个邀请码", 400)
+    campaign = _active_campaign(conn, now)
+    if not campaign:
+        raise InviteError("campaign_inactive", "邀请活动当前未开启", 409)
+    inviter = conn.execute(
+        "SELECT id FROM users WHERE id=? AND COALESCE(account_status,'active')='active'",
+        (int(inviter_user_id),),
+    ).fetchone()
+    if not inviter:
+        raise InviteError("inviter_ineligible", "邀请人不存在或账号状态异常", 403)
+    label = str(batch_label or "").strip()[:80]
+    codes = []
+    for _ in range(count):
+        code = _new_code(conn)
+        conn.execute(
+            """INSERT INTO invite_codes(campaign_id,inviter_user_id,code,status,single_use,batch_label,created_at)
+               VALUES(?,?,?,'active',1,?,?)""",
+            (campaign["id"], int(inviter_user_id), code, label, now),
+        )
+        codes.append(code)
+    return {
+        "campaign_id": campaign["id"],
+        "inviter_user_id": int(inviter_user_id),
+        "batch_label": label,
+        "count": len(codes),
+        "codes": codes,
+        "created_at": now,
+    }
+
+
 def rotate_user_code(conn, user_id, now=None, enforce_membership=True):
     now = int(now or time.time())
     campaign = _active_campaign(conn, now)
@@ -1073,10 +1127,13 @@ def validate_code(conn, code, now=None, enforce_membership=True):
                            FROM invite_codes ic
                            JOIN invite_campaigns c ON c.id=ic.campaign_id
                            JOIN users u ON u.id=ic.inviter_user_id
-                           WHERE ic.code=? AND ic.status='active'
+                           WHERE ic.code=? AND ic.status IN ('active','used')
                              AND COALESCE(u.account_status,'active')='active'""", (code,)).fetchone()
     if not row:
         raise InviteError("invalid_code", "邀请码无效", 404)
+    if row["status"] != "active":
+        # 一次性码被用过：明确提示而不是笼统的「无效」
+        raise InviteError("code_used", "该邀请码已被使用，请更换邀请码", 409)
     if row["campaign_status"] != "enabled":
         raise InviteError("campaign_inactive", "邀请活动当前未开启", 409)
     if row["start_at"] is not None and int(row["start_at"]) > now:
@@ -1152,6 +1209,14 @@ def bind_registration(conn, invitee_user_id, invite_code, source, client_ip="", 
         ).fetchone()[0]
         if int(same_ip_today) >= max(1, IP_REVIEW_THRESHOLD):
             risk_status = "review"
+    # 一次性码：先原子占用（一码一人），占用失败即拒绝（2026-09-17 批量邀请码功能）。
+    if int(invite["single_use"] or 0):
+        cur = conn.execute(
+            "UPDATE invite_codes SET status='used' WHERE id=? AND status='active'",
+            (invite["id"],),
+        )
+        if int(cur.rowcount or 0) != 1:
+            raise InviteError("code_used", "该邀请码已被使用，请更换邀请码", 409)
     conn.execute("""INSERT INTO user_invites(
         campaign_id,inviter_user_id,invitee_user_id,invite_code,source,status,risk_status,
         bound_at,ip_hash,device_hash,updated_at
