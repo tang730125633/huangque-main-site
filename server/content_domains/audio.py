@@ -1282,6 +1282,14 @@ def list_audio_voices(username):
         )
         items.append(item)
     _schedule_public_preview_warmup(items)
+    # 音色试听样音也在 COS 私有桶：实时补签名（否则预览 403）
+    try:
+        if cos.enabled():
+            for item in items:
+                if item.get("preview_file") and str(item.get("preview_url") or "").startswith("http"):
+                    item["preview_url"] = cos.object_url(item["preview_file"], private=True)
+    except Exception as e:
+        print("[audio-voices] COS 签名刷新失败: %s" % e, flush=True)
     return items
 
 def rename_audio_voice(username, slot_id, display_name):
@@ -1323,7 +1331,16 @@ def list_audio_assets(username, limit=120, offset=0):
             LEFT JOIN audio_voices v ON v.id = a.voice_id
             WHERE a.username=? AND COALESCE(a.deleted,0)=0
             ORDER BY a.id DESC LIMIT ? OFFSET ?""", (username, limit, offset)).fetchall()
-    return [dict(r) for r in rows]
+    items = [dict(r) for r in rows]
+    # COS 私有桶直链无签名必 403：素材库音频列表实时补签名（与视频资产一致）
+    try:
+        if cos.enabled():
+            for item in items:
+                if item.get("file") and str(item.get("url") or "").startswith("http"):
+                    item["url"] = cos.object_url(item["file"], private=True)
+    except Exception as e:
+        print("[audio-assets] COS 签名刷新失败: %s" % e, flush=True)
+    return items
 
 
 def get_audio_asset_by_job(username, job_id):
