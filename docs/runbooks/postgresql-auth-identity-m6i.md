@@ -264,7 +264,11 @@ HQ_DATABASE_URL=… python3 -m unittest discover -s tests -p 'test_auth_identity
 8. SQLite 归档：确认无进程再打开后改名保留（**不删除**）——
    `sudo lsof /home/ubuntu/auth-service/users.db` 必须为空。
 
-## 回滚（秒级）
+## 回滚（灾难兜底，非日常手段）
+
+> 主权威策略（老板 2026-09-16 定调）：大规模用户测试开放后 PostgreSQL 是不可逆
+> 主权威，出问题**优先修 PG**。本节的回滚动作仅在 PG 不可服务且修复不可行时、
+> **经老板批准**执行；脚本侧 `m6-cutover.sh rollback` 不带 `--force` 直接拒绝。
 
 - **秒级**：把 `auth.env` 的 `HQ_IDENTITY_STORE` 改回 `sqlite`（或删除该行），
   `sudo systemctl restart huangque-auth`，并按第 4 步恢复

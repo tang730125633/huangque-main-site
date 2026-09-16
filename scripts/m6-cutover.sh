@@ -3,8 +3,13 @@
 #
 # 用法：
 #   m6-cutover.sh cutover [--force]   切写（默认要求 23:00-05:30）
-#   m6-cutover.sh rollback            回滚到 sqlite（秒级，SQLite 全程只读保留）
+#   m6-cutover.sh rollback [--force]  回滚到 sqlite（灾难兜底；必须 --force，且经老板批准）
 #   m6-cutover.sh status              现状检查（只读）
+#
+# 主权威纪律（老板 2026-09-16 定调）：
+#   大规模用户测试开放后，PostgreSQL 是不可逆主权威。出问题优先修 PostgreSQL
+#   （修代码/修数据/加索引），不回 SQLite。回滚只作灾难兜底：SQLite 全程只读
+#   保留当证据，仅当 PG 不可服务且修复不可行时、经老板批准用 rollback --force。
 #
 # 纪律：
 #   - 账务零容忍：ledger apply 必须携带当次 verify-balances 的 report_checksum
@@ -192,7 +197,13 @@ PYEOF
 }
 
 do_rollback() {
-    log "回滚开始"
+    if [ "$FORCE" != "--force" ]; then
+        log "拒绝执行回滚：PostgreSQL 是不可逆主权威（老板 2026-09-16 定调）"
+        log "出问题优先修 PostgreSQL，不回 SQLite；回滚仅限灾难兜底（PG 不可服务且修复不可行），需老板批准。"
+        log "确要回滚：m6-cutover.sh rollback --force"
+        exit 1
+    fi
+    log "回滚开始（--force 已确认：灾难兜底）"
     sudo systemctl stop huangque-invite-reward-claims.timer || true
     sudo rm -f "$CLAIMS_DROPIN"
     sudo rm -f "$AUTH_DROPIN"
@@ -207,6 +218,7 @@ do_rollback() {
 
 do_status() {
     log "=== M6 状态 ==="
+    echo "主权威: PostgreSQL（不可逆主权威，回滚仅限灾难兜底 --force）"
     echo "auth drop-in: $([ -f "$AUTH_DROPIN" ] && echo 存在 || echo 无)"
     echo "claims drop-in: $([ -f "$CLAIMS_DROPIN" ] && echo 存在 || echo 无)"
     systemctl is-active huangque-auth huangque-leadgen-api huangque-invite-reward-claims.timer
@@ -221,5 +233,5 @@ case "$MODE" in
     cutover) do_cutover ;;
     rollback) do_rollback ;;
     status) do_status ;;
-    *) echo "用法: $0 {cutover [--force] | rollback | status}"; exit 2 ;;
+    *) echo "用法: $0 {cutover [--force] | rollback [--force] | status}"; exit 2 ;;
 esac

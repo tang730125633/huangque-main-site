@@ -2,8 +2,22 @@
 
 ## 当前状态
 
-本目录只建立 PostgreSQL 连接池、版本化 Schema 和迁移审计表。所有现有业务仍以 SQLite
-为权威；合并本代码不会自动连接、迁移或切换生产数据库。
+PostgreSQL 连接池、版本化 Schema 和迁移审计表已建立。截至 2026-09-16：会话域（M2）、
+flags/obs/channel/admin-config/leads/tikhub/creator 七域（M3A-G）、身份域与账本域（M6）
+均已切写 PostgreSQL；未切域（content_jobs M5、metrics M7）仍以 SQLite 为权威，切写前
+不得改其权威。
+
+## 主权威策略（老板 2026-09-16 晚定调：不可逆主权威）
+
+**一旦开放大规模用户测试，PostgreSQL 就是不可逆主权威。**
+
+- 出问题**优先修 PostgreSQL**：修代码、修数据、加索引、扩连接池，一切朝前修；
+  不轻易切回 SQLite。
+- SQLite 回滚**降级为灾难兜底**：仅在 PG 不可服务且修复不可行时考虑，且必须
+  **老板批准**后才能执行；工具侧回滚命令一律加 `--force` 硬门禁
+  （如 `m6-cutover.sh rollback --force`），不带参数直接拒绝并打印本策略。
+- 已切域的 SQLite 文件全程只读保留，只当证据与比对基线，不再恢复权威。
+- 本条策略适用于全部已切域与后续切写域；违反「不回 SQLite」的处置需要先说服老板。
 
 ## 环境变量
 

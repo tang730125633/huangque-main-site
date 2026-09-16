@@ -228,7 +228,11 @@ python scripts/migrate_auth_ledger.py --source /path/users.db.copy --verify-bala
    `ops.data_migration_runs` 无失败；每日两次余额核对保持 `unexplained = 0`。
 8. 归档：`users.db` 改名保留（不删除），确认无进程再打开（`lsof`）后才谈归档。
 
-## 回滚
+## 回滚（灾难兜底，非日常手段）
+
+> 主权威策略（老板 2026-09-16 定调）：大规模用户测试开放后 PostgreSQL 是不可逆
+> 主权威，出问题**优先修 PG**。本节的回滚动作仅在 PG 不可服务且修复不可行时、
+> **经老板批准**执行；脚本侧 `m6-cutover.sh rollback` 不带 `--force` 直接拒绝。
 
 - 秒级：把 `auth.env`（或 systemd `Environment=`）的 `HQ_LEDGER_STORE` 改回 `sqlite`
   （或删除该行）并重启 `huangque-auth` —— SQLite 全程只读保留，立即回到旧权威。
