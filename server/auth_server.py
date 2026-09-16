@@ -77,7 +77,7 @@ REGISTER_IP_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_IP_WINDOW", "60"))
 REGISTER_IP_MAX = int(os.environ.get("HQ_AUTH_REGISTER_IP_MAX", "20"))
 USERNAME_MAX_LENGTH = 64
 PASSWORD_MAX_LENGTH = 128
-NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 暂时保留新用户注册赠送 16 点
+NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "0"))  # 内测邀请制（2026-09-16 老板定调）：注册不再赠点，积分制度整体移出
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
 # 固定档与自定义均按 10 点/元；自定义限 10~5000 元整。
@@ -1260,6 +1260,9 @@ def user_has_active_membership(username, conn=None, now=None):
 
 def public_user(username, display_name=None, points=0, role='member', must_change=False, account_id=None,
                 membership_tier="", membership_started_at=None, membership_expires_at=None):
+    # 积分制度整体移出（2026-09-16 老板定调）：对外接口一律不再暴露余额，
+    # 数据库台账保留不删（非破坏性），需要恢复时删除这一行即可。
+    points = 0
     data = {
         "username": username,
         "name": display_name or username,
@@ -8536,6 +8539,10 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
 
 if __name__ == "__main__":
+    # 2026-09-16：入口补日志配置，INFO（含 store 权威声明）落 journal，恢复日志观测
+    import logging
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if len(sys.argv) >= 4 and sys.argv[1] == "create-user":
         pts = int(sys.argv[4]) if len(sys.argv) > 4 else 0
         role = sys.argv[5] if len(sys.argv) > 5 else 'member'
