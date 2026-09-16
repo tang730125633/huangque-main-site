@@ -29,7 +29,6 @@ def _take_request_log_user():
 PORT      = int(os.environ.get("LEADGEN_API_PORT", "8100"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
-AUTH_DB   = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")   # 调 auth 内部点数接口用；来自 auth.env
 JOB_DB    = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content_jobs.db")  # 共用 content_api 的任务库
 SERVICE_OWNER = "leadgen"   # 写进 jobs.owner，让 content 的 pending 重排/孤儿回收扫描认出这不是它的活(#511)
@@ -234,10 +233,14 @@ def jdb():
     c = sqlite3.connect(JOB_DB, timeout=10); c.row_factory = sqlite3.Row; return c
 
 def get_points(username):
+    """读余额走 auth 的 internal 接口（M6 切写后 users.db 只读，leadgen 不再直连）。"""
+    if not INTERNAL_TOKEN:
+        return 0
+    url = AUTH_BASE + "/api/auth/points?username=" + urllib.parse.quote(str(username or ""))
+    req = urllib.request.Request(url, headers={"X-HQ-Internal-Token": INTERNAL_TOKEN})
     try:
-        with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            r = c.execute("SELECT points FROM users WHERE username=?", (username,)).fetchone()
-            return r[0] if r else 0
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return int((json.loads(r.read() or b"{}") or {}).get("points") or 0)
     except Exception:
         return 0
 
@@ -282,27 +285,6 @@ def _deduct_paid_job(username, amount, reason, transaction_key=""):
         raise jobs_store.PaidJobDeductError(status, (data or {}).get("detail") or "点数扣除失败")
     return int((data or {}).get("points") or 0)
 
-def _add_points_direct(username, delta):
-    """兜底：直接写 users.db。无事务保护、不进 points_audit —— 只在 auth 不可用时用。
-
-    扣点(delta<0)必须带 points >= 需扣数 的条件，否则 MAX(0, ...) 会把余额不足的用户
-    硬扣到 0 且静默成功。返回是否真正生效。
-    """
-    if not feature_flags.points_billing_enabled():
-        return True
-    try:
-        with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            if delta < 0:
-                cur = c.execute("UPDATE users SET points = points + ? WHERE username=? AND points >= ?",
-                                (delta, username, -delta))
-            else:
-                cur = c.execute("UPDATE users SET points = points + ? WHERE username=?", (delta, username))
-            c.commit()
-            return cur.rowcount == 1
-    except Exception as e:
-        print("[leadgen] 直写 users.db 失败 user=%s delta=%s: %s" % (username, delta, e), flush=True)
-        return False
-
 def add_points(username, delta, reason="", transaction_key=""):
     """加/减点数。delta>0 退点走 auth 的 /refund，delta<0 扣点走 /deduct。
 
@@ -310,8 +292,9 @@ def add_points(username, delta, reason="", transaction_key=""):
     auth 的两个端点都校验 `amount >= 0`，所以必须按符号分流到不同端点、并传绝对值，
     否则扣点会拿到 400 而被误当成「auth 故障」。
 
-    auth 不可用时回退直写 users.db：宁可审计缺一条，也不能把用户的点吞了。
-    但「点数不足」(402) 是业务结论而非故障，绝不回退——回退等于绕过余额校验硬扣。
+    M6 切写后 users.db 是只读回退锚点：auth 接口失败一律返回 False（扣点=任务
+    失败稍后重试；带稳定退款键的退点保留待确认态，绝不本地直写造成双权威分叉）。
+    「点数不足」(402) 是业务结论而非故障，同样返回 False。
     返回是否真正生效（扣点余额不足时为 False）。
     """
     delta = int(delta or 0)
@@ -322,18 +305,17 @@ def add_points(username, delta, reason="", transaction_key=""):
     else:
         status, data = deduct_points(username, -delta, reason)
         if status in (402, 403):
-            return False   # 点数不足或无有效会员：业务拒绝，绝不能回退直写绕过
+            return False   # 点数不足或无有效会员：业务拒绝
     if status == 200:
         return True
-    # 稳定退款键说明这是一笔可重试的任务退款。Auth 可能已提交、只丢了 HTTP 响应；
-    # 此时再直写 users.db 会双退，必须返回失败并保持退款待确认态。
     if delta > 0 and transaction_key:
-        print("[leadgen] auth 任务退款未确认(delta=%s status=%s)，保留重试，不直写 users.db"
-              % (delta, status), flush=True)
+        # 稳定退款键说明这是一笔可重试的任务退款。Auth 可能已提交、只丢了 HTTP
+        # 响应；此时再写库会双退，必须返回失败并保持退款待确认态。
+        print("[leadgen] auth 任务退款未确认(delta=%s status=%s)，保留重试" % (delta, status), flush=True)
         return False
-    print("[leadgen] auth 点数接口失败(delta=%s status=%s detail=%s)，回退直写 users.db；本次不进 points_audit"
+    print("[leadgen] auth 点数接口失败(delta=%s status=%s detail=%s)，放弃本地直写（users.db 只读）"
           % (delta, status, (data or {}).get("detail")), flush=True)
-    return _add_points_direct(username, delta)
+    return False
 
 def verify(token):
     _request_log_user.username = ""

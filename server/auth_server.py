@@ -47,6 +47,12 @@ try:
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     from content_domains import pricing, error_contract, feature_flags
 
+# PG 完整性冲突的等价异常（auth_store 纯 PG 后端，import 无副作用且不连库）。
+try:
+    from .content_domains import auth_store as _auth_store
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    from content_domains import auth_store as _auth_store
+
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
@@ -302,12 +308,27 @@ def _canvas_sync_wait_release(username):
     _CANVAS_SYNC_WAIT_SEMAPHORE.release()
 
 def db():
+    # M6 切写分发：两开关任一为 postgres 时走 PG 后端（users 与 points_audit
+    # 跨域事务要求同库同权威）；都默认 sqlite 时逐字节走原路径（不 import
+    # auth_store，零耦合）。非法值显式报错，绝不静默降级。
+    identity = (os.environ.get("HQ_IDENTITY_STORE") or "sqlite").strip().lower()
+    ledger = (os.environ.get("HQ_LEDGER_STORE") or "sqlite").strip().lower()
+    for name, value in (("HQ_IDENTITY_STORE", identity), ("HQ_LEDGER_STORE", ledger)):
+        if value not in ("sqlite", "postgres"):
+            raise RuntimeError("%s must be sqlite or postgres" % name)
+    if identity == "postgres" or ledger == "postgres":
+        return _auth_store.connect()
     c = sqlite3.connect(DB, timeout=10)
     c.row_factory = sqlite3.Row
     return c
 
+
 def init_db():
     c = db()
+    if getattr(c, "dialect", None) == "postgres":
+        # PG 模式下 schema 由 alembic（20260916_0011/0012）管理，不在这里建表。
+        c.close()
+        return
     c.execute("""CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE NOT NULL,
@@ -997,7 +1018,7 @@ def register_account(username, password, display_name=None, invite_code="", invi
     except business_cards.CardError as exc:
         c.rollback()
         return None, {"status": exc.status, "code": exc.code, "detail": exc.detail}
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, _auth_store.IntegrityError):
         c.rollback()
         return None, {"status": 409, "code": "username_exists", "detail": "账号已存在"}
     except Exception:
@@ -1140,7 +1161,7 @@ def register_miniprogram_card(wx_code, phone, card, device_id, invite_code="", i
     except business_cards.CardError as exc:
         c.rollback()
         return None, {"status": exc.status, "code": exc.code, "detail": exc.detail}
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, _auth_store.IntegrityError):
         c.rollback()
         return None, {"status": 409, "code": "account_exists", "detail": "该手机号已有账号，请使用账号登录"}
     except Exception:
@@ -1319,7 +1340,7 @@ def add_friend_by_account_id(username, account_id):
             c.execute("""INSERT INTO friendships(username, friend_username, created_at)
                          VALUES(?,?,?)""", (username, friend["username"], int(time.time())))
             c.commit()
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, _auth_store.IntegrityError):
             return public_friend({
                 "username": friend["username"],
                 "display_name": friend["display_name"],
@@ -1402,7 +1423,7 @@ def create_friend_request(username, account_id):
             c.execute("""INSERT INTO friend_requests(from_username, to_username, status, created_at)
                          VALUES(?,?,?,?)""", (username, friend["username"], "pending", int(time.time())))
             c.commit()
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, _auth_store.IntegrityError):
             return None, "pending"
         return list_friend_requests(username), None
     finally:
@@ -1679,8 +1700,10 @@ def save_canvas_board(username, board_id, payload):
         c.execute("""INSERT INTO canvas_ops(board_id, version, op_id, client_id, username, ops_json, created_at)
                      VALUES(?,?,?,?,?,?,?)""",
                   (board_id, current_version + 1, "save-" + secrets.token_hex(8), "server", username, snapshot_ops, now))
-        c.execute("""DELETE FROM canvas_ops WHERE rowid IN (
-                     SELECT rowid FROM canvas_ops WHERE board_id=?
+        # canvas_ops 主键是 (board_id, version)：保留最新 N 批以外全部删除。
+        # row-value IN 在 SQLite 与 PG 都支持（PG 的 LIMIT -1 由 auth_store 翻译）。
+        c.execute("""DELETE FROM canvas_ops WHERE (board_id, version) IN (
+                     SELECT board_id, version FROM canvas_ops WHERE board_id=?
                      ORDER BY version DESC LIMIT -1 OFFSET ?
                    )""", (board_id, CANVAS_OPS_RETAINED_BATCHES))
         fresh = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
@@ -1999,8 +2022,10 @@ def apply_canvas_ops(username, board_id, payload, cli_safe=False):
         c.execute("""INSERT INTO canvas_ops(board_id, version, op_id, client_id, username, ops_json, created_at)
                      VALUES(?,?,?,?,?,?,?)""",
                   (board_id, version, normalized["op_id"], normalized["client_id"], username, ops_json, now))
-        c.execute("""DELETE FROM canvas_ops WHERE rowid IN (
-                     SELECT rowid FROM canvas_ops WHERE board_id=?
+        # canvas_ops 主键是 (board_id, version)：保留最新 N 批以外全部删除。
+        # row-value IN 在 SQLite 与 PG 都支持（PG 的 LIMIT -1 由 auth_store 翻译）。
+        c.execute("""DELETE FROM canvas_ops WHERE (board_id, version) IN (
+                     SELECT board_id, version FROM canvas_ops WHERE board_id=?
                      ORDER BY version DESC LIMIT -1 OFFSET ?
                    )""", (board_id, CANVAS_OPS_RETAINED_BATCHES))
         batch = {
@@ -4107,7 +4132,7 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
         row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone()
         c.commit()
         return {"order": public_virtual_pay_order(row), "payment": payment}, None
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, _auth_store.IntegrityError):
         c.rollback()
         return None, "conflict"
     except Exception:

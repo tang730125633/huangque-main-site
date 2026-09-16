@@ -1864,6 +1864,9 @@ class CLIAPIError(Exception):
 
 
 def init_schema(connection):
+    if getattr(connection, "dialect", None) == "postgres":
+        # PG 模式下 schema 由 alembic（20260916_0011/0012）管理，不在这里建表。
+        return
     connection.execute("""CREATE TABLE IF NOT EXISTS cli_device_grants(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         device_code_hash TEXT NOT NULL UNIQUE,

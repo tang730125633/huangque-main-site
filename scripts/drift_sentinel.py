@@ -87,6 +87,8 @@ AUTH_SHARED_RUNTIME = {
     # feature_flags/pricing 切换 PG 后的新依赖；漏部署 = auth 起来就 import 失败。
     'server/content_domains/flags_store.py': '/home/ubuntu/auth-service/content_domains/flags_store.py',
     'server/content_domains/error_contract.py': '/home/ubuntu/auth-service/content_domains/error_contract.py',
+    # M6 切写：identity/ledger 的 PG 后端；漏部署 = auth 切 PG 后 db() 分发直接抛错。
+    'server/content_domains/auth_store.py': '/home/ubuntu/auth-service/content_domains/auth_store.py',
 }
 SYSTEMD_DIR = os.environ.get('HQ_SYSTEMD_DIR', '/etc/systemd/system')
 

@@ -48,6 +48,9 @@ class InviteError(Exception):
 
 
 def init_schema(conn, now=None):
+    if getattr(conn, "dialect", None) == "postgres":
+        # PG 模式下 schema 由 alembic（20260916_0011/0012）管理，不在这里建表。
+        return
     now = int(now or time.time())
     conn.execute("""CREATE TABLE IF NOT EXISTS invite_campaigns(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -670,11 +673,14 @@ def _eligible_ancestor(conn, claim, now, max_depth=100):
 def expire_pending_claims(conn, now=None, limit=100):
     now = int(now or time.time())
     limit = max(1, min(int(limit or 100), 500))
-    rows = conn.execute(
+    select_sql = (
         """SELECT * FROM invite_reward_claims
-            WHERE status='pending_upgrade' AND expires_at<? ORDER BY id LIMIT ?""",
-        (now, limit),
-    ).fetchall()
+            WHERE status='pending_upgrade' AND expires_at<? ORDER BY id LIMIT ?"""
+    )
+    if getattr(conn, "dialect", None) == "postgres":
+        # PG 下锁定待处理行，防止 claim 脚本与 auth 进程并发结算同一笔奖励。
+        select_sql += " FOR UPDATE"
+    rows = conn.execute(select_sql, (now, limit)).fetchall()
     summary = {"processed": 0, "transferred": 0, "no_recipient": 0}
     for claim in rows:
         recipient_id, depth = _eligible_ancestor(conn, claim, now)
@@ -1325,8 +1331,15 @@ def admin_stats(conn, days=30, now=None):
         COUNT(DISTINCT inviter_user_id) AS inviters
         FROM user_invites""").fetchone()
     today = conn.execute("SELECT COUNT(*) FROM user_invites WHERE bound_at>=?", (day_start(now),)).fetchone()[0]
-    rows = conn.execute("""SELECT strftime('%Y-%m-%d',bound_at,'unixepoch','localtime') AS day,COUNT(*) AS count
-                           FROM user_invites WHERE bound_at>=? GROUP BY day ORDER BY day""", (since,)).fetchall()
+    if getattr(conn, "dialect", None) == "postgres":
+        # SQLite 的 strftime(...,'unixepoch','localtime') = 服务器时区 Asia/Shanghai。
+        day_expr = "to_char(to_timestamp(bound_at) AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')"
+    else:
+        day_expr = "strftime('%Y-%m-%d',bound_at,'unixepoch','localtime')"
+    rows = conn.execute(
+        "SELECT %s AS day,COUNT(*) AS count FROM user_invites WHERE bound_at>=? GROUP BY day ORDER BY day"
+        % day_expr, (since,),
+    ).fetchall()
     series_map = {row["day"]: int(row["count"]) for row in rows}
     series = []
     start_date = datetime.datetime.fromtimestamp(since, SHANGHAI).date()

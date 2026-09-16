@@ -19,9 +19,34 @@ except ModuleNotFoundError as exc:
     import invites  # noqa: E402
 
 
-def process(database, now=None, limit=100):
+def _auth_store():
+    """惰性 import PG 后端（生产平铺目录 / git 包布局双路径）。"""
+    try:
+        from server.content_domains import auth_store
+        return auth_store
+    except ModuleNotFoundError as exc:
+        if exc.name not in ("server", "server.content_domains"):
+            raise
+        from content_domains import auth_store
+        return auth_store
+
+
+def _open_db(database):
+    """M6 切写分发：两开关任一为 postgres 时走 PG 后端，否则原样走 SQLite。"""
+    identity = (os.environ.get("HQ_IDENTITY_STORE") or "sqlite").strip().lower()
+    ledger = (os.environ.get("HQ_LEDGER_STORE") or "sqlite").strip().lower()
+    for name, value in (("HQ_IDENTITY_STORE", identity), ("HQ_LEDGER_STORE", ledger)):
+        if value not in ("sqlite", "postgres"):
+            raise RuntimeError("%s must be sqlite or postgres" % name)
+    if identity == "postgres" or ledger == "postgres":
+        return _auth_store().connect()
     conn = sqlite3.connect(database, timeout=30)
     conn.row_factory = sqlite3.Row
+    return conn
+
+
+def process(database, now=None, limit=100):
+    conn = _open_db(database)
     try:
         conn.execute("BEGIN IMMEDIATE")
         invites.init_schema(conn, now=now)

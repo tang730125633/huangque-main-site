@@ -158,6 +158,9 @@ def convert_referral_journey(conn, attribution, registered_user_id, relation_id,
 
 
 def init_schema(conn):
+    if getattr(conn, "dialect", None) == "postgres":
+        # PG 模式下 schema 由 alembic（20260916_0011/0012）管理，不在这里建表。
+        return
     conn.execute("""CREATE TABLE IF NOT EXISTS business_cards(
         user_id INTEGER PRIMARY KEY, public_id TEXT NOT NULL UNIQUE,
         miniprogram_openid TEXT,
