@@ -1752,9 +1752,9 @@ def _creator_pdf_download_catalog_entry():
 
 
 ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
-    _upload_catalog_entry("image-upload", "image", 10 * 1024 * 1024,
+    _upload_catalog_entry("image-upload", "image", 200 * 1024 * 1024,
                           ["image/jpeg", "image/png", "image/webp"], 20),
-    _upload_catalog_entry("video-upload", "video", 32 * 1024 * 1024,
+    _upload_catalog_entry("video-upload", "video", 200 * 1024 * 1024,
                           ["video/mp4", "video/quicktime", "video/webm"], 6),
     _upload_catalog_entry("audio-upload", "audio", 10 * 1024 * 1024,
                           ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"], 20),
@@ -1837,9 +1837,9 @@ _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _DIGITAL_HUMAN_RUN_RE = re.compile(r"^dh-run-[A-Za-z0-9._:-]{1,128}$")
 _DIRECTOR_WORKFLOW_RE = re.compile(r"^dw_[0-9a-f]{32}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
-IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+IMAGE_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
-VIDEO_UPLOAD_MAX_BYTES = 32 * 1024 * 1024
+VIDEO_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
 VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 VIDEO_COMPOSE_IMPORT_MAX_BYTES = 2 * 1024 * 1024 * 1024
 VIDEO_COMPOSE_IMPORT_SLOTS = threading.BoundedSemaphore(1)
@@ -2607,7 +2607,18 @@ def _proxy_media_upload(stream, length, web_token, internal_token, content_type,
     except CLIAPIError:
         raise
     except (OSError, http.client.HTTPException) as exc:
-        raise CLIAPIError(502, "%s上传服务暂时不可用：" % display + str(exc)[:120], "upstream_unavailable")
+        # 服务端可能在收完 body 前就拒绝（账号临时上传配额已满、格式拒收等），
+        # send 到一半断管；但拒绝响应往往已回到缓冲区——先尝试读出真实原因转发，
+        # 读不到才报上游不可用。否则真相会被掩成「生成渠道繁忙或维护」
+        # （2026-09-12 神秘顾客视频上传实锤：配额已满 → Broken pipe → 假话术）。
+        try:
+            response = connection.getresponse()
+            raw, status = response.read(2 * 1024 * 1024 + 1), response.status
+        except Exception:
+            raise CLIAPIError(
+                502, "%s上传服务暂时不可用：" % display + str(exc)[:120],
+                "upstream_unavailable",
+            ) from exc
     finally:
         connection.close()
     if len(raw) > 2 * 1024 * 1024:
