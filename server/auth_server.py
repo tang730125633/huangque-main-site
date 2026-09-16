@@ -114,7 +114,11 @@ VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
 VIRTUAL_PAY_RECONCILE_BATCH = 100
 VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS = 10
 GROWTH_DISABLED_PREFIXES = (
-    "/api/invite/", "/api/auth/invite/",
+    # 2026-09-16 老板定调「全面内测、邀请码注册」：邀请码的 config/validate/code 必须
+    # 随注册开放；拉新奖励、网络展示、名片/后台邀请管理仍随 growth_program 开关关闭。
+    "/api/invite/dashboard", "/api/invite/users", "/api/invite/reward-points",
+    "/api/auth/invite/dashboard", "/api/auth/invite/users", "/api/auth/invite/reward-points",
+    "/api/auth/invite/journey/start",
     "/api/auth/card/", "/api/auth/card",
     "/api/auth/network/",
     "/api/admin/invite/", "/api/auth/admin/invite/",
