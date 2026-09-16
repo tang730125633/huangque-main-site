@@ -41,7 +41,7 @@ check_time_window() {
 check_preconditions() {
     log "前置检查..."
     local cur
-    cur=$(cd "$REPO" && env HQ_DATABASE_URL="$(migrator_url)" python3 -m alembic current 2>/dev/null | tail -1)
+    cur=$(cd "$REPO" && env HQ_DATABASE_URL="$(migrator_url)" python3 -m alembic current 2>/dev/null | tail -1 | cut -d' ' -f1)
     [ "$cur" = "20260916_0012" ] || die "alembic 版本 $cur != 20260916_0012"
     systemctl is-active --quiet huangque-auth || die "huangque-auth 不在 active"
     systemctl is-active --quiet huangque-leadgen-api || die "huangque-leadgen-api 不在 active"
@@ -56,10 +56,10 @@ verify_balances() {
     mkdir -p "$SNAP_DIR"
     (cd "$REPO" && env HQ_DATABASE_URL="$(migrator_url)" \
         python3 scripts/migrate_auth_ledger.py --source "$snapshot" --verify-balances) > "$outfile" 2>/dev/null
-    sudo chown root:root "$outfile" && sudo chmod 600 "$outfile"
     checksum=$(python3 -c "import json;print(json.load(open('$outfile'))['report_checksum'])")
-    # 硬报警门禁
-    python3 - "$outfile" <<'PYEOF'
+    [ -n "$checksum" ] || die "verify-balances 未能取得 report_checksum（报告在 $outfile）"
+    # 硬报警门禁（统计行打 stderr，stdout 只留 checksum 供命令替换捕获）
+    if ! python3 - "$outfile" >&2 <<'PYEOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
 hard = []
@@ -76,6 +76,10 @@ if hard:
     print("HARD-ALERT: %s" % "; ".join(hard))
     sys.exit(1)
 PYEOF
+    then
+        die "verify-balances 硬报警，绝不 apply（报告在 $outfile）"
+    fi
+    sudo chown root:root "$outfile" && sudo chmod 600 "$outfile"
     echo "$checksum"
 }
 

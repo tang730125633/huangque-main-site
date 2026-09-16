@@ -348,7 +348,8 @@ def _bools(sql: str):
                             if stripped == "?":
                                 offsets.extend(seg_idxs[cursor:cursor + nq])
                             elif stripped in ("0", "1"):
-                                tok = "TRUE" if stripped == "1" else "FALSE"
+                                tok = tok.replace(
+                                    stripped, "TRUE" if stripped == "1" else "FALSE", 1)
                         cursor += nq
                         new_tokens.append(tok)
                     sql = sql[:vstart] + ",".join(new_tokens) + sql[vend:]
@@ -391,8 +392,9 @@ def _translate_set(sql, set_sql, set_start, bcols, q_positions, offsets):
             if val_stripped == "?":
                 offsets.extend(seg_idxs[cursor:cursor + nq])
             elif val_stripped in ("0", "1"):
-                val = "=" + ("TRUE" if val_stripped == "1" else "FALSE")
-                pair = col + val
+                # 只替换 0/1 字面量本身，保留周围空白（否则 WHERE 等关键字粘连）
+                val = val.replace(val_stripped, "TRUE" if val_stripped == "1" else "FALSE", 1)
+                pair = col + "=" + val
         cursor += nq
         new_pairs.append(pair)
     return sql[:set_start] + ",".join(new_pairs) + sql[set_start + len(set_sql):]
