@@ -37,7 +37,7 @@ class InviteBulkCodesTests(unittest.TestCase):
         self.auth.REGISTER_IP_WINDOW = 60
         self.auth.REGISTER_HITS.clear()
         self.auth.init_db()
-        self.auth.create_user("admin", "admin123", 10)
+        self.auth.create_user("admin", "unit-test-admin-pass", 10)
         self.auth.create_user("boss", "boss123", 10)
         now = int(time.time())
         conn = sqlite3.connect(self.auth.DB)
@@ -88,7 +88,7 @@ class InviteBulkCodesTests(unittest.TestCase):
 
     def _admin_cookie(self):
         _, _, headers = self._post("/api/auth/login", {
-            "username": "admin", "password": "admin123",
+            "username": "admin", "password": "unit-test-admin-pass",
         })
         cookie = headers.get("Set-Cookie") or ""
         return cookie.split(";")[0]

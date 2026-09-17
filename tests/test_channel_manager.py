@@ -211,6 +211,191 @@ class ChannelTests(unittest.TestCase):
                 'action':'delete', 'reason':'确认下线',
             })
 
+    def test_managed_capture_seals_ordered_ready_image_candidates(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        for channel in (self.ch, second):
+            run_id = cm.reserve(channel['id'], 'full')
+            cm.finish(run_id, 'passed', 'artifact checked')
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channels':[self.ch['id'], second['id']], 'expected_revision':0,
+        })
+
+        captured = cm.capture('image', {
+            'source_page':'banana', 'provider':'xiaole', 'prompt':'hello',
+        })
+        binding = captured['_channel_binding']
+        self.assertEqual([self.ch['id'], second['id']], [
+            item['id'] for item in binding['route_candidates']
+        ])
+        self.assertEqual([self.ch['id'], second['id']], binding['route_order'])
+        self.assertEqual(1, binding['route_attempt'])
+        self.assertNotIn('secret', json.dumps(binding))
+
+        cm.save('admin', dict(self.body, **second, model='changed-after-capture'))
+        with self.assertRaisesRegex(ValueError, '版本已变化'):
+            with cm.acceptance_guard([captured]):
+                pass
+
+    def test_image_task_fails_over_after_definitive_prebilling_rejection(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':[
+                {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+                {'id':second['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+            ],
+        }
+        calls = []
+
+        def generate(cfg, payload, _rid, _job_id):
+            calls.append(cfg['id'])
+            if cfg['id'] == self.ch['id']:
+                raise runtime.SubmissionRejected('供应商明确拒绝提交')
+            return {'type':'image', 'channel_id':cfg['id']}
+
+        with patch.object(runtime, 'generate', side_effect=generate):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 501)
+
+        self.assertEqual([self.ch['id'], second['id']], calls)
+        self.assertEqual(second['id'], result['channel_id'])
+        evidence = cm.task_evidence(501)
+        self.assertEqual('passed', evidence['state'])
+        self.assertEqual(second['id'], evidence['channel'])
+        self.assertEqual(2, evidence['execution_snapshot']['route_attempt'])
+        self.assertEqual(self.ch['id'], evidence['execution_snapshot']['attempts'][0]['channel'])
+        self.assertEqual('failed', evidence['execution_snapshot']['attempts'][0]['state'])
+        overview_run = next(item for item in cm.overview()['runs'] if item['job_id'] == '501')
+        self.assertEqual(self.ch['id'], overview_run['execution_snapshot']['attempts'][0]['channel'])
+
+    def test_image_task_never_fails_over_when_submission_outcome_is_unknown(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':[
+                {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+                {'id':second['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+            ],
+        }
+        with patch.object(runtime, 'generate',
+                          side_effect=runtime.OutcomeUnknown('提交结果未知')) as generate:
+            with self.assertRaises(RuntimeError):
+                runtime.run_task(binding, {'prompt':'hello'}, 502)
+        self.assertEqual(1, generate.call_count)
+        evidence = cm.task_evidence(502)
+        self.assertEqual('unknown', evidence['state'])
+        self.assertEqual(self.ch['id'], evidence['channel'])
+
+    def test_provider_post_failure_classification_is_conservative(self):
+        from server.content_domains import safe_http
+        cfg = cm.version(self.ch['id'], 1, True)
+        with patch.object(safe_http, 'request_json',
+                          side_effect=safe_http.SafeHttpError('unauthorized', 401)):
+            with self.assertRaises(runtime.SubmissionRejected):
+                runtime.request(cfg, 'POST', '/images/generations', {})
+        for status in (0, 408, 409, 425, 429, 500):
+            with self.subTest(status=status), patch.object(
+                    safe_http, 'request_json',
+                    side_effect=safe_http.SafeHttpError('uncertain', status)):
+                with self.assertRaises(runtime.OutcomeUnknown):
+                    runtime.request(cfg, 'POST', '/images/generations', {})
+
+    def test_queued_failover_resumes_selected_candidate_after_worker_restart(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        candidates = [
+            {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+            {'id':second['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+        ]
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            **candidates[0], 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':candidates,
+        }
+        rid = cm.reserve(self.ch['id'], 'task', '503', cm.version(self.ch['id']),
+                         execution_snapshot=binding)
+        cm.finish(rid, 'running', '执行请求前检查')
+        cm.finish_task_failover_safe(rid, '供应商明确拒绝提交')
+        cm.prepare_task_failover(rid, candidates[1], '供应商明确拒绝提交')
+
+        seen = []
+        def execute(run_id, _payload):
+            evidence = cm.task_evidence(503)
+            seen.append((run_id, evidence['channel']))
+            cm.finish(run_id, 'passed', 'artifact checked')
+            return {'channel_id':evidence['channel']}
+
+        with patch.object(runtime, 'execute', side_effect=execute):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 503)
+        self.assertEqual([(rid, second['id'])], seen)
+        self.assertEqual(second['id'], result['channel_id'])
+
+    def test_queued_gate_timeout_switches_channel_before_any_submission(self):
+        """并发/限流排队超时属于「未提交」失败：必须切到下一候选，而不是卡在排队。"""
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        candidates = [
+            {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+            {'id':second['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+        ]
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            **candidates[0], 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':candidates,
+        }
+        # 占满主渠道（默认并发 2）：新任务只能在排队闸里等，等满 120 秒仍未提交供应商
+        busy = [cm.reserve(self.ch['id'], 'task', job, cm.version(self.ch['id']))
+                for job in ('504', '506')]
+        with closing(cm.db()) as c:
+            for run in busy:
+                c.execute("UPDATE runs SET state='running' WHERE id=?", (run,))
+            c.commit()
+
+        real_monotonic = time.monotonic
+        class JumpClock:
+            calls = 0
+            def __call__(self):
+                JumpClock.calls += 1
+                return real_monotonic() + (0.0 if JumpClock.calls <= 4 else 500.0)
+
+        def generate(cfg, _payload, _rid, _job_id):
+            return {'channel_id':cfg['id']}
+
+        with patch.object(time, 'monotonic', JumpClock()), \
+                patch.object(time, 'sleep', lambda *_: None), \
+                patch.object(runtime, 'generate', side_effect=generate):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 505)
+
+        self.assertEqual(second['id'], result['channel_id'])
+        evidence = cm.task_evidence(505)
+        self.assertEqual('passed', evidence['state'])
+        self.assertEqual(second['id'], evidence['channel'])
+        snapshot = evidence['execution_snapshot']
+        self.assertEqual(2, snapshot['route_attempt'])
+        self.assertEqual(self.ch['id'], snapshot['attempts'][0]['channel'])
+        self.assertIn('尚未提交供应商', snapshot['attempts'][0]['detail'])
+        self.assertEqual(1, len([run for run in cm.overview()['runs']
+                                 if run['job_id'] == '505']))
+
     def test_operation_publish_serializes_concurrent_channel_change(self):
         full = cm.reserve(self.ch['id'], 'full')
         cm.finish(full, 'passed', 'artifact checked')
