@@ -1,4 +1,7 @@
-"""Bounded managed-channel execution and tests; never retry a generation POST.
+"""Bounded managed-channel execution and tests.
+
+付费 POST 仍然不重发：只有供应商**明确未受理**（提交前失败，或明确拒绝受理）时才按优先级
+切换到下一候选渠道；超时、限流、5xx、结果未知以及已受理之后的失败一律收敛为终态、不重发。
 
 存储层：执行记录与调度排期统一经 ``channel_manager`` / ``channel_store`` 分发；
 ``HQ_CHANNEL_STORE=postgres`` 时本模块的读写走 ``channel_store``（routing schema），
@@ -534,7 +537,13 @@ def execute(rid, payload=None):
         if cfg.get('secret'):
             detail = detail.replace(cfg['secret'],'[隐藏]')
         if row['kind'] == 'task' and isinstance(exc, SafeChannelFailover):
-            store.finish_task_failover_safe(rid, detail)
+            try:
+                store.finish_task_failover_safe(rid, detail)
+            except ValueError:
+                # 记账被拒（状态不允许等）：收敛成明确终态，别让裸 ValueError 逃出去把任务卡死。
+                store.finish(rid, 'failed', detail)
+                _notify(row, 'failed')
+                raise RuntimeError(detail) from None
             _notify(row, 'failed')
             raise SafeChannelFailover(detail) from None
         store.finish(rid,state,detail)
@@ -565,9 +574,6 @@ def _notify(row,state):
 
 def run_task(binding,payload,job_id,job_db=None):
     """托管渠道任务入口；带上任务库句柄后，管理员终止可以在执行循环里安全停手。"""
-    candidates = list(binding.get('route_candidates') or [{
-        key: binding.get(key) for key in ('id', 'version', 'adapter', 'model')
-    }])
     evidence = store.task_evidence(job_id)
     snapshot = evidence.get('execution_snapshot') or {}
     if (evidence.get('state') == 'queued'
@@ -575,9 +581,27 @@ def run_task(binding,payload,job_id,job_db=None):
             and int(snapshot.get('mapping_revision') or 0)
             == int(binding.get('mapping_revision') or 0)):
         binding = dict(binding, **snapshot)
+    # 候选清单必须取【合并持久化快照之后】的那一份：切换过的任务只有快照里才记着新渠道。
+    candidates = list(binding.get('route_candidates') or [{
+        key: binding.get(key) for key in store.ROUTE_CANDIDATE_FIELDS
+    }])
     current_id = binding.get('id')
     start_index = next((index for index, item in enumerate(candidates)
-                        if item.get('id') == current_id), 0)
+                        if item.get('id') == current_id), None)
+    # 排队中的持久化记录若指向另一个渠道（典型：切换后进程挂掉，而映射已改版导致快照合不进来），
+    # reserve 会以「该任务已有渠道执行记录」拒绝，任务就在排队与重排之间空转、既不出图也不退款。
+    # 这种不一致必须当场收敛成终态：它从未提交供应商，退款是对的。
+    durable_queued = (evidence.get('kind') == 'task' and evidence.get('state') == 'queued'
+                      and bool(evidence.get('id')))
+    stranded = start_index is None or (
+        durable_queued and (
+            str(evidence.get('channel') or '') != str(candidates[start_index].get('id') or '')
+            or int(evidence.get('version') or 0)
+            != int(candidates[start_index].get('version') or 0)))
+    if stranded:
+        if durable_queued:
+            store.finish(evidence['id'], 'failed', '已固化渠道与候选清单不一致，请人工核查')
+        raise RuntimeError('任务的已固化渠道不在候选清单中，请人工核查')
     cfg = store.version(candidates[start_index]['id'], candidates[start_index]['version'])
     attempt_binding = dict(binding, **candidates[start_index], route_attempt=start_index + 1)
     rid = store.reserve(cfg['id'],'task',str(job_id),cfg,execution_snapshot=attempt_binding)
@@ -594,19 +618,22 @@ def run_task(binding,payload,job_id,job_db=None):
             raise
 
     reason = ''
+    skipped = ''
     for index in range(start_index, len(candidates)):
         if index > start_index:
             try:
-                binding = store.prepare_task_failover(rid, candidates[index], reason)
+                store.prepare_task_failover(rid, candidates[index], reason)
             except ValueError as exc:
-                reason = str(exc)
+                # 这一跳被跳过（候选不可用）：不覆盖「为什么离开上一渠道」的原因，
+                # 只在全部候选都不可用时作为兜底文案。
+                skipped = str(exc)
                 continue
         try:
             return run_once()
         except SafeChannelFailover as exc:
             reason = str(exc)
             continue
-    raise RuntimeError(reason or '所有候选渠道均无法安全接单')
+    raise RuntimeError(reason or skipped or '所有候选渠道均无法安全接单')
 
 
 def start_test(actor,body):

@@ -565,6 +565,8 @@ class PostgresModeTest(_ChannelFixture):
         channel_manager.save("admin", self.body)
         backup_id = "m3c-bk-" + uuid.uuid4().hex[:8]
         channel_manager.save("admin", dict(self.body, id=backup_id, name="备用图片渠道"))
+        ready = channel_manager.reserve(backup_id, "full")   # 切换目标必须有 24 小时完整测试证据
+        channel_manager.finish(ready, "passed", "artifact checked")
         candidates = [
             {"id": self.cid, "version": 1, "adapter": "openai_image", "model": "test-model"},
             {"id": backup_id, "version": 1, "adapter": "openai_image", "model": "test-model"},
@@ -588,6 +590,8 @@ class PostgresModeTest(_ChannelFixture):
         evidence = channel_manager.task_evidence(self.job_id)
         self.assertEqual(backup_id, evidence["channel"])
         self.assertEqual("queued", evidence["state"])
+        self.assertEqual("task", evidence["kind"])
+        self.assertTrue(evidence["id"])
         with self._conn() as conn:
             rows = conn.execute("SELECT id,state,detail FROM routing.runs WHERE job_id=%s",
                                 (self.job_id,)).fetchall()
@@ -597,6 +601,34 @@ class PostgresModeTest(_ChannelFixture):
         # 没有新的失败就不允许再次切换（防止同一个失败被重复消费）
         with self.assertRaises(ValueError):
             channel_manager.prepare_task_failover(rid, candidates[0], "重复切换")
+
+    def test_failover_rejects_candidate_without_recent_full_test(self):
+        """PG 路径：采集后失去最近 24 小时完整测试证据的候选不能再接单。"""
+        channel_manager.save("admin", self.body)
+        backup_id = "m3c-nr-" + uuid.uuid4().hex[:8]
+        channel_manager.save("admin", dict(self.body, id=backup_id, name="备用-无证据"))
+        candidates = [
+            {"id": self.cid, "version": 1, "adapter": "openai_image", "model": "test-model"},
+            {"id": backup_id, "version": 1, "adapter": "openai_image", "model": "test-model"},
+        ]
+        binding = dict(
+            operation_id="image.xiaole.text", mapping_revision=1, **candidates[0],
+            front="", invocation_source="web", route_order=[self.cid, backup_id],
+            route_attempt=1, route_candidates=candidates)
+        rid = channel_manager.reserve(self.cid, "task", self.job_id,
+                                      channel_manager.version(self.cid),
+                                      execution_snapshot=binding)
+        channel_manager.finish(rid, "running", "提交供应商")
+        channel_manager.finish_task_failover_safe(rid, "供应商明确拒绝提交：HTTP 401")
+        with self.assertRaises(ValueError) as raised:
+            channel_manager.prepare_task_failover(rid, candidates[1], "供应商明确拒绝提交：HTTP 401")
+        self.assertIn("候选渠道缺少最近24小时通过的完整生成测试", str(raised.exception))
+        # 切换被拒后运行记录仍是 failed（不会半途改成 queued）
+        with self._conn() as conn:
+            state = conn.execute("SELECT state,channel FROM routing.runs WHERE id=%s",
+                                 (rid,)).fetchone()
+        self.assertEqual("failed", state["state"])
+        self.assertEqual(self.cid, state["channel"])
 
     def test_db_is_fail_closed_when_switched(self):
         with self.assertRaises(RuntimeError):
