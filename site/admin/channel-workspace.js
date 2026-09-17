@@ -168,6 +168,18 @@
       const [item]=draft.channels.splice(from,1),to=draft.channels.indexOf(targetId);
       if(to<0){draft.channels.splice(from,0,item);return}draft.channels.splice(to,0,item);
     }
+    function recentFailoverEvidence(operationId,byId){
+      const run=(data.runs||[]).find(item=>item.operation_id===operationId&&(item.execution_snapshot?.attempts||[]).length);
+      if(!run)return '';
+      const snapshot=run.execution_snapshot||{},attempts=snapshot.attempts||[];
+      const steps=attempts.map(item=>{
+        const channel=byId[item.channel];
+        return '<li><b>'+esc(channel?.name||item.channel)+'</b><span>未受理，已安全切换</span>'+(item.detail?'<small>'+esc(item.detail)+'</small>':'')+'</li>';
+      });
+      const current=byId[run.channel]||byId[snapshot.id];
+      if(current)steps.push('<li class="current"><b>'+esc(current.name)+'</b><span>'+esc(run.state==='passed'?'生成成功':'当前尝试 · '+(run.state||'处理中'))+'</span></li>');
+      return '<aside class="cm-priority-evidence"><div><strong>最近安全切换</strong><small>任务 #'+esc(run.job_id||run.id||'—')+' · 映射 r'+esc(run.mapping_revision||snapshot.mapping_revision||'—')+'</small></div><ol>'+steps.join('')+'</ol></aside>';
+    }
     function priorityEditor(product,model){
       const routes=(model.routes||[]).filter(route=>(data.operations||[]).some(item=>item.operation_id===route.operation_id));
       if(!routes.length)return '<section class="cm-priority-editor"><div class="cm-priority-head"><div><span>渠道优先级</span><h4>'+esc(model.label)+'</h4></div></div><p class="cm-priority-empty">当前模型仍由内置线路管理，尚未注册可发布的 operation_id。请先在功能映射中完成托管接入。</p></section>';
@@ -185,8 +197,9 @@
       const addOptions=available.map(item=>'<option value="'+esc(item.id)+'" '+(!item.enabled?'disabled':'')+'>'+esc(item.name+' · '+(item.model||'模型待配置')+(!item.enabled?'（已停用）':''))+'</option>').join('');
       const histories=(mapping?.history||[]).filter(item=>Number(item.revision)!==Number(mapping.revision));
       const history=histories.length?'<details class="cm-priority-history"><summary>历史版本与回滚</summary><div>'+histories.map(item=>'<button type="button" class="mini" data-cm-priority-rollback="'+Number(item.revision)+'" data-operation="'+esc(active.operation_id)+'" data-expected-revision="'+Number(mapping.revision||0)+'">恢复 r'+Number(item.revision)+' · '+esc(item.state||'')+' · '+esc(date(item.created))+'</button>').join('')+'</div></details>':'';
+      const failoverEvidence=recentFailoverEvidence(active.operation_id,byId);
       return '<section class="cm-priority-editor" data-cm-priority-editor="'+esc(active.operation_id)+'"><div class="cm-priority-head"><div><span>渠道优先级</span><h4>'+esc(product.label+' · '+model.label)+'</h4><p>'+esc(active.capability||'生成')+' · <code>'+esc(active.operation_id)+'</code></p></div><button type="button" class="mini" data-cm-priority-close>收起</button></div>'+routeTabs
-        +'<div class="cm-priority-notice">第 1 项是实际主渠道，第 2 项写入备用渠道；第 3 项以后保存为候选顺序。第一阶段不会自动重试付费生成。</div>'
+        +'<div class="cm-priority-notice">第 1 项优先接单，其余按顺序候补。生图仅在提交前失败或供应商明确拒绝受理时自动切换；超时、限流、服务器错误、结果未知或已受理后失败均不会切换，避免重复生成与重复计费。视频暂不自动切换。</div>'+failoverEvidence
         +'<label class="cm-priority-state">控制状态<select data-cm-priority-state="'+esc(active.operation_id)+'"><option value="shadow" '+(draft.state==='shadow'?'selected':'')+'>影子验证（不接管生产）</option><option value="managed" '+(draft.state==='managed'?'selected':'')+'>统一托管（第 1 项接单）</option><option value="legacy" '+(draft.state==='legacy'?'selected':'')+'>保留内置线路</option><option value="paused" '+(draft.state==='paused'?'selected':'')+'>暂停接单</option></select></label>'
         +'<div class="cm-priority-list">'+(ordered||'<p class="cm-priority-empty">尚未添加托管渠道。当前仍由内置线路接单。</p>')+'</div>'
         +'<div class="cm-priority-add"><select data-cm-priority-add-choice="'+esc(active.operation_id)+'"><option value="">选择兼容渠道</option>'+addOptions+'</select><button type="button" data-cm-priority-add="'+esc(active.operation_id)+'" '+(available.length?'':'disabled')+'>添加渠道</button></div>'

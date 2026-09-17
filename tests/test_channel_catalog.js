@@ -203,6 +203,7 @@ test('frontend function center uses a model list and keeps technical details in 
   workspaceData.adapters={openai_image:{kind:'image',name:'图片生成'}};
   workspaceData.operations=[{operation_id:'image.banana.nb2.text',channel_kind:'image',name:'纳米香蕉 2 文生图',mapping:{operation_id:'image.banana.nb2.text',state:'shadow',revision:4,channels:['managed-primary','managed-backup'],channel:'managed-primary',backup:'managed-backup'}}];
   workspaceData.operation_mappings=[workspaceData.operations[0].mapping];
+  workspaceData.runs=[{id:81,job_id:501,operation_id:'image.banana.nb2.text',mapping_revision:4,channel:'managed-backup',state:'passed',execution_snapshot:{route_attempt:2,attempts:[{attempt:1,channel:'managed-primary',version:1,state:'failed',detail:'供应商明确拒绝提交'}]}}];
   bananaModel.routes[0].operation_id='image.banana.nb2.text';
   workspace.render(workspaceData);
   const modelButton={dataset:{cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
@@ -213,10 +214,14 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/draggable="true"/);
   assert.match(elements.cmMatrix.innerHTML,/托管主渠道/);
   assert.match(elements.cmMatrix.innerHTML,/托管备用渠道/);
+  assert.match(elements.cmMatrix.innerHTML,/最近安全切换/);
+  assert.match(elements.cmMatrix.innerHTML,/未受理，已安全切换/);
+  assert.match(elements.cmMatrix.innerHTML,/生成成功/);
+  assert.match(elements.cmMatrix.innerHTML,/结果未知或已受理后失败均不会切换/);
   assert.match(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
   const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
   await root.listeners.click({target:{closest:selector=>selector==='button'?moveButton:null}});
-  const priorityHtml=elements.cmMatrix.innerHTML.match(/<section class="cm-priority-editor"[\s\S]*?<\/section>/)[0];
+  const priorityHtml=elements.cmMatrix.innerHTML.match(/<div class="cm-priority-list">[\s\S]*?<div class="cm-priority-add">/)[0];
   assert.ok(priorityHtml.indexOf('托管备用渠道')<priorityHtml.indexOf('托管主渠道'));
   const saveButton={dataset:{cmPrioritySave:'image.banana.nb2.text'},disabled:false};
   await root.listeners.click({target:{closest:selector=>selector==='button'?saveButton:null}});

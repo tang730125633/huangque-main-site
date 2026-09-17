@@ -28,6 +28,21 @@ class ProviderError(RuntimeError):
     definitive_rejection = True
 
 
+class SafeChannelFailover(RuntimeError):
+    """A paid provider request is known not to have been accepted."""
+
+
+class PreSubmissionFailure(SafeChannelFailover):
+    pass
+
+
+class SubmissionRejected(SafeChannelFailover, ProviderError):
+    pass
+
+
+SAFE_POST_REJECTION_STATUSES = {400, 401, 402, 403, 404, 405, 413, 415, 422}
+
+
 def validate_payload(cfg, payload):
     if any(k.startswith('_short_drama') for k in payload) or payload.get('short_drama_binding'):
         raise ValueError('短剧绑定任务不支持通用渠道映射，请使用专用渠道配置')
@@ -114,8 +129,10 @@ def request(cfg, method, path, body=None, extra_headers=None, files=None):
             timeout=cfg['timeout'], proxy=cfg.get('proxy') or '',
         )
     except safe_http.SafeHttpError as exc:
-        if method == 'POST' and (exc.status in {0,408,429} or exc.status>=500):
+        if method == 'POST' and (exc.status in {0,408,409,425,429} or exc.status>=500):
             raise OutcomeUnknown('提交结果未知，禁止自动重发') from None
+        if method == 'POST' and exc.status in SAFE_POST_REJECTION_STATUSES:
+            raise SubmissionRejected('供应商明确拒绝提交：HTTP %s' % exc.status) from None
         if exc.status:
             raise ProviderError('供应商 HTTP %s' % exc.status) from None
         if method == 'POST':
@@ -266,14 +283,17 @@ def build_generation_request(cfg, payload, preview=False):
 
 def generate(cfg, payload, rid, job_id):
     from .channel_parameters import apply, image_request
-    payload,_=apply(cfg,payload,required=False)
-    validate_payload(cfg, payload)
-    refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
-    adapter = cfg['adapter']
-    is_lechuang = adapter in ('lechuang_image', 'lechuang_video')
-    metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
-                    transport='proxy' if cfg.get('proxy') else 'direct')
-    path,body,files=build_generation_request(cfg,payload)
+    try:
+        payload,_=apply(cfg,payload,required=False)
+        validate_payload(cfg, payload)
+        refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
+        adapter = cfg['adapter']
+        is_lechuang = adapter in ('lechuang_image', 'lechuang_video')
+        metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
+                        transport='proxy' if cfg.get('proxy') else 'direct')
+        path,body,files=build_generation_request(cfg,payload)
+    except ValueError as exc:
+        raise PreSubmissionFailure(str(exc)[:200]) from None
     trace.record(job_id,'route','recorded',**metadata)
     store.finish(rid,'running','提交供应商')
     # 乐创付费创建请求要求 8-128 字符幂等键；run id 为 32 位 hex，天然幂等。
@@ -459,7 +479,7 @@ def execute(rid, payload=None):
                         break
                     c.commit()
             if time.monotonic()-start>120:
-                raise RuntimeError('渠道并发或限流等待超时，尚未提交供应商')
+                raise PreSubmissionFailure('渠道并发或限流等待超时，尚未提交供应商')
             time.sleep(1)
         _termination_check()       # 拿到闸门后再确认一次，避免终止后仍提交付费请求
         if row['kind']=='connection':
@@ -512,6 +532,10 @@ def execute(rid, payload=None):
             else phase+'：'+type(exc).__name__)
         if cfg.get('secret'):
             detail = detail.replace(cfg['secret'],'[隐藏]')
+        if row['kind'] == 'task' and isinstance(exc, SafeChannelFailover):
+            store.finish_task_failover_safe(rid, detail)
+            _notify(row, 'failed')
+            raise SafeChannelFailover(detail) from None
         store.finish(rid,state,detail)
         _notify(row,state)
         raise RuntimeError(detail) from None
@@ -540,18 +564,48 @@ def _notify(row,state):
 
 def run_task(binding,payload,job_id,job_db=None):
     """托管渠道任务入口；带上任务库句柄后，管理员终止可以在执行循环里安全停手。"""
-    cfg = store.version(binding['id'],binding['version'])
-    rid = store.reserve(cfg['id'],'task',str(job_id),cfg,execution_snapshot=binding)
-    if job_db is None:
-        return execute(rid,payload)
-    from . import task_termination
-    try:
-        with task_termination.scope(int(job_id), job_db):
+    candidates = list(binding.get('route_candidates') or [{
+        key: binding.get(key) for key in ('id', 'version', 'adapter', 'model')
+    }])
+    evidence = store.task_evidence(job_id)
+    snapshot = evidence.get('execution_snapshot') or {}
+    if (evidence.get('state') == 'queued'
+            and snapshot.get('operation_id') == binding.get('operation_id')
+            and int(snapshot.get('mapping_revision') or 0)
+            == int(binding.get('mapping_revision') or 0)):
+        binding = dict(binding, **snapshot)
+    current_id = binding.get('id')
+    start_index = next((index for index, item in enumerate(candidates)
+                        if item.get('id') == current_id), 0)
+    cfg = store.version(candidates[start_index]['id'], candidates[start_index]['version'])
+    attempt_binding = dict(binding, **candidates[start_index], route_attempt=start_index + 1)
+    rid = store.reserve(cfg['id'],'task',str(job_id),cfg,execution_snapshot=attempt_binding)
+
+    def run_once():
+        if job_db is None:
             return execute(rid,payload)
-    except task_termination.TaskTerminated:
-        # 进入执行前就被终止（例如排队期间）：把运行记录收敛为终止态，别让它占着队列额度。
-        _mark_terminated(rid)
-        raise
+        from . import task_termination
+        try:
+            with task_termination.scope(int(job_id), job_db):
+                return execute(rid,payload)
+        except task_termination.TaskTerminated:
+            _mark_terminated(rid)
+            raise
+
+    reason = ''
+    for index in range(start_index, len(candidates)):
+        if index > start_index:
+            try:
+                binding = store.prepare_task_failover(rid, candidates[index], reason)
+            except ValueError as exc:
+                reason = str(exc)
+                continue
+        try:
+            return run_once()
+        except SafeChannelFailover as exc:
+            reason = str(exc)
+            continue
+    raise RuntimeError(reason or '所有候选渠道均无法安全接单')
 
 
 def start_test(actor,body):
