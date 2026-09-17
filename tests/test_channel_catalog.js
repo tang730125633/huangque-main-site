@@ -257,6 +257,9 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.equal(newCalls[0].model,'gemini-3.1-flash-image');
   assert.equal(newCalls[0].base_url,'https://generativelanguage.googleapis.com');
   assert.equal(newCalls[0].enabled,true);
+  assert.equal(newCalls[0].test_cost,1,'没有完整测试预算就无法验证，也就永远切不了主渠道');
+  assert.equal(newCalls[0].daily_limit,1);
+  assert.equal(newCalls[0].daily_budget,1);
   assert.deepEqual(Array.from(newCalls[0]._replacement.operations),['image.banana.nb2.text']);
   const poolButton={dataset:{cmInlineRoute:'legacy:gemini',cmInlineKind:'provider_pool'},classList:{toggle(){}},setAttribute(){}};
   allowLegacyClose=false;

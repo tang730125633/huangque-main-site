@@ -259,6 +259,8 @@
         supplier:serverEntry.item.supplier||serverEntry.target.name||'',connection_type:serverEntry.item.connection_type||'official',
         adapter:replacementAdapter,base_url:replacementBase,model:model.actual_model||'',enabled:true,
         fixture:{prompt:'生成一张纯色背景的产品展示图',ratio:'1:1',duration:5},
+        // 没有完整测试预算就永远跑不出 24 小时内的通过证据，也就永远切不了主渠道：预填一次 1 元。
+        test_cost:1,daily_limit:1,daily_budget:1,
         _replacement:{page:pageKey,product:productKey,model:modelKey,operations:[...new Set((model.routes||[]).map(route=>route.operation_id).filter(Boolean))]}
       };else delete serverReplacementTemplates[replacementKey];
       const replacementAction=serverEntry?(serverReplacementTemplates[replacementKey]?'<button type="button" class="primary" data-cm-server-replace="'+esc(replacementKey)+'">直接修改 Key / Base URL</button>':'<button type="button" disabled title="该供应商协议尚未接入托管渠道">暂不支持后台直改</button>'):'';

@@ -44,6 +44,8 @@ class SubmissionRejected(SafeChannelFailover, ProviderError):
 
 
 SAFE_POST_REJECTION_STATUSES = {400, 401, 402, 403, 404, 405, 413, 415, 422}
+# Gemini 原生协议同步返回 inlineData 图片，2K/4K 的 base64 体量远超 safe_http 的 8MB 默认上限。
+GEMINI_RESPONSE_MAX_BYTES = 24 * 1024 * 1024
 
 
 def validate_payload(cfg, payload):
@@ -133,6 +135,9 @@ def request(cfg, method, path, body=None, extra_headers=None, files=None):
     )
     if extra_headers:
         headers.update(extra_headers)
+    # Gemini 原生协议把图片塞在 inlineData 里返回：2K/4K 的 base64 远超 safe_http 的 8MB 默认上限，
+    # 用默认值会把已计费的成品判成「供应商 HTTP 200」丢掉。给这个适配器单独放宽到 24MB。
+    headroom = {'max_bytes': GEMINI_RESPONSE_MAX_BYTES} if cfg['adapter'] == 'gemini_image' else {}
     try:
         url = cfg['base_url']+'/'+path.lstrip('/')
         if files is not None:
@@ -145,6 +150,7 @@ def request(cfg, method, path, body=None, extra_headers=None, files=None):
             method, url, body=body,
             headers=headers,
             timeout=cfg['timeout'], proxy=cfg.get('proxy') or '',
+            **headroom,
         )
     except safe_http.SafeHttpError as exc:
         if method == 'POST' and (exc.status in {0,408,409,425,429} or exc.status>=500):

@@ -50,6 +50,22 @@ class GeminiManagedAdapterTests(unittest.TestCase):
         self.assertEqual("gemini-secret", headers["x-goog-api-key"])
         self.assertNotIn("Authorization", headers)
 
+    def test_image_response_gets_headroom_over_the_default_body_cap(self):
+        """2K/4K 的 inlineData base64 超过 8MB 默认上限，必须单独放宽，否则成品被丢弃。"""
+        cfg = self.config()
+        with patch.object(channel_runtime.safe_http, "request_json",
+                          return_value={}) as request:
+            channel_runtime.request(cfg, "POST", "/v1beta/models/x:generateContent", {})
+        self.assertEqual(channel_runtime.GEMINI_RESPONSE_MAX_BYTES,
+                         request.call_args.kwargs["max_bytes"])
+        self.assertGreater(channel_runtime.GEMINI_RESPONSE_MAX_BYTES, 8 * 1024 * 1024)
+
+        other = dict(cfg, adapter="openai_image")
+        with patch.object(channel_runtime.safe_http, "request_json",
+                          return_value={}) as request:
+            channel_runtime.request(other, "POST", "/images/generations", {})
+        self.assertNotIn("max_bytes", request.call_args.kwargs)
+
     def test_native_response_image_is_decoded(self):
         raw = b"fake-image-bytes"
         response = {
