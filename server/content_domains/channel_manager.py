@@ -76,6 +76,11 @@ def db():
     return c
 
 
+def _begin_write(connection):
+    """Serialize one SQLite write transaction behind the module's existing lock."""
+    connection.execute('BEGIN IMMEDIATE')
+
+
 def _crypt(value, decrypt=False):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from .provider_keys import _master_key
@@ -153,7 +158,7 @@ def save(actor, body):
         return channel_store.save(actor, body)
     cid, config = _channel_config(body)
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         old = c.execute('SELECT * FROM channels WHERE id=?', (cid,)).fetchone()
         if old and int(body.get('version', -1)) != old['version']:
             raise ValueError('配置已被修改，请刷新后重试')
@@ -432,7 +437,7 @@ def save_operation_mapping(actor, body):
     channels = _requested_mapping_channels(body)
     now = time.time()
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         if state in {'shadow', 'managed'}:
             if not channels:
                 raise ValueError('请选择主渠道')
@@ -504,7 +509,7 @@ def save_mapping(actor, body):
     config = dict(kind=kind, front=front, label=str(body.get('label') or front)[:100], channel=cid,
                   backup=backup, enabled=body.get('enabled') is True)
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         for target in filter(None,(cid,backup)):
             current=c.execute('SELECT version FROM channels WHERE id=?',(target,)).fetchone()
             if not current:
@@ -640,7 +645,7 @@ def acceptance_guard(payloads):
         yield
         return
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         try:
             for payload in managed:
                 _confirm_acceptance(c, payload)
@@ -726,7 +731,7 @@ def record_shadow(job_id, snapshot):
     ) if snapshot.get(key) not in (None, '')}
     now = time.time()
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         rid = public_snapshot['observation_id']
         existing = c.execute(
             "SELECT r.job_id,s.snapshot FROM runs r JOIN run_snapshots s ON s.run_id=r.id "
@@ -825,7 +830,7 @@ def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
     cfg = snapshot or version(cid)
     now, rid = time.time(), uuid.uuid4().hex
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         if kind!='task':
             current=c.execute('SELECT ch.enabled,v.config FROM channels ch JOIN versions v ON v.channel=ch.id AND v.version=ch.version WHERE ch.id=?',(cid,)).fetchone()
             if not current or not current['enabled'] or json.loads(current['config']).get('_lifecycle',{}).get('deleted'):
@@ -878,7 +883,7 @@ def finish_task_failover_safe(rid, detail):
         return channel_store.finish_task_failover_safe(rid, detail)
     now = time.time()
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         row = c.execute(
             "SELECT r.kind,r.state,r.provider_id,s.snapshot FROM runs r "
             "JOIN run_snapshots s ON s.run_id=r.id WHERE r.id=?", (rid,),
@@ -906,7 +911,7 @@ def prepare_task_failover(rid, candidate, reason=''):
         raise ValueError('候选渠道快照无效')
     now = time.time()
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         row = c.execute(
             "SELECT r.*,s.snapshot FROM runs r JOIN run_snapshots s ON s.run_id=r.id "
             "WHERE r.id=?", (rid,),
@@ -1009,7 +1014,7 @@ def mark_interrupted_task_unknown(job_id, detail):
         return channel_store.mark_interrupted_task_unknown(job_id, detail)
     try:
         with closing(db()) as c:
-            c.execute('BEGIN IMMEDIATE')
+            _begin_write(c)
             row = c.execute(
                 "SELECT id,state FROM runs WHERE kind='task' AND job_id=? "
                 "ORDER BY started DESC LIMIT 1", (str(job_id),),
