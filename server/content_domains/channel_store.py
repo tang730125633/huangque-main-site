@@ -390,6 +390,36 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
     return cfg
 
 
+def _ready_candidate(cid, connection=None):
+    """切换前的候选渠道复核（PG）：存在、不在回收站、仍启用、且有最近 24 小时完整生成测试。"""
+    mgr = _mgr()
+    cid = str(cid or '').strip()
+    if not cid:
+        raise ValueError('候选渠道无效')
+    owns_connection = connection is None
+    conn = connection or _pool_instance().getconn()
+    try:
+        current = conn.execute('SELECT version,enabled FROM routing.channels WHERE id=%s', (cid,)
+                               ).fetchone()
+        if not current:
+            raise ValueError('候选渠道不存在')
+        row = conn.execute('SELECT config FROM routing.versions WHERE channel=%s AND version=%s',
+                           (cid, current['version'])).fetchone()
+        if not row:
+            raise ValueError('候选渠道版本不存在')
+        if json.loads(row['config']).get('_lifecycle', {}).get('deleted'):
+            raise ValueError('候选渠道在回收站')
+        if not current['enabled']:
+            raise ValueError('候选渠道已停用')
+        latest = conn.execute(_LATEST_FULL, (cid, current['version'])).fetchone()
+        if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
+            raise ValueError('候选渠道缺少最近24小时通过的完整生成测试')
+    finally:
+        if owns_connection:
+            _pool_instance().putconn(conn)
+    return True
+
+
 def save_operation_mapping(actor, body):
     """Publish one immutable operation mapping revision with optimistic locking."""
     from .function_registry import operation
@@ -1064,7 +1094,9 @@ def prepare_task_failover(rid, candidate, reason=''):
             if not expected or any(expected.get(key) != candidate.get(key)
                                    for key in mgr.ROUTE_CANDIDATE_FIELDS):
                 raise ValueError('候选渠道不在任务受理快照中')
-            cfg = _fetch_version(conn, candidate['id'], candidate['version'])
+            cfg = _fetch_version(conn, candidate['id'], candidate['version'],
+                                 missing_revision_message='候选渠道版本不存在')
+            _ready_candidate(candidate['id'], connection=conn)   # 采集后被停用/回收/证据过期的候选不再接单
             pending = conn.execute(
                 "SELECT COUNT(*) AS n FROM routing.runs WHERE channel=%s "
                 "AND state='queued' AND id!=%s", (candidate['id'], rid),
@@ -1103,7 +1135,8 @@ def prepare_task_failover(rid, candidate, reason=''):
 def task_evidence(job_id):
     with _pool_instance().connection() as conn:
         row = conn.execute(
-            "SELECT r.channel,r.version,r.state,r.provider_id,s.operation_id,s.mapping_revision,"
+            "SELECT r.id,r.kind,r.channel,r.version,r.state,r.provider_id,"
+            "s.operation_id,s.mapping_revision,"
             "s.invocation_source,s.snapshot FROM routing.runs r "
             "LEFT JOIN routing.run_snapshots s ON s.run_id=r.id "
             "WHERE r.kind IN ('task','shadow') AND r.job_id=%s "

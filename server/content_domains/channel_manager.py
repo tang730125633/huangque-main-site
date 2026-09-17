@@ -77,7 +77,7 @@ def db():
 
 
 def _begin_write(connection):
-    """Serialize one SQLite write transaction behind the module's existing lock."""
+    """Open the write transaction; SQLite serializes it, this module holds no lock itself."""
     connection.execute('BEGIN IMMEDIATE')
 
 
@@ -420,6 +420,43 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
         if owns_connection:
             c.close()
     return cfg
+
+
+def _ready_candidate(cid, connection=None):
+    """切换前的候选渠道复核：存在、不在回收站、仍启用、且有最近 24 小时完整生成测试。
+
+    与 ``_mapping_channel(require_ready=True)`` 同一套门槛，但报错按「候补渠道」措辞，
+    便于后台直接看懂为什么这一跳被跳过。
+    """
+    if channel_store.enabled():
+        return channel_store._ready_candidate(cid, connection=connection)
+    cid = str(cid or '').strip()
+    if not cid:
+        raise ValueError('候选渠道无效')
+    owns_connection = connection is None
+    c = connection or db()
+    try:
+        current = c.execute('SELECT version,enabled FROM channels WHERE id=?', (cid,)).fetchone()
+        if not current:
+            raise ValueError('候选渠道不存在')
+        row = c.execute('SELECT config FROM versions WHERE channel=? AND version=?',
+                        (cid, current['version'])).fetchone()
+        if not row:
+            raise ValueError('候选渠道版本不存在')
+        if json.loads(row['config']).get('_lifecycle', {}).get('deleted'):
+            raise ValueError('候选渠道在回收站')
+        if not current['enabled']:
+            raise ValueError('候选渠道已停用')
+        latest = c.execute(
+            "SELECT state,updated FROM runs WHERE channel=? AND version=? AND kind='full' "
+            'ORDER BY started DESC,rowid DESC LIMIT 1', (cid, current['version']),
+        ).fetchone()
+        if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
+            raise ValueError('候选渠道缺少最近24小时通过的完整生成测试')
+    finally:
+        if owns_connection:
+            c.close()
+    return True
 
 
 def save_operation_mapping(actor, body):
@@ -941,6 +978,7 @@ def prepare_task_failover(rid, candidate, reason=''):
         snapshot['attempts'] = attempts[:MAX_MAPPING_CHANNELS]
         snapshot.pop('failover_safe', None)
         snapshot.pop('failure_reason', None)
+        _ready_candidate(candidate['id'], c)   # 采集后被停用/回收/证据过期的候选不再接单
         cfg_row = c.execute(
             'SELECT config FROM versions WHERE channel=? AND version=?',
             (candidate['id'], candidate['version']),
@@ -983,7 +1021,8 @@ def task_evidence(job_id):
         return channel_store.task_evidence(job_id)
     with closing(db()) as c:
         row = c.execute(
-            "SELECT r.channel,r.version,r.state,r.provider_id,s.operation_id,s.mapping_revision,"
+            "SELECT r.id,r.kind,r.channel,r.version,r.state,r.provider_id,"
+            "s.operation_id,s.mapping_revision,"
             "s.invocation_source,s.snapshot FROM runs r LEFT JOIN run_snapshots s ON s.run_id=r.id "
             "WHERE r.kind IN ('task','shadow') AND r.job_id=? "
             "ORDER BY CASE WHEN r.kind='task' THEN 0 ELSE 1 END,r.started DESC LIMIT 1",
