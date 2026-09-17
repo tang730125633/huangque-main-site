@@ -33,7 +33,7 @@
       if(!channel){toast('没有找到对应的托管渠道，已取消编辑');return false}
       edit(channel);return true;
     }
-    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById});
+    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById,newChannel:()=>edit()});
     const mappingChannels=m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean);
     function routeMappings(){return [...(data.mappings||[]),...(data.operation_mappings||[])]}
     const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>routeMappings().filter(m=>mappingChannels(m).includes(id))});
