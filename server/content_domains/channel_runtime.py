@@ -527,7 +527,8 @@ def execute(rid, payload=None):
         else:
             with closing(store.db()) as c:
                 phase = c.execute('SELECT detail FROM runs WHERE id=?',(rid,)).fetchone()[0]
-        detail = phase+'：'+str(exc)[:200] if isinstance(exc,(ValueError,OutcomeUnknown,ProviderError)) else (
+        # SafeChannelFailover 的文案是「为何判定未受理」的唯一证据，必须原样落库给后台看。
+        detail = phase+'：'+str(exc)[:200] if isinstance(exc,(ValueError,OutcomeUnknown,ProviderError,SafeChannelFailover)) else (
             phase+'：SafeHttpError HTTP '+str(exc.status) if isinstance(exc, safe_http.SafeHttpError)
             else phase+'：'+type(exc).__name__)
         if cfg.get('secret'):

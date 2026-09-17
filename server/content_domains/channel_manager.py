@@ -888,7 +888,9 @@ def finish_task_failover_safe(rid, detail):
             "SELECT r.kind,r.state,r.provider_id,s.snapshot FROM runs r "
             "JOIN run_snapshots s ON s.run_id=r.id WHERE r.id=?", (rid,),
         ).fetchone()
-        if not row or row['kind'] != 'task' or row['state'] != 'running' or row['provider_id']:
+        if (not row or row['kind'] != 'task'
+                or row['state'] not in {'queued', 'running'} or row['provider_id']):
+            # queued 也在允许范围内：并发/限流排队超时的任务从未提交供应商，同样是「未受理」。
             raise ValueError('当前任务状态不允许自动切换渠道')
         snapshot = json.loads(row['snapshot'])
         snapshot['failover_safe'] = True

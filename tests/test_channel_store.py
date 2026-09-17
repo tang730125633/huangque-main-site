@@ -560,6 +560,44 @@ class PostgresModeTest(_ChannelFixture):
         self.assertEqual(channel_manager.version(self.cid, 1)["model"], "test-model")
         backfill.postgres.close_pool()  # 回填器用的池，测试结束即关
 
+    def test_task_failover_bookkeeping_matches_sqlite_semantics(self):
+        """PG 路径：未提交（排队中）的任务也能安全切换，且一个任务只保留一条运行记录。"""
+        channel_manager.save("admin", self.body)
+        backup_id = "m3c-bk-" + uuid.uuid4().hex[:8]
+        channel_manager.save("admin", dict(self.body, id=backup_id, name="备用图片渠道"))
+        candidates = [
+            {"id": self.cid, "version": 1, "adapter": "openai_image", "model": "test-model"},
+            {"id": backup_id, "version": 1, "adapter": "openai_image", "model": "test-model"},
+        ]
+        binding = dict(
+            operation_id="image.xiaole.text", mapping_revision=1, **candidates[0],
+            front="", invocation_source="web", route_order=[self.cid, backup_id],
+            route_attempt=1, route_candidates=candidates)
+        rid = channel_manager.reserve(self.cid, "task", self.job_id,
+                                      channel_manager.version(self.cid),
+                                      execution_snapshot=binding)
+        # 并发/限流排队超时的任务从未提交供应商：queued 也必须允许记账，否则任务卡死在排队。
+        channel_manager.finish_task_failover_safe(
+            rid, "等待执行：渠道并发或限流等待超时，尚未提交供应商")
+        snapshot = channel_manager.prepare_task_failover(
+            rid, candidates[1], "渠道并发或限流等待超时，尚未提交供应商")
+        self.assertEqual(backup_id, snapshot["id"])
+        self.assertEqual(2, snapshot["route_attempt"])
+        self.assertEqual(self.cid, snapshot["attempts"][0]["channel"])
+        self.assertEqual("failed", snapshot["attempts"][0]["state"])
+        evidence = channel_manager.task_evidence(self.job_id)
+        self.assertEqual(backup_id, evidence["channel"])
+        self.assertEqual("queued", evidence["state"])
+        with self._conn() as conn:
+            rows = conn.execute("SELECT id,state,detail FROM routing.runs WHERE job_id=%s",
+                                (self.job_id,)).fetchall()
+        self.assertEqual(1, len(rows))
+        self.assertEqual("queued", rows[0]["state"])
+        self.assertIn("安全切换到下一渠道", rows[0]["detail"])
+        # 没有新的失败就不允许再次切换（防止同一个失败被重复消费）
+        with self.assertRaises(ValueError):
+            channel_manager.prepare_task_failover(rid, candidates[0], "重复切换")
+
     def test_db_is_fail_closed_when_switched(self):
         with self.assertRaises(RuntimeError):
             channel_manager.db()

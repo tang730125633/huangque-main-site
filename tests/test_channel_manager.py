@@ -346,6 +346,56 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual([(rid, second['id'])], seen)
         self.assertEqual(second['id'], result['channel_id'])
 
+    def test_queued_gate_timeout_switches_channel_before_any_submission(self):
+        """并发/限流排队超时属于「未提交」失败：必须切到下一候选，而不是卡在排队。"""
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        candidates = [
+            {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+            {'id':second['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+        ]
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            **candidates[0], 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':candidates,
+        }
+        # 占满主渠道（默认并发 2）：新任务只能在排队闸里等，等满 120 秒仍未提交供应商
+        busy = [cm.reserve(self.ch['id'], 'task', job, cm.version(self.ch['id']))
+                for job in ('504', '506')]
+        with closing(cm.db()) as c:
+            for run in busy:
+                c.execute("UPDATE runs SET state='running' WHERE id=?", (run,))
+            c.commit()
+
+        real_monotonic = time.monotonic
+        class JumpClock:
+            calls = 0
+            def __call__(self):
+                JumpClock.calls += 1
+                return real_monotonic() + (0.0 if JumpClock.calls <= 4 else 500.0)
+
+        def generate(cfg, _payload, _rid, _job_id):
+            return {'channel_id':cfg['id']}
+
+        with patch.object(time, 'monotonic', JumpClock()), \
+                patch.object(time, 'sleep', lambda *_: None), \
+                patch.object(runtime, 'generate', side_effect=generate):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 505)
+
+        self.assertEqual(second['id'], result['channel_id'])
+        evidence = cm.task_evidence(505)
+        self.assertEqual('passed', evidence['state'])
+        self.assertEqual(second['id'], evidence['channel'])
+        snapshot = evidence['execution_snapshot']
+        self.assertEqual(2, snapshot['route_attempt'])
+        self.assertEqual(self.ch['id'], snapshot['attempts'][0]['channel'])
+        self.assertIn('尚未提交供应商', snapshot['attempts'][0]['detail'])
+        self.assertEqual(1, len([run for run in cm.overview()['runs']
+                                 if run['job_id'] == '505']))
+
     def test_operation_publish_serializes_concurrent_channel_change(self):
         full = cm.reserve(self.ch['id'], 'full')
         cm.finish(full, 'passed', 'artifact checked')
