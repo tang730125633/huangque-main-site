@@ -344,3 +344,32 @@ test('layout loader accepts wrapped and legacy contracts and exposes empty and r
   await settle();
   assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:minimax"/);
 });
+
+test('server-line replacement never promotes the new channel and keeps paused functions paused',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-manager.js'),'utf8');
+  const start=source.indexOf('async function applyReplacement');
+  const end=source.indexOf('\n    }',start)+6;
+  assert.ok(start>0&&end>start,'applyReplacement 未找到');
+  const run=async(mappings)=>{
+    const requests=[];
+    const ctx={post:(action,body)=>{requests.push({action,body});return Promise.resolve({id:'new'})},
+      mappingChannels:m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean),
+      routeMappings:()=>mappings};
+    vm.createContext(ctx);
+    vm.runInContext('let replacementPaused=[];\n'+source.slice(start,end)+'\nglobalThis.__apply=applyReplacement;',ctx);
+    const paused=await ctx.__apply({id:'new'},{operations:mappings.map(m=>m.operation_id)});
+    return {requests,paused};
+  };
+  const managed={operation_id:'image.banana.nb2.text',state:'managed',revision:7,channels:['primary','backup'],channel:'primary',backup:'backup'};
+  const legacy={operation_id:'image.gemini.nb2.text',state:'legacy',revision:1,channel:'legacy-line'};
+  const paused={operation_id:'video.banana.pro.text',state:'paused',revision:3,channels:['stopped']};
+  const {requests,paused:pausedOperations}=await run([managed,legacy,paused]);
+  const mapping=requests.filter(r=>r.action==='operation-mapping');
+  const summary=JSON.parse(JSON.stringify(mapping.map(r=>[r.body.operation_id,r.body.state,r.body.channels,r.body.expected_revision])));
+  assert.deepEqual(summary,
+    [['image.banana.nb2.text','managed',['primary','backup','new'],7],
+     ['image.gemini.nb2.text','shadow',['new','legacy-line'],1]]);
+  assert.deepEqual(Array.from(pausedOperations),['video.banana.pro.text']);
+  assert.equal(mapping.some(r=>r.body.operation_id==='video.banana.pro.text'),false,'暂停中的功能不得被静默恢复');
+  assert.deepEqual(requests.filter(r=>r.action==='test').map(r=>r.body.kind),['connection','auth']);
+});
