@@ -258,11 +258,11 @@ def dispatch_http(handler, method, verify_token, must_change_password):
                         or not _UPLOAD_ID_RE.fullmatch(
                             str(body.get("upload_id") or "").strip().lower())):
                     raise ValueError("请求必须提供有效的 upload_id")
-                cli_uploads.discard_image(body["upload_id"], user["username"])
+                cli_uploads.discard_material(body["upload_id"], user["username"])
                 handler._send(200, {"ok": True})
             except ValueError as exc:
                 handler._send(400, {
-                    "detail": str(exc)[:220], "code": "invalid_image_discard",
+                    "detail": str(exc)[:220], "code": "invalid_material_discard",
                 })
             return True
         if method != "POST":
@@ -272,24 +272,29 @@ def dispatch_http(handler, method, verify_token, must_change_password):
         uploaded = None
         try:
             if handler.headers.get("Transfer-Encoding"):
-                raise ValueError("图片上传必须提供 Content-Length")
+                raise ValueError("素材上传必须提供 Content-Length")
             length = int(handler.headers.get("Content-Length") or 0)
             content_type = (
                 handler.headers.get("Content-Type") or ""
             ).split(";", 1)[0].strip().lower()
-            uploaded = cli_uploads.store_image(
+            uploaded = cli_uploads.store_material(
                 handler.rfile, length, user["username"], content_type,
                 handler.headers.get("X-HQ-Image-SHA256"),
             )
-            data, meta = cli_uploads.read_image_bytes(
+            # 安全检测只对**图片**有意义：微信 img_sec_check 只吃图片，
+            # 把视频/音频塞进去必然解析失败。非图片一律跳过，不算漏检。
+            meta = cli_uploads.inspect_material(
                 uploaded["upload_id"], user["username"],
             )
-            if miniprogram_security.configured():
+            if miniprogram_security.configured() and meta["mime"].startswith("image/"):
+                data, _meta = cli_uploads.read_material_bytes(
+                    uploaded["upload_id"], user["username"],
+                )
                 miniprogram_security.check_image(
                     data, "digital-human-material%s" % meta["extension"],
                     meta["mime"],
                 )
-            approved = cli_uploads.approve_image(
+            approved = cli_uploads.approve_material(
                 uploaded["upload_id"], user["username"],
                 DIGITAL_HUMAN_MATERIAL_UPLOAD_PURPOSE,
                 lease_seconds=DIGITAL_HUMAN_MATERIAL_UPLOAD_LEASE_SECONDS,
@@ -305,26 +310,26 @@ def dispatch_http(handler, method, verify_token, must_change_password):
             })
         except miniprogram_security.ContentRejected as exc:
             if uploaded:
-                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+                cli_uploads.discard_material(uploaded.get("upload_id"), user["username"])
             handler._send(400, {
                 "detail": str(exc)[:220], "code": "content_rejected",
             })
         except miniprogram_security.SecurityUnavailable as exc:
             if uploaded:
-                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+                cli_uploads.discard_material(uploaded.get("upload_id"), user["username"])
             handler._send(503, {
                 "detail": str(exc)[:220], "code": exc.code,
                 "retry_after_ms": 5000,
             })
         except (TypeError, ValueError) as exc:
             if uploaded:
-                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+                cli_uploads.discard_material(uploaded.get("upload_id"), user["username"])
             handler._send(400, {
                 "detail": str(exc)[:220], "code": "invalid_image_upload",
             })
         except OSError:
             if uploaded:
-                cli_uploads.discard_image(uploaded.get("upload_id"), user["username"])
+                cli_uploads.discard_material(uploaded.get("upload_id"), user["username"])
             handler._send(500, {
                 "detail": "图片暂时无法保存", "code": "image_upload_failed",
             })
