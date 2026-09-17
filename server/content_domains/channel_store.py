@@ -257,14 +257,14 @@ def save(actor, body):
                     config['parameters'] = validate(config, old_config['parameters'])
                 for mapping_row in conn.execute('SELECT config FROM routing.mappings').fetchall():
                     mapping = json.loads(mapping_row['config'])
-                    if (mapping.get('enabled') and cid in {mapping.get('channel'), mapping.get('backup')}
+                    if (mapping.get('enabled') and cid in mgr.mapping_channel_ids(mapping)
                             and mapping.get('kind') != mgr.ADAPTERS[config['adapter']]['kind']):
                         raise ValueError('该渠道仍被已启用映射使用，不能更改为不兼容协议；请先调整映射')
                 for mapping_row in conn.execute(
                         'SELECT operation_id,state,config FROM routing.operation_mappings').fetchall():
                     mapping = json.loads(mapping_row['config'])
                     if (mapping_row['state'] in {'shadow', 'managed'}
-                            and cid in {mapping.get('channel'), mapping.get('backup')}):
+                            and cid in mgr.mapping_channel_ids(mapping)):
                         from .function_registry import operation
                         try:
                             mgr._validate_operation_config(config, operation(mapping_row['operation_id']))
@@ -332,9 +332,11 @@ def _fetch_operation_mapping(conn, operation_id, revision=None):
             ).fetchone()
     if not row:
         return None
-    return dict(json.loads(row['config']), operation_id=row['operation_id'],
-                revision=row['revision'], state=row['state'], actor=row['actor'],
-                updated=row['updated'])
+    result = dict(json.loads(row['config']), operation_id=row['operation_id'],
+                  revision=row['revision'], state=row['state'], actor=row['actor'],
+                  updated=row['updated'])
+    result['channels'] = _mgr().mapping_channel_ids(result)
+    return result
 
 
 def operation_mapping(operation_id, revision=None, connection=None):
@@ -399,22 +401,27 @@ def save_operation_mapping(actor, body):
     state = str(body.get('state') or 'legacy').strip().lower()
     if state not in mgr.MAPPING_STATES:
         raise ValueError('映射状态必须为 legacy、shadow、managed 或 paused')
-    cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
+    channels = mgr._requested_mapping_channels(body)
     now = time.time()
     with _pool_instance().connection() as conn:
         with conn.transaction():
             _lock(conn, 'routing.operation_mapping:' + operation_id)
             if state in {'shadow', 'managed'}:
-                _mapping_channel(cid, contract, require_ready=state == 'managed', connection=conn)
-                if backup:
-                    if backup == cid:
-                        raise ValueError('备用渠道必须与主渠道不同')
-                    _mapping_channel(backup, contract, connection=conn)
+                if not channels:
+                    raise ValueError('请选择主渠道')
+                for index, target in enumerate(channels):
+                    _mapping_channel(
+                        target, contract,
+                        require_ready=state == 'managed' and index == 0,
+                        connection=conn,
+                    )
             else:
-                cid, backup = '', ''
+                channels = []
+            cid = channels[0] if channels else ''
+            backup = channels[1] if len(channels) > 1 else ''
             config = {
                 'kind': contract['channel_kind'], 'label': contract['name'],
-                'channel': cid, 'backup': backup,
+                'channel': cid, 'backup': backup, 'channels': channels,
             }
             current = conn.execute(
                 'SELECT revision FROM routing.operation_mappings WHERE operation_id=%s',
@@ -460,7 +467,7 @@ def rollback_operation_mapping(actor, body):
         raise ValueError('历史映射版本不存在')
     return save_operation_mapping(actor, {
         'operation_id': operation_id, 'state': old['state'],
-        'channel': old.get('channel') or '', 'backup': old.get('backup') or '',
+        'channels': _mgr().mapping_channel_ids(old),
         'expected_revision': body.get('expected_revision'),
     })
 
@@ -753,12 +760,12 @@ def mutate(actor, body):
             mappings.extend(json.loads(r['config']) for r in conn.execute(
                 "SELECT config FROM routing.operation_mappings WHERE state IN ('shadow','managed')")
                 .fetchall())
-            references = [m for m in mappings if cid in {m.get('channel'), m.get('backup')}]
+            references = [m for m in mappings if cid in mgr.mapping_channel_ids(m)]
             if action == 'delete':
                 if row['enabled']:
                     raise ValueError('请先停用渠道，再移入回收站')
                 if references:
-                    raise ValueError('渠道仍被主/备用映射引用，请先切换或删除关联映射')
+                    raise ValueError('渠道仍被渠道优先级映射引用，请先切换或删除关联映射')
                 if conn.execute(
                         "SELECT 1 FROM routing.runs WHERE channel=%s AND state IN "
                         "('queued','running','unknown') LIMIT 1", (cid,)).fetchone():

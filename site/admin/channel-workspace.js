@@ -1,8 +1,9 @@
 (function(){
   window.initChannelWorkspace=function(env){
     const {el,esc,toast}=env,C=window.ChannelCatalog,api=env.api;
-    let data={},rows=[],tab='matrix',matrixPage='image',matrixShowHidden=false,selected=null,returnFocus=null;
+    let data={},rows=[],tab='matrix',matrixPage='image',matrixShowHidden=false,selected=null,returnFocus=null,matrixExpanded=null,draggedPriorityChannel='';
     const matrixGroupSelection={};
+    const priorityDrafts={};
     let layoutLoading=false;
     const filters={category:'all',q:'',supplier:'',transport:'',status:'',history:false};
     const date=n=>n?new Date(n*1000).toLocaleString():'未采集';
@@ -136,6 +137,61 @@
         const management=item?.management,identity=management?.uid+'|'+management?.kind;if(!management?.uid||seen.has(identity))return false;seen.add(identity);return true;
       });
     }
+    const mappingForOperation=operationId=>(data.operation_mappings||[]).find(item=>item.operation_id===operationId)||(data.operations||[]).find(item=>item.operation_id===operationId)?.mapping||null;
+    const mappingChannels=mapping=>{
+      if(Array.isArray(mapping?.channels))return unique(mapping.channels.map(String));
+      return unique([mapping?.channel,mapping?.backup]);
+    };
+    function priorityDraft(route){
+      const operationId=route?.operation_id||'';
+      if(!operationId)return null;
+      if(!priorityDrafts[operationId]){
+        const mapping=mappingForOperation(operationId);
+        priorityDrafts[operationId]={operation_id:operationId,state:mapping?.state||'shadow',revision:Number(mapping?.revision||0),channels:mappingChannels(mapping)};
+      }
+      return priorityDrafts[operationId];
+    }
+    function compatiblePriorityChannels(operationId){
+      const operation=(data.operations||[]).find(item=>item.operation_id===operationId);
+      const mapping=mappingForOperation(operationId),kind=operation?.channel_kind||mapping?.kind||'';
+      if(!operation||!kind)return [];
+      return (data.items||[]).filter(item=>!item._lifecycle?.deleted&&data.adapters?.[item.adapter]?.kind===kind);
+    }
+    function movePriority(operationId,channelId,targetId,direction){
+      const draft=priorityDrafts[operationId];if(!draft)return;
+      const from=draft.channels.indexOf(channelId);if(from<0)return;
+      if(!targetId){
+        const to=from+Number(direction||0);if(to<0||to>=draft.channels.length||to===from)return;
+        [draft.channels[from],draft.channels[to]]=[draft.channels[to],draft.channels[from]];return;
+      }
+      if(targetId===channelId)return;
+      const [item]=draft.channels.splice(from,1),to=draft.channels.indexOf(targetId);
+      if(to<0){draft.channels.splice(from,0,item);return}draft.channels.splice(to,0,item);
+    }
+    function priorityEditor(product,model){
+      const routes=(model.routes||[]).filter(route=>(data.operations||[]).some(item=>item.operation_id===route.operation_id));
+      if(!routes.length)return '<section class="cm-priority-editor"><div class="cm-priority-head"><div><span>渠道优先级</span><h4>'+esc(model.label)+'</h4></div></div><p class="cm-priority-empty">当前模型仍由内置线路管理，尚未注册可发布的 operation_id。请先在功能映射中完成托管接入。</p></section>';
+      const active=routes.find(route=>route.operation_id===matrixExpanded?.operationId)||routes[0];
+      matrixExpanded.operationId=active.operation_id;
+      const draft=priorityDraft(active),mapping=mappingForOperation(active.operation_id),candidates=compatiblePriorityChannels(active.operation_id);
+      const byId=Object.fromEntries((data.items||[]).map(item=>[item.id,item]));
+      const ordered=draft.channels.map((id,index)=>{
+        const channel=byId[id]||{id,name:'已删除或不可见渠道',supplier:'未知',model:'',base_url:'',connection_type:'unknown',enabled:false,health:'不可用'};
+        const role=index===0?'主渠道':index===1?'备用 1':'候选 '+index;
+        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+1)+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small><code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+(channel.enabled?'ok':'off')+'">'+esc(channel.enabled?(channel.health||'待验证'):'已停用')+'</span><div class="cm-priority-actions"><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" class="mini" data-cm-priority-remove="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">移除</button></div></div>';
+      }).join('');
+      const available=candidates.filter(item=>!draft.channels.includes(item.id));
+      const routeTabs=routes.length>1?'<nav class="cm-priority-route-tabs" aria-label="模型能力">'+routes.map(route=>'<button type="button" data-cm-priority-route="'+esc(route.operation_id)+'" class="'+(route.operation_id===active.operation_id?'active':'')+'" aria-pressed="'+String(route.operation_id===active.operation_id)+'">'+esc(route.capability||route.operation_id)+'</button>').join('')+'</nav>':'';
+      const addOptions=available.map(item=>'<option value="'+esc(item.id)+'" '+(!item.enabled?'disabled':'')+'>'+esc(item.name+' · '+(item.model||'模型待配置')+(!item.enabled?'（已停用）':''))+'</option>').join('');
+      const histories=(mapping?.history||[]).filter(item=>Number(item.revision)!==Number(mapping.revision));
+      const history=histories.length?'<details class="cm-priority-history"><summary>历史版本与回滚</summary><div>'+histories.map(item=>'<button type="button" class="mini" data-cm-priority-rollback="'+Number(item.revision)+'" data-operation="'+esc(active.operation_id)+'" data-expected-revision="'+Number(mapping.revision||0)+'">恢复 r'+Number(item.revision)+' · '+esc(item.state||'')+' · '+esc(date(item.created))+'</button>').join('')+'</div></details>':'';
+      return '<section class="cm-priority-editor" data-cm-priority-editor="'+esc(active.operation_id)+'"><div class="cm-priority-head"><div><span>渠道优先级</span><h4>'+esc(product.label+' · '+model.label)+'</h4><p>'+esc(active.capability||'生成')+' · <code>'+esc(active.operation_id)+'</code></p></div><button type="button" class="mini" data-cm-priority-close>收起</button></div>'+routeTabs
+        +'<div class="cm-priority-notice">第 1 项是实际主渠道，第 2 项写入备用渠道；第 3 项以后保存为候选顺序。第一阶段不会自动重试付费生成。</div>'
+        +'<label class="cm-priority-state">控制状态<select data-cm-priority-state="'+esc(active.operation_id)+'"><option value="shadow" '+(draft.state==='shadow'?'selected':'')+'>影子验证（不接管生产）</option><option value="managed" '+(draft.state==='managed'?'selected':'')+'>统一托管（第 1 项接单）</option><option value="legacy" '+(draft.state==='legacy'?'selected':'')+'>保留内置线路</option><option value="paused" '+(draft.state==='paused'?'selected':'')+'>暂停接单</option></select></label>'
+        +'<div class="cm-priority-list">'+(ordered||'<p class="cm-priority-empty">尚未添加托管渠道。当前仍由内置线路接单。</p>')+'</div>'
+        +'<div class="cm-priority-add"><select data-cm-priority-add-choice="'+esc(active.operation_id)+'"><option value="">选择兼容渠道</option>'+addOptions+'</select><button type="button" data-cm-priority-add="'+esc(active.operation_id)+'" '+(available.length?'':'disabled')+'>添加渠道</button></div>'
+        +'<div class="cm-priority-footer"><span data-cm-priority-status="'+esc(active.operation_id)+'"></span><div class="actions"><button type="button" data-cm-priority-test="'+esc(active.operation_id)+'" '+(draft.channels.length?'':'disabled')+'>测试全部连接</button><button type="button" class="primary" data-cm-priority-save="'+esc(active.operation_id)+'">保存并发布</button></div></div>'+history+'</section>';
+    }
     function manageAction(item){
       const management=item?.management;if(!management?.uid)return '';
       if(management.kind==='managed_channel'){
@@ -216,18 +272,22 @@
       const renderModelTable=(products,hidden=false)=>{
         const body=products.flatMap(product=>{
           const models=product.models||[];
-          return models.map((model,index)=>{
+          const expandedIndex=models.findIndex(model=>matrixExpanded&&matrixExpanded.page===matrix.page&&matrixExpanded.product===product.key&&matrixExpanded.model===model.key);
+          const productRowspan=models.length+(expandedIndex>=0?1:0);
+          return models.flatMap((model,index)=>{
             const routes=model.routes||[],status=modelStatus(product,model);
             const channel=compactValue(routes.map(route=>route.primary?.name||'未配置'));
             const transport=compactValue(routes.map(route=>route.primary?transportName(route.primary.connection_type):'未标注'));
-            const productCell=index?'':'<td class="cm-model-product" rowspan="'+models.length+'"><b>'+esc(product.label)+'</b><small>'+esc(product.description||product.visibility_reason||'前端产品')+'</small><span class="cm-matrix-pill '+(hidden?'muted':'ok')+'">'+(hidden?'前台隐藏':'前台显示')+'</span></td>';
-            return '<tr class="'+(modelNeedsAction(product,model)?'attention ':'')+(hidden?'hidden':'')+'" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">'+productCell
+            const expanded=index===expandedIndex;
+            const productCell=index?'':'<td class="cm-model-product" rowspan="'+productRowspan+'"><b>'+esc(product.label)+'</b><small>'+esc(product.description||product.visibility_reason||'前端产品')+'</small><span class="cm-matrix-pill '+(hidden?'muted':'ok')+'">'+(hidden?'前台隐藏':'前台显示')+'</span></td>';
+            const row='<tr class="'+(modelNeedsAction(product,model)?'attention ':'')+(hidden?'hidden ':'')+(expanded?'expanded':'')+'" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'" aria-expanded="'+String(expanded)+'">'+productCell
               +'<td><button type="button" class="cm-model-list-link" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">'+esc(model.label)+'</button></td>'
               +'<td class="cm-model-actual"><code title="'+esc(model.actual_model||'实际模型待配置')+'">'+esc(model.actual_model||'实际模型待配置')+'</code></td>'
               +'<td class="cm-model-channel"><strong>'+esc(channel)+'</strong></td>'
               +'<td class="cm-model-transport"><span class="cm-transport '+(transport==='官方直连'?'official':transport==='中转 API'?'relay':'unknown')+'">'+esc(transport)+'</span></td>'
               +'<td><span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span></td>'
-              +'<td class="cm-model-action"><button type="button" class="mini" data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">查看配置</button></td></tr>';
+              +'<td class="cm-model-action"><button type="button" class="mini" data-cm-model-config data-cm-model-page="'+esc(matrix.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">密钥与配置</button></td></tr>';
+            return expanded?[row,'<tr class="cm-model-priority-row"><td colspan="6">'+priorityEditor(product,model)+'</td></tr>']:[row];
           });
         }).join('');
         if(!body)return '<div class="empty">当前板块没有前台显示的模型或服务。</div>';
@@ -235,7 +295,7 @@
       };
       const visibleTable=renderModelTable(visibleProducts);
       const hiddenTable=hiddenProducts.length?renderModelTable(hiddenProducts,true):'';
-      host.innerHTML='<div class="cm-function-workspace"><div class="cm-function-heading"><div><span>'+esc(activeGroup.label)+'</span><h3>'+esc(matrix.label||matrix.page||'前端模型与渠道')+'</h3><p class="muted">一行对应一个前端模型；点击模型即可管理渠道、API Key 与 Base URL。</p></div><div class="actions"><button type="button" data-cm-view="layout">调整前台展示</button></div></div>'+businessTabs+subnav
+      host.innerHTML='<div class="cm-function-workspace"><div class="cm-function-heading"><div><span>'+esc(activeGroup.label)+'</span><h3>'+esc(matrix.label||matrix.page||'前端模型与渠道')+'</h3><p class="muted">点击模型展开渠道优先级；“密钥与配置”管理 API Key 与 Base URL。</p></div><div class="actions"><button type="button" data-cm-view="layout">调整前台展示</button></div></div>'+businessTabs+subnav
         +'<div class="cm-overview-strip"><span><i class="ok"></i>可接单 <b>'+statusCounts.ok+'</b></span><span><i class="pending"></i>待验证 <b>'+statusCounts.pending+'</b></span><span><i class="warn"></i>需要处理 <b>'+statusCounts.issue+'</b></span><button type="button" class="cm-overview-hidden" data-cm-matrix-hidden aria-pressed="'+String(matrixShowHidden)+'"><i class="muted"></i>前台隐藏 <b>'+hiddenProducts.reduce((total,product)=>total+(product.models||[]).length,0)+'</b></button><small>'+Number(summary.products||0)+' 个产品 · '+Number(summary.models||0)+' 个模型 / 服务</small></div>'
         +(matrix.precision==='service'?'<p class="cm-precision-note">本板块按已登记的真实前端功能与依赖服务展示；尚未建立独立模型档位的功能会标为“服务配置”。</p>':'')
         +visibleTable
@@ -285,7 +345,15 @@
     }
     function editor(title){closeGuard=null;el('cmEditor').oninput=null;el('cmEditor').onchange=null;el('cmEditor').onclick=null;if(el('cmDrawer').hidden)shell(title);el('cmDrawerTitle').textContent=title;el('cmDetail').hidden=true}
     const root=document.querySelector('[data-module="managedChannels"]');
-    root.addEventListener('click',e=>{const modelTarget=e.target.closest('[data-cm-model-key]');if(modelTarget?.dataset?.cmModelKey){openMatrixModel(modelTarget.dataset.cmModelPage,modelTarget.dataset.cmModelProduct,modelTarget.dataset.cmModelKey);return}const b=e.target.closest('button');if(!b)return;
+    root.addEventListener('click',async e=>{const configTarget=e.target.closest('[data-cm-model-config]');if(configTarget?.dataset?.cmModelKey){openMatrixModel(configTarget.dataset.cmModelPage,configTarget.dataset.cmModelProduct,configTarget.dataset.cmModelKey);return}const modelTarget=e.target.closest('[data-cm-model-key]');if(modelTarget?.dataset?.cmModelKey){const same=matrixExpanded&&matrixExpanded.page===modelTarget.dataset.cmModelPage&&matrixExpanded.product===modelTarget.dataset.cmModelProduct&&matrixExpanded.model===modelTarget.dataset.cmModelKey;matrixExpanded=same?null:{page:modelTarget.dataset.cmModelPage,product:modelTarget.dataset.cmModelProduct,model:modelTarget.dataset.cmModelKey,operationId:''};renderMatrix();return}const b=e.target.closest('button');if(!b)return;
+      if(b.dataset.cmPriorityClose!=null){matrixExpanded=null;renderMatrix();return}
+      if(b.dataset.cmPriorityRoute){matrixExpanded.operationId=b.dataset.cmPriorityRoute;renderMatrix();return}
+      if(b.dataset.cmPriorityMove){movePriority(b.dataset.operation,b.dataset.channel,'',Number(b.dataset.cmPriorityMove));renderMatrix();return}
+      if(b.dataset.cmPriorityRemove){const draft=priorityDrafts[b.dataset.operation];if(draft)draft.channels=draft.channels.filter(id=>id!==b.dataset.cmPriorityRemove);renderMatrix();return}
+      if(b.dataset.cmPriorityAdd){const editor=b.closest('.cm-priority-editor'),choice=editor?.querySelector('[data-cm-priority-add-choice]')?.value,draft=priorityDrafts[b.dataset.cmPriorityAdd];if(choice&&draft&&!draft.channels.includes(choice)){draft.channels.push(choice);renderMatrix()}return}
+      if(b.dataset.cmPriorityTest){const operationId=b.dataset.cmPriorityTest,draft=priorityDrafts[operationId],status=el('cmMatrix').querySelector('[data-cm-priority-status="'+operationId+'"]');b.disabled=true;if(status)status.textContent='正在提交连接检测…';try{for(const id of draft?.channels||[])await api('/api/admin/channel-manager/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,kind:'connection'})});if(status)status.textContent='全部连接检测已排队，请稍后刷新查看结果。';toast('渠道连接检测已排队')}catch(error){if(status)status.textContent=error.message;toast(error.message)}finally{b.disabled=false}return}
+      if(b.dataset.cmPrioritySave){const operationId=b.dataset.cmPrioritySave,draft=priorityDrafts[operationId],status=el('cmMatrix').querySelector('[data-cm-priority-status="'+operationId+'"]');if(!draft)return;if(!confirm('发布 '+operationId+' 的新渠道优先级？\n第 1 项将作为主渠道；仅影响发布后的新任务。'))return;b.disabled=true;if(status)status.textContent='正在发布…';try{await api('/api/admin/channel-manager/operation-mapping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationId,state:draft.state,channels:draft.channels,expected_revision:draft.revision})});delete priorityDrafts[operationId];toast('渠道优先级已发布');await env.refresh()}catch(error){if(status)status.textContent=error.message;toast(error.message)}finally{b.disabled=false}return}
+      if(b.dataset.cmPriorityRollback){const operationId=b.dataset.operation;if(!confirm('恢复 '+operationId+' 到 r'+b.dataset.cmPriorityRollback+'？恢复会发布一个新修订。'))return;b.disabled=true;try{await api('/api/admin/channel-manager/operation-mapping-rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationId,target_revision:Number(b.dataset.cmPriorityRollback),expected_revision:Number(b.dataset.expectedRevision)})});delete priorityDrafts[operationId];toast('历史优先级已恢复');await env.refresh()}catch(error){toast(error.message)}finally{b.disabled=false}return}
       if(b.dataset.layoutMove){
         const parts=b.dataset.layoutMove.split(':'),page=parts[0],key=parts[1],dir=Number(parts[2]);
         const row=el('cmLayout').querySelector('[data-layout-row="'+page+':'+key+'"]');
@@ -315,6 +383,10 @@
       if(b.dataset.cmJob){close();env.task(b.dataset.cmJob)}
       if(b.dataset.cmJourney){close();env.journey(b.dataset.cmJourney)}
     });
+    root.addEventListener('change',e=>{const operationId=e.target?.dataset?.cmPriorityState;if(!operationId||!priorityDrafts[operationId])return;priorityDrafts[operationId].state=e.target.value});
+    root.addEventListener('dragstart',e=>{const row=e.target.closest('[data-cm-priority-channel]');if(!row)return;draggedPriorityChannel=row.dataset.cmPriorityChannel;e.dataTransfer?.setData('text/plain',draggedPriorityChannel);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'});
+    root.addEventListener('dragover',e=>{if(e.target.closest('[data-cm-priority-channel]'))e.preventDefault()});
+    root.addEventListener('drop',e=>{const row=e.target.closest('[data-cm-priority-channel]');if(!row||!draggedPriorityChannel)return;e.preventDefault();movePriority(row.dataset.cmPriorityOperation,draggedPriorityChannel,row.dataset.cmPriorityChannel,0);draggedPriorityChannel='';renderMatrix()});
     [['cmSearch','q','input'],['cmSupplier','supplier','change'],['cmTransport','transport','change'],['cmState','status','change'],['cmHistory','history','change']].forEach(([id,key,event])=>el(id).addEventListener(event,()=>{filters[key]=key==='history'?el(id).checked:el(id).value;list()}));
     el('cmDrawer').addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();close()}if(e.key==='Tab'){const nodes=Array.from(el('cmDrawer').querySelectorAll('button,input,select,textarea,a[href]')).filter(n=>!n.disabled&&n.getClientRects().length);if(!nodes.length)return;const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
     return {render,open,close,editor,showTab,setCloseGuard:guard=>{closeGuard=guard}};

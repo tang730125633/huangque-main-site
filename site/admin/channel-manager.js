@@ -34,8 +34,9 @@
       edit(channel);return true;
     }
     const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById});
+    const mappingChannels=m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean);
     function routeMappings(){return [...(data.mappings||[]),...(data.operation_mappings||[])]}
-    const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>routeMappings().filter(m=>m.channel===id||m.backup===id)});
+    const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>routeMappings().filter(m=>mappingChannels(m).includes(id))});
     window.closeChannelWorkspace=workspace.close;
     const labels={passed:'通过',failed:'失败',unknown:'结果未知',terminated:'已终止',queued:'等待中',running:'执行中',blocked:'条件未满足',captured:'已记录'};
     const kinds={connection:'连接检测',auth:'鉴权检测',full:'完整生成测试',task:'用户任务',shadow:'影子观察'};
@@ -51,8 +52,8 @@
       if(!c)return;
       const names={enable:'启用',disable:'停用',delete:'移入回收站',restore:'恢复'};
       const refs=[...(data.mappings||[]),...(data.operation_mappings||[])]
-        .filter(m=>m.channel===c.id||m.backup===c.id).map(m=>m.label||m.operation_id||m.front);
-      const impact={enable:'允许后续新任务接单。启用不代表渠道测试通过。',disable:'阻止后续新任务和新测试。已受理任务继续使用原配置，不会被终止。',delete:'必须先停用，并解除全部主渠道 / 备用映射引用。执行中或结果未知的调用会阻止删除。历史配置和任务记录保留。',restore:'恢复后保持停用。请检查配置及映射，再手动启用。'};
+        .filter(m=>mappingChannels(m).includes(c.id)).map(m=>m.label||m.operation_id||m.front);
+      const impact={enable:'允许后续新任务接单。启用不代表渠道测试通过。',disable:'阻止后续新任务和新测试。已受理任务继续使用原配置，不会被终止。',delete:'必须先停用，并解除全部渠道优先级引用。执行中或结果未知的调用会阻止删除。历史配置和任务记录保留。',restore:'恢复后保持停用。请检查配置及映射，再手动启用。'};
       if(c.source==='legacy')impact.disable='阻止下列范围的新任务接单。已有任务继续执行；鉴权探针及其他接口保持原有行为。';
       const dialog=document.createElement('dialog');dialog.className='cm-lifecycle-dialog';
       dialog.innerHTML='<form><h3>'+names[action]+' · '+esc(c.name)+'</h3><p>'+esc(impact[action])+'</p><p>'+esc(c.source==='legacy'?'控制范围：'+c.scope+'。其他同步接口不受此开关控制。':'关联功能：'+(refs.join('、')||'无'))+'</p><label>操作原因<textarea class="field" name="reason" required minlength="2" maxlength="200" placeholder="请填写原因，便于后续追踪"></textarea></label><p class="cm-operation-error" role="alert"></p><div class="actions"><button type="button">取消</button><button class="primary" type="submit">确认'+names[action]+'</button></div></form>';
@@ -94,7 +95,7 @@
       const operations=data.operations||[],op=operations.find(x=>x.operation_id===(selected.operation_id||''))||operations[0];
       if(!op){toast('暂无可配置功能');return}
       const m=selected.revision?selected:(op.mapping||{}),choices=window.ChannelCatalog.compatible(data,op.channel_kind),state=m.state||'legacy';
-      el('cmMappingEditor').innerHTML='<form id="cmMapForm" class="cm-form"><h3>稳定功能 → 实际模型</h3><p class="muted">映射按 operation_id 发布不可变版本。托管状态要求当前渠道版本已启用，并有最近 24 小时完整生成测试；运行时失败不会静默退回旧线路。</p><div class="cm-fields">'+select('稳定功能','operation_id',operations.map(x=>[x.operation_id,x.page_name+' / '+x.name]),op.operation_id)+select('控制状态','state',[['legacy','旧线路'],['shadow','影子校验（不改实际路由）'],['managed','统一托管'],['paused','暂停（明确拒绝）']],state)+select('主渠道','channel',[['','未设置'],...choices.map(c=>[c.id,c.name+' · '+c.model+(c.enabled?'':'（已停用）')])],m.channel)+select('备用渠道（仅记录，暂不自动切换）','backup',[['','未设置'],...choices.map(c=>[c.id,c.name])],m.backup)+'</div><input type="hidden" name="expected_revision" value="'+esc(m.revision||0)+'"><p id="cmMappingImpact" class="cm-flow"></p><button class="primary">发布新映射版本</button></form>'+((m.history||[]).length>1?'<details><summary>历史映射版本</summary><div class="actions">'+m.history.filter(h=>h.revision!==m.revision).map(h=>'<button data-operation-rollback="'+h.revision+'" data-operation-id="'+esc(op.operation_id)+'" data-expected-revision="'+m.revision+'">恢复 r'+h.revision+' · '+esc(h.state)+' · '+esc(date(h.created))+'</button>').join('')+'</div><p class="muted">恢复会发布新修订，不改写历史任务。</p></details>':'');
+      el('cmMappingEditor').innerHTML='<form id="cmMapForm" class="cm-form"><h3>稳定功能 → 实际模型</h3><p class="muted">映射按 operation_id 发布不可变版本。托管状态要求当前渠道版本已启用，并有最近 24 小时完整生成测试；运行时失败不会静默退回旧线路。</p><div class="cm-fields">'+select('稳定功能','operation_id',operations.map(x=>[x.operation_id,x.page_name+' / '+x.name]),op.operation_id)+select('控制状态','state',[['legacy','旧线路'],['shadow','影子校验（不改实际路由）'],['managed','统一托管'],['paused','暂停（明确拒绝）']],state)+select('主渠道','channel',[['','未设置'],...choices.map(c=>[c.id,c.name+' · '+c.model+(c.enabled?'':'（已停用）')])],m.channel)+select('备用渠道（仅记录，暂不自动切换）','backup',[['','未设置'],...choices.map(c=>[c.id,c.name])],m.backup)+'</div><input type="hidden" name="expected_revision" value="'+esc(m.revision||0)+'"><input type="hidden" name="channels_json" value="'+esc(JSON.stringify(mappingChannels(m)))+'"><p id="cmMappingImpact" class="cm-flow"></p><button class="primary">发布新映射版本</button></form>'+((m.history||[]).length>1?'<details><summary>历史映射版本</summary><div class="actions">'+m.history.filter(h=>h.revision!==m.revision).map(h=>'<button data-operation-rollback="'+h.revision+'" data-operation-id="'+esc(op.operation_id)+'" data-expected-revision="'+m.revision+'">恢复 r'+h.revision+' · '+esc(h.state)+' · '+esc(date(h.created))+'</button>').join('')+'</div><p class="muted">恢复会发布新修订，不改写历史任务。</p></details>':'');
       const f=el('cmMapForm');
       const impact=()=>{const c=data.items.find(c=>c.id===f.elements.channel.value);el('cmMappingImpact').textContent=op.operation_id+' → '+f.elements.state.options[f.elements.state.selectedIndex].text+' → '+(c?c.name+' / '+c.model:'旧线路或暂停状态无需渠道')+'；仅影响发布后的新任务'};
       f.oninput=impact;f.onchange=e=>{if(e.target.name==='operation_id'){const next=operations.find(x=>x.operation_id===e.target.value);editMap(next?.mapping||{operation_id:e.target.value})}else impact()};impact();
@@ -114,7 +115,7 @@
         if(b.dataset.operation)return editMap((data.operations||[]).find(x=>x.operation_id===b.dataset.operation)?.mapping||{operation_id:b.dataset.operation});
         if(b.dataset.runs){renderRuns(b.dataset.runs);el('cmRuns').scrollIntoView({behavior:'smooth'});return}
         if(b.dataset.test){if(b.dataset.test==='full'){const c=data.items.find(c=>c.id===b.dataset.id);if(!confirm('发起 '+c.name+' 的完整生成测试？\n素材：'+(c.fixture?.prompt||'未准备提示词')+'，参考图 '+Number(c.material_count||0)+' 张。\n预留费用 '+Number(c.test_cost||0)+' 元；可能产生供应商费用，未知结果也占用预算。'))return}b.disabled=true;await post('test',{id:b.dataset.id,kind:b.dataset.test});toast('测试已排队，可在最近记录查看');await load()}
-        if(b.dataset.rollback){if(!confirm('恢复为 v'+b.dataset.rollback+' 的配置并创建新版本？仅影响新任务。\n关联映射：'+routeMappings().filter(m=>m.channel===editing.id||m.backup===editing.id).map(m=>m.label||m.operation_id||m.front).join('、')))return;b.disabled=true;await post('rollback',{id:editing.id,target_version:Number(b.dataset.rollback),enabled:!!editing.enabled});workspace.close();await load()}
+        if(b.dataset.rollback){if(!confirm('恢复为 v'+b.dataset.rollback+' 的配置并创建新版本？仅影响新任务。\n关联映射：'+routeMappings().filter(m=>mappingChannels(m).includes(editing.id)).map(m=>m.label||m.operation_id||m.front).join('、')))return;b.disabled=true;await post('rollback',{id:editing.id,target_version:Number(b.dataset.rollback),enabled:!!editing.enabled});workspace.close();await load()}
       }catch(err){toast(err.message)}finally{b.disabled=false}
     });
     document.querySelector('[data-module="managedChannels"]').addEventListener('submit',async e=>{
@@ -127,8 +128,8 @@
           const refs=await Promise.all(files.map(file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)})));
           v.id=editing.id;v.version=editing.version;v.fixture={prompt:v.prompt,duration:Number(v.duration),ratio:v.ratio};
           if(refs.length||v.clear_materials)v.fixture.reference_images=refs;
-          delete v.materials;const affected=routeMappings().filter(m=>m.channel===editing.id||m.backup===editing.id).map(m=>m.label||m.operation_id||m.front);if(!confirm('保存渠道 '+v.name+' 为新版本？\n实际模型：'+(editing.model||'未配置')+' → '+v.model+'\n接单：'+(v.enabled?'启用':'停用')+'\n关联功能：'+(affected.join('、')||'尚未配置映射')+'\n已有任务保留原版本，仅新任务受影响。'))return;await post('save',v);workspace.close();
-        }else if(f.id==='cmMapForm'){const name=id=>data.items.find(c=>c.id===id)?.name||'未配置';if(!confirm('确认发布 '+v.operation_id+' 的新路由版本？\n控制状态：'+v.state+'\n主渠道：'+name(v.channel)+'\n'+el('cmMappingImpact').textContent))return;v.expected_revision=Number(v.expected_revision||0);await post('operation-mapping',v);workspace.close()}
+          delete v.materials;const affected=routeMappings().filter(m=>mappingChannels(m).includes(editing.id)).map(m=>m.label||m.operation_id||m.front);if(!confirm('保存渠道 '+v.name+' 为新版本？\n实际模型：'+(editing.model||'未配置')+' → '+v.model+'\n接单：'+(v.enabled?'启用':'停用')+'\n关联功能：'+(affected.join('、')||'尚未配置映射')+'\n已有任务保留原版本，仅新任务受影响。'))return;await post('save',v);workspace.close();
+        }else if(f.id==='cmMapForm'){const name=id=>data.items.find(c=>c.id===id)?.name||'未配置',tail=JSON.parse(v.channels_json||'[]').slice(2);v.channels=[v.channel,v.backup,...tail].filter((id,index,list)=>id&&list.indexOf(id)===index);delete v.channels_json;if(!confirm('确认发布 '+v.operation_id+' 的新路由版本？\n控制状态：'+v.state+'\n主渠道：'+name(v.channel)+'\n'+el('cmMappingImpact').textContent))return;v.expected_revision=Number(v.expected_revision||0);await post('operation-mapping',v);workspace.close()}
         else if(f.id==='cmNoticeForm'){await post('notifications',v);el('cmNotifications').innerHTML=''}
         toast('已保存');await load();
       }catch(err){toast(err.message)}finally{if(b)b.disabled=false}

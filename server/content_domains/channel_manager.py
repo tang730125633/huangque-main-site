@@ -168,13 +168,13 @@ def save(actor, body):
                 config['parameters']=validate(config,old_config['parameters'])
             for mapping_row in c.execute('SELECT config FROM mappings'):
                 mapping = json.loads(mapping_row['config'])
-                if (mapping.get('enabled') and cid in {mapping.get('channel'), mapping.get('backup')}
+                if (mapping.get('enabled') and cid in mapping_channel_ids(mapping)
                         and mapping.get('kind') != ADAPTERS[config['adapter']]['kind']):
                     raise ValueError('该渠道仍被已启用映射使用，不能更改为不兼容协议；请先调整映射')
             for mapping_row in c.execute('SELECT operation_id,state,config FROM operation_mappings'):
                 mapping = json.loads(mapping_row['config'])
                 if (mapping_row['state'] in {'shadow', 'managed'}
-                        and cid in {mapping.get('channel'), mapping.get('backup')}):
+                        and cid in mapping_channel_ids(mapping)):
                     from .function_registry import operation
                     try:
                         _validate_operation_config(config, operation(mapping_row['operation_id']))
@@ -232,6 +232,38 @@ def version(cid, rev=None, with_secret=False):
 
 
 MAPPING_STATES = {'legacy', 'shadow', 'managed', 'paused'}
+MAX_MAPPING_CHANNELS = 8
+
+
+def mapping_channel_ids(mapping):
+    """Return the ordered channel ids for old and new mapping payloads."""
+    if not isinstance(mapping, dict):
+        return []
+    raw = mapping.get('channels')
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item or '').strip()]
+    return list(dict.fromkeys(
+        str(mapping.get(key) or '').strip() for key in ('channel', 'backup')
+        if str(mapping.get(key) or '').strip()
+    ))
+
+
+def _requested_mapping_channels(body):
+    if 'channels' not in body:
+        return mapping_channel_ids(body)
+    raw = body.get('channels')
+    if not isinstance(raw, list):
+        raise ValueError('渠道优先级必须是有序列表')
+    channels = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError('渠道优先级包含无效渠道')
+        channels.append(item.strip())
+    if len(channels) > MAX_MAPPING_CHANNELS:
+        raise ValueError('单个功能最多配置 %d 个渠道优先级' % MAX_MAPPING_CHANNELS)
+    if len(set(channels)) != len(channels):
+        raise ValueError('渠道优先级不能包含重复渠道')
+    return channels
 
 
 def operation_mapping(operation_id, revision=None, connection=None):
@@ -257,9 +289,11 @@ def operation_mapping(operation_id, revision=None, connection=None):
             c.close()
     if not row:
         return None
-    return dict(json.loads(row['config']), operation_id=row['operation_id'],
-                revision=row['revision'], state=row['state'], actor=row['actor'],
-                updated=row['updated'])
+    result = dict(json.loads(row['config']), operation_id=row['operation_id'],
+                  revision=row['revision'], state=row['state'], actor=row['actor'],
+                  updated=row['updated'])
+    result['channels'] = mapping_channel_ids(result)
+    return result
 
 
 def _validate_operation_config(cfg, contract):
@@ -335,22 +369,26 @@ def save_operation_mapping(actor, body):
     state = str(body.get('state') or 'legacy').strip().lower()
     if state not in MAPPING_STATES:
         raise ValueError('映射状态必须为 legacy、shadow、managed 或 paused')
-    cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
+    channels = _requested_mapping_channels(body)
     now = time.time()
     with closing(db()) as c:
         c.execute('BEGIN IMMEDIATE')
         if state in {'shadow', 'managed'}:
-            _mapping_channel(
-                cid, contract, require_ready=state == 'managed', connection=c)
-            if backup:
-                if backup == cid:
-                    raise ValueError('备用渠道必须与主渠道不同')
-                _mapping_channel(backup, contract, connection=c)
+            if not channels:
+                raise ValueError('请选择主渠道')
+            for index, target in enumerate(channels):
+                _mapping_channel(
+                    target, contract,
+                    require_ready=state == 'managed' and index == 0,
+                    connection=c,
+                )
         else:
-            cid, backup = '', ''
+            channels = []
+        cid = channels[0] if channels else ''
+        backup = channels[1] if len(channels) > 1 else ''
         config = {
             'kind': contract['channel_kind'], 'label': contract['name'],
-            'channel': cid, 'backup': backup,
+            'channel': cid, 'backup': backup, 'channels': channels,
         }
         current = c.execute('SELECT revision FROM operation_mappings WHERE operation_id=?',
                             (operation_id,)).fetchone()
@@ -386,7 +424,7 @@ def rollback_operation_mapping(actor, body):
         raise ValueError('历史映射版本不存在')
     return save_operation_mapping(actor, {
         'operation_id': operation_id, 'state': old['state'],
-        'channel': old.get('channel') or '', 'backup': old.get('backup') or '',
+        'channels': mapping_channel_ids(old),
         'expected_revision': body.get('expected_revision'),
     })
 

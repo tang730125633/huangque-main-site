@@ -121,12 +121,12 @@ def mutate(actor, body):
         mappings=[json.loads(r[0]) for r in c.execute('SELECT config FROM mappings')]
         mappings.extend(json.loads(r[0]) for r in c.execute(
             "SELECT config FROM operation_mappings WHERE state IN ('shadow','managed')"))
-        references=[m for m in mappings if cid in {m.get('channel'),m.get('backup')}]
+        references=[m for m in mappings if cid in store.mapping_channel_ids(m)]
         if action=='delete':
             if row['enabled']:
                 raise ValueError('请先停用渠道，再移入回收站')
             if references:
-                raise ValueError('渠道仍被主/备用映射引用，请先切换或删除关联映射')
+                raise ValueError('渠道仍被渠道优先级映射引用，请先切换或删除关联映射')
             if c.execute("SELECT 1 FROM runs WHERE channel=? AND state IN ('queued','running','unknown') LIMIT 1",(cid,)).fetchone():
                 raise ValueError('存在执行中或结果未知的调用，请先核对，暂不可删除')
             if active_jobs(cid):

@@ -169,6 +169,48 @@ class ChannelTests(unittest.TestCase):
             item['revision'] for item in cm.overview()['operation_mappings'][0]['history']
         ])
 
+    def test_operation_mapping_preserves_ordered_channel_priorities_and_rollback(self):
+        second = cm.save('admin', dict(self.body, name='备用图片渠道', secret='second-secret'))
+        third = cm.save('admin', dict(self.body, name='候选图片渠道', secret='third-secret'))
+        ordered = [self.ch['id'], second['id'], third['id']]
+        first = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channels':ordered, 'expected_revision':0,
+        })
+        self.assertEqual(ordered, first['channels'])
+        self.assertEqual(self.ch['id'], first['channel'])
+        self.assertEqual(second['id'], first['backup'])
+
+        reordered = [third['id'], self.ch['id'], second['id']]
+        second_revision = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channels':reordered, 'expected_revision':1,
+        })
+        self.assertEqual(reordered, second_revision['channels'])
+
+        restored = cm.rollback_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'target_revision':1,
+            'expected_revision':2,
+        })
+        self.assertEqual(ordered, restored['channels'])
+        self.assertEqual(3, restored['revision'])
+
+        with self.assertRaisesRegex(ValueError, '重复'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.text', 'state':'shadow',
+                'channels':[self.ch['id'], self.ch['id']], 'expected_revision':3,
+            })
+
+        from server.content_domains import channel_lifecycle
+        disabled = channel_lifecycle.mutate('admin', {
+            'id':third['id'], 'version':1, 'action':'disable', 'reason':'准备下线',
+        })
+        with self.assertRaisesRegex(ValueError, '优先级'):
+            channel_lifecycle.mutate('admin', {
+                'id':third['id'], 'version':disabled['version'],
+                'action':'delete', 'reason':'确认下线',
+            })
+
     def test_operation_publish_serializes_concurrent_channel_change(self):
         full = cm.reserve(self.ch['id'], 'full')
         cm.finish(full, 'passed', 'artifact checked')

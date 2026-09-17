@@ -11,6 +11,7 @@
     if(!check.updated||now-Number(check.updated)>86400)return '证据已过期';
     return {passed:'通过',failed:'失败',unknown:'结果未知',running:'检测中',queued:'排队中',blocked:'条件未满足'}[check.state]||'未验证';
   }
+  const mappingChannels=m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean);
   function catalog(data,legacy){
     return (legacy||[]).map(c=>({...c,uid:'legacy:'+c.key,source:'legacy',supplier:c.name,
       categories:classify(c.category),enabled:c.accepts_new_jobs!==false&&data.legacy_controls?.[c.key]?.enabled!==false,retired:c.accepts_new_jobs===false||data.legacy_controls?.[c.key]?.enabled===false,
@@ -20,9 +21,9 @@
         supplier:c.supplier||'未标注供应商',connection_type:c.connection_type||'unknown',
         categories:[data.adapters?.[c.adapter]?.kind==='image'?'image':'video'],retired:!c.enabled,deleted:!!c._lifecycle?.deleted,
         attention:c.health!=='成品核验通过',features:[...(data.mappings||[]),...(data.operation_mappings||[])]
-          .filter(m=>m.channel===c.id).map(m=>m.label||m.operation_id||m.front)})));
+          .filter(m=>mappingChannels(m).includes(c.id)).map(m=>m.label||m.operation_id||m.front)})));
   }
   function filter(rows,f){return rows.filter(c=>(f.status==='deleted'?c.deleted:!c.deleted)&&(f.history||['disabled','deleted'].includes(f.status)||!c.retired)&&(f.category==='all'||c.categories.includes(f.category))&&(!f.supplier||c.supplier===f.supplier)&&(!f.transport||c.connection_type===f.transport)&&(!f.status||f.status==='deleted'||(f.status==='enabled'?c.enabled:f.status==='disabled'?!c.enabled:c.attention))&&(!f.q||[c.name,c.supplier,c.model,...(c.features||[])].join(' ').toLowerCase().includes(f.q.toLowerCase())))}
   function compatible(data,kind){return (data.items||[]).filter(c=>!c._lifecycle?.deleted&&data.adapters?.[c.adapter]?.kind===kind)}
-  root.ChannelCatalog={categories,classify,checkLabel,catalog,filter,compatible};
+  root.ChannelCatalog={categories,classify,checkLabel,catalog,filter,compatible,mappingChannels};
 })(typeof window==='undefined'?globalThis:window);
