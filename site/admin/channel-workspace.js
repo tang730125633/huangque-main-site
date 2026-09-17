@@ -4,6 +4,7 @@
     let data={},rows=[],tab='matrix',matrixPage='image',matrixShowHidden=false,selected=null,returnFocus=null,matrixExpanded=null,draggedPriorityChannel='';
     const matrixGroupSelection={};
     const priorityDrafts={};
+    const serverReplacementTemplates={};
     let layoutLoading=false;
     const filters={category:'all',q:'',supplier:'',transport:'',status:'',history:false};
     const date=n=>n?new Date(n*1000).toLocaleString():'未采集';
@@ -248,9 +249,23 @@
         +(route.reason?'<p class="cm-matrix-detail-warning">'+esc(route.reason)+'</p>':'')+'</section>').join('');
       const managedActions=managers.filter(item=>item.management.kind==='managed_channel').map(item=>'<button type="button" class="primary" data-cm-managed-edit="'+esc(item.management.uid.replace(/^managed:/,''))+'">修改 '+esc(item.name)+' 的 Key / Base URL</button>').join('');
       const legacySwitch=legacyManagers.map((entry,index)=>'<button type="button" class="'+(index?'':'active')+'" data-cm-inline-route="'+esc(entry.item.management.uid)+'" data-cm-inline-kind="'+esc(entry.item.management.kind)+'" aria-pressed="'+String(!index)+'">'+esc(entry.item.name)+'</button>').join('');
-      const serverManaged=legacyManagers.some(entry=>entry.item.management.kind==='server_env');
-      const inline='<section class="cm-model-inline-config"><div class="cm-model-inline-head"><div><span>凭据与连接配置</span><h3>修改当前模型使用的线路</h3><p>更换密钥会先验证，通过后才保存；验证失败时保留原配置。</p></div>'+managedActions+'</div>'
-        +(serverManaged?'<div class="cm-server-managed-note"><div><b>服务器托管 · 只读</b><p>环境变量不能在网页中直接覆盖。新建可编辑渠道并验证通过后，再把它加入当前模型的渠道优先级。</p></div><button type="button" class="primary" data-cm-new-channel>新建可编辑渠道</button></div>':'')
+      const serverEntry=legacyManagers.find(entry=>entry.item.management.kind==='server_env');
+      const replacementKey=pageKey+'.'+productKey+'.'+modelKey;
+      const providerKey=String(serverEntry?.target?.key||'');
+      const replacementAdapter={gemini:'gemini_image',openai:'openai_image'}[providerKey]||'';
+      const replacementBase=(serverEntry?.item?.base_urls||[])[0]||(serverEntry?.item?.base_host?'https://'+serverEntry.item.base_host:'');
+      if(serverEntry&&replacementAdapter&&data.adapters?.[replacementAdapter])serverReplacementTemplates[replacementKey]={
+        name:(serverEntry.item.name||serverEntry.target.name||'官方渠道')+' · '+model.label,
+        supplier:serverEntry.item.supplier||serverEntry.target.name||'',connection_type:serverEntry.item.connection_type||'official',
+        adapter:replacementAdapter,base_url:replacementBase,model:model.actual_model||'',enabled:true,
+        fixture:{prompt:'生成一张纯色背景的产品展示图',ratio:'1:1',duration:5},
+        // 没有完整测试预算就永远跑不出 24 小时内的通过证据，也就永远切不了主渠道：预填一次 1 元。
+        test_cost:1,daily_limit:1,daily_budget:1,
+        _replacement:{page:pageKey,product:productKey,model:modelKey,operations:[...new Set((model.routes||[]).map(route=>route.operation_id).filter(Boolean))]}
+      };else delete serverReplacementTemplates[replacementKey];
+      const replacementAction=serverEntry?(serverReplacementTemplates[replacementKey]?'<button type="button" class="primary" data-cm-server-replace="'+esc(replacementKey)+'">直接修改 Key / Base URL</button>':'<button type="button" disabled title="该供应商协议尚未接入托管渠道">暂不支持后台直改</button>'):'';
+      const inline='<section class="cm-model-inline-config"><div class="cm-model-inline-head"><div><span>凭据与连接配置</span><h3>修改当前模型使用的线路</h3><p>新 Key 保存为候选后自动检测；验证失败不会切换生产线路。</p></div>'+managedActions+'</div>'
+        +(serverEntry?'<div class="cm-server-managed-note"><div><b>服务器托管 · 安全迁移</b><p>在这里输入新 Key 和 Base URL。系统会保留原环境变量线路，建立可回滚的托管候选并开始检测。</p></div>'+replacementAction+'</div>':'')
         +(legacySwitch?'<nav class="cm-model-inline-tabs" aria-label="选择要配置的底层线路">'+legacySwitch+'</nav><div id="cmLegacyEditorHost"></div><div id="cmLegacyKeys"></div><details class="cm-model-inline-journeys"><summary>查看关联功能与测试入口</summary><div id="cmLegacyJourneys"></div></details>':'')
         +(!legacySwitch&&!managedActions?'<p class="muted">当前模型没有可在线管理的渠道配置。</p>':'')+'</section>';
       const currentRoutes=modelLegs(model,['primary']).map(([,item])=>routeOverview(item)).join('');
@@ -388,6 +403,7 @@
       if(b.dataset.cmMatrixPage){matrixPage=b.dataset.cmMatrixPage;renderMatrix();return}
       if(b.dataset.cmMatrixHidden!=null){matrixShowHidden=!matrixShowHidden;renderMatrix();return}
       if(b.dataset.cmManagedEdit){if(!closeLegacy())return;env.editChannel?.(b.dataset.cmManagedEdit);return}
+      if(b.dataset.cmServerReplace){const template=serverReplacementTemplates[b.dataset.cmServerReplace];if(!template){toast('该线路暂不支持后台直接修改');return}if(!closeLegacy())return;env.newChannel?.({...template,_replacement:{...template._replacement,operations:[...template._replacement.operations]}});return}
       if(b.dataset.cmNewChannel!=null){if(!closeLegacy())return;env.newChannel?.();return}
       if(b.dataset.cmInlineRoute){const target=rows.find(c=>c.uid===b.dataset.cmInlineRoute);if(!target){toast('没有找到对应的渠道配置');return}if(!closeLegacy())return;el('cmDetail').querySelectorAll('[data-cm-inline-route]').forEach(item=>{const active=item.dataset.cmInlineRoute===b.dataset.cmInlineRoute&&item.dataset.cmInlineKind===b.dataset.cmInlineKind;item.classList.toggle('active',active);item.setAttribute('aria-pressed',String(active))});env.detail(target,{managementKind:b.dataset.cmInlineKind||''});return}
       if(b.dataset.cmCategory){filters.category=b.dataset.cmCategory;list()}

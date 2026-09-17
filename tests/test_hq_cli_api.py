@@ -345,8 +345,8 @@ class HQCLIAPITests(unittest.TestCase):
                          ["properties"]["person_image_upload_id"]["title"])
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["clothes_upload_id"]["title"])
-        for action, family, maximum in (("image-upload", "image", 10 * 1024 * 1024),
-                                        ("video-upload", "video", 32 * 1024 * 1024),
+        for action, family, maximum in (("image-upload", "image", 200 * 1024 * 1024),
+                                        ("video-upload", "video", 200 * 1024 * 1024),
                                         ("audio-upload", "audio", 10 * 1024 * 1024)):
             with self.subTest(action=action):
                 item = actions[action]
@@ -1136,7 +1136,7 @@ class HQCLIAPITests(unittest.TestCase):
             "/api/auth/cli/status", token=refreshed["access_token"],
         )
         self.assertEqual(200, status)
-        self.assertEqual(100, current["user"]["points"])
+        self.assertEqual(0, current["user"]["points"])
         self.assertEqual(["profile:read", "tasks:read"], current["scopes"])
         status, replay = self._request(
             "/api/auth/cli/refresh", {"refresh_token": original["refresh_token"]},

@@ -103,7 +103,7 @@ test('frontend function center uses a model list and keeps technical details in 
   ];
   const detailCalls=[],editCalls=[],newCalls=[],requests=[];
   let allowLegacyClose=true;
-  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,toast(){},api:async(path,options)=>{requests.push([path,options]);return{}},legacy:()=>legacyChannels,closeLegacy(){return allowLegacyClose},editChannel:id=>editCalls.push(id),newChannel:()=>newCalls.push('new'),lifecycle(){},detail(channel,options){detailCalls.push([channel.key,options.managementKind])},mapping(){},refresh(){},task(){},journey(){}});
+  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,toast(){},api:async(path,options)=>{requests.push([path,options]);return{}},legacy:()=>legacyChannels,closeLegacy(){return allowLegacyClose},editChannel:id=>editCalls.push(id),newChannel:template=>newCalls.push(template),lifecycle(){},detail(channel,options){detailCalls.push([channel.key,options.managementKind])},mapping(){},refresh(){},task(){},journey(){}});
   const workspaceData={items:[],mappings:[],legacy_controls:{},adapters:{},frontend_matrix:{page:'image',summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[{
     key:'banana',label:'纳米香蕉',description:'前台产品',visible:true,admitted:true,models:[{key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图','图生图'],admitted:true,routes:[{capability:'文生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}},backup:{id:'gemini-backup',name:'Google Gemini API · 兜底',supplier:'Google Gemini API',connection_type:'relay',base_host:'relay.example.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'ok',label:'鉴权通过'},full:{state:'unverified',label:'未建立模型级成品证据'}},candidate:{id:'gemini-shadow',name:'候选线路',supplier:'候选供应商',connection_type:'relay',base_host:'shadow.example.com',credential_source:'渠道密钥库',configured:true,enabled:false,auth:{state:'stale',label:'证据已过期'},full:{state:'unverified',label:'未建立模型级成品证据'}}},{capability:'图生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}}}]}]
   },{key:'xiaole',label:'果肉生图',description:'前台未开放',visible:false,admitted:false,models:[{key:'default',label:'GPT Image 2',actual_model:'gpt-image-2',visible:false,admitted:false,routes:[]}]}]}};
@@ -200,7 +200,7 @@ test('frontend function center uses a model list and keeps technical details in 
     {id:'managed-primary',name:'托管主渠道',supplier:'供应商 A',adapter:'openai_image',model:'gemini-3.1-flash-image',base_url:'https://primary.example/v1',connection_type:'official',enabled:true,configured:true,health:'成品核验通过'},
     {id:'managed-backup',name:'托管备用渠道',supplier:'供应商 B',adapter:'openai_image',model:'gemini-3.1-flash-image',base_url:'https://backup.example/v1',connection_type:'relay',enabled:true,configured:true,health:'未验证'}
   ];
-  workspaceData.adapters={openai_image:{kind:'image',name:'图片生成'}};
+  workspaceData.adapters={openai_image:{kind:'image',name:'图片生成'},gemini_image:{kind:'image',name:'Google Gemini 官方生图'}};
   workspaceData.operations=[{operation_id:'image.banana.nb2.text',channel_kind:'image',name:'纳米香蕉 2 文生图',mapping:{operation_id:'image.banana.nb2.text',state:'shadow',revision:4,channels:['managed-primary','managed-backup'],channel:'managed-primary',backup:'managed-backup'}}];
   workspaceData.operation_mappings=[workspaceData.operations[0].mapping];
   workspaceData.runs=[{id:81,job_id:501,operation_id:'image.banana.nb2.text',mapping_revision:4,channel:'managed-backup',state:'passed',execution_snapshot:{route_attempt:2,attempts:[{attempt:1,channel:'managed-primary',version:1,state:'failed',detail:'供应商明确拒绝提交'}]}}];
@@ -248,11 +248,19 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmDetail.innerHTML,/id="cmLegacyKeys"/);
   assert.match(elements.cmDetail.innerHTML,/data-cm-managed-edit="shadow-channel"/);
   assert.match(elements.cmDetail.innerHTML,/data-cm-inline-route="legacy:gemini" data-cm-inline-kind="provider_pool"/);
-  assert.match(elements.cmDetail.innerHTML,/服务器托管 · 只读/);
-  assert.match(elements.cmDetail.innerHTML,/data-cm-new-channel/);
+  assert.match(elements.cmDetail.innerHTML,/服务器托管 · 安全迁移/);
+  assert.match(elements.cmDetail.innerHTML,/data-cm-server-replace/);
   assert.deepEqual(detailCalls,[['gemini','server_env']]);
-  root.listeners.click({target:{closest:()=>({dataset:{cmNewChannel:''}})}});
-  assert.deepEqual(newCalls,['new']);
+  root.listeners.click({target:{closest:()=>({dataset:{cmServerReplace:'image.banana.nb2'}})}});
+  assert.equal(newCalls.length,1);
+  assert.equal(newCalls[0].adapter,'gemini_image');
+  assert.equal(newCalls[0].model,'gemini-3.1-flash-image');
+  assert.equal(newCalls[0].base_url,'https://generativelanguage.googleapis.com');
+  assert.equal(newCalls[0].enabled,true);
+  assert.equal(newCalls[0].test_cost,1,'没有完整测试预算就无法验证，也就永远切不了主渠道');
+  assert.equal(newCalls[0].daily_limit,1);
+  assert.equal(newCalls[0].daily_budget,1);
+  assert.deepEqual(Array.from(newCalls[0]._replacement.operations),['image.banana.nb2.text']);
   const poolButton={dataset:{cmInlineRoute:'legacy:gemini',cmInlineKind:'provider_pool'},classList:{toggle(){}},setAttribute(){}};
   allowLegacyClose=false;
   root.listeners.click({target:{closest:()=>poolButton}});
@@ -273,7 +281,7 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(source,/data-cm-matrix-hidden/);
   assert.match(source,/data-cm-inline-route/);
   assert.match(source,/data-cm-managed-edit/);
-  assert.match(source,/data-cm-new-channel/);
+  assert.match(source,/data-cm-server-replace/);
   assert.match(source,/data-cm-view="layout">调整前台展示/);
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
   assert.doesNotMatch(html,/module-subnav[^>]*aria-label="渠道管理页面"/);
@@ -338,4 +346,33 @@ test('layout loader accepts wrapped and legacy contracts and exposes empty and r
   assert.match(elements.cmLayout.innerHTML,/正在读取前台布局/);
   await settle();
   assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:minimax"/);
+});
+
+test('server-line replacement never promotes the new channel and keeps paused functions paused',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-manager.js'),'utf8');
+  const start=source.indexOf('async function applyReplacement');
+  const end=source.indexOf('\n    }',start)+6;
+  assert.ok(start>0&&end>start,'applyReplacement 未找到');
+  const run=async(mappings)=>{
+    const requests=[];
+    const ctx={post:(action,body)=>{requests.push({action,body});return Promise.resolve({id:'new'})},
+      mappingChannels:m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean),
+      routeMappings:()=>mappings};
+    vm.createContext(ctx);
+    vm.runInContext('let replacementPaused=[];\n'+source.slice(start,end)+'\nglobalThis.__apply=applyReplacement;',ctx);
+    const paused=await ctx.__apply({id:'new'},{operations:mappings.map(m=>m.operation_id)});
+    return {requests,paused};
+  };
+  const managed={operation_id:'image.banana.nb2.text',state:'managed',revision:7,channels:['primary','backup'],channel:'primary',backup:'backup'};
+  const legacy={operation_id:'image.gemini.nb2.text',state:'legacy',revision:1,channel:'legacy-line'};
+  const paused={operation_id:'video.banana.pro.text',state:'paused',revision:3,channels:['stopped']};
+  const {requests,paused:pausedOperations}=await run([managed,legacy,paused]);
+  const mapping=requests.filter(r=>r.action==='operation-mapping');
+  const summary=JSON.parse(JSON.stringify(mapping.map(r=>[r.body.operation_id,r.body.state,r.body.channels,r.body.expected_revision])));
+  assert.deepEqual(summary,
+    [['image.banana.nb2.text','managed',['primary','backup','new'],7],
+     ['image.gemini.nb2.text','shadow',['new','legacy-line'],1]]);
+  assert.deepEqual(Array.from(pausedOperations),['video.banana.pro.text']);
+  assert.equal(mapping.some(r=>r.body.operation_id==='video.banana.pro.text'),false,'暂停中的功能不得被静默恢复');
+  assert.deepEqual(requests.filter(r=>r.action==='test').map(r=>r.body.kind),['connection','auth']);
 });

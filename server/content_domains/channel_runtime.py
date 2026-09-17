@@ -44,6 +44,8 @@ class SubmissionRejected(SafeChannelFailover, ProviderError):
 
 
 SAFE_POST_REJECTION_STATUSES = {400, 401, 402, 403, 404, 405, 413, 415, 422}
+# Gemini 原生协议同步返回 inlineData 图片，2K/4K 的 base64 体量远超 safe_http 的 8MB 默认上限。
+GEMINI_RESPONSE_MAX_BYTES = 24 * 1024 * 1024
 
 
 def validate_payload(cfg, payload):
@@ -73,6 +75,17 @@ def validate_payload(cfg, payload):
                 raise ValueError('此渠道未启用局部修图（蒙版）')
             if len(refs) != 1:
                 raise ValueError('局部修图需要恰好 1 张参考图')
+    if cfg['adapter'] == 'gemini_image':
+        from .banana_provider import MAX_REFERENCE_IMAGES, MAX_TOTAL_REFERENCE_BYTES, RATIOS
+        if payload.get('video') or payload.get('reference_videos') or payload.get('mask'):
+            raise ValueError('Gemini 官方生图不支持视频参考或蒙版')
+        if len(refs) > MAX_REFERENCE_IMAGES:
+            raise ValueError('Gemini 官方生图参考图最多 14 张')
+        normalized = _gemini_references(refs)
+        if sum(item['bytes'] for item in normalized) > MAX_TOTAL_REFERENCE_BYTES:
+            raise ValueError('Gemini 官方生图参考图总大小超过 48MB')
+        if str(payload.get('ratio') or '1:1') not in RATIOS:
+            raise ValueError('Gemini 官方生图不支持该画面比例')
     if cfg['adapter'] == 'minimax_h3':
         from .video_minimax_h3 import build_request
         build_request(payload['prompt'], refs, payload.get('ratio') or '9:16', payload.get('duration') or 5, payload.get('resolution') or '2K')
@@ -115,9 +128,16 @@ def validate_payload(cfg, payload):
 
 
 def request(cfg, method, path, body=None, extra_headers=None, files=None):
-    headers = {'Authorization': 'Bearer ' + cfg['secret']}
+    headers = (
+        {'x-goog-api-key': cfg['secret']}
+        if cfg['adapter'] == 'gemini_image'
+        else {'Authorization': 'Bearer ' + cfg['secret']}
+    )
     if extra_headers:
         headers.update(extra_headers)
+    # Gemini 原生协议把图片塞在 inlineData 里返回：2K/4K 的 base64 远超 safe_http 的 8MB 默认上限，
+    # 用默认值会把已计费的成品判成「供应商 HTTP 200」丢掉。给这个适配器单独放宽到 24MB。
+    headroom = {'max_bytes': GEMINI_RESPONSE_MAX_BYTES} if cfg['adapter'] == 'gemini_image' else {}
     try:
         url = cfg['base_url']+'/'+path.lstrip('/')
         if files is not None:
@@ -130,6 +150,7 @@ def request(cfg, method, path, body=None, extra_headers=None, files=None):
             method, url, body=body,
             headers=headers,
             timeout=cfg['timeout'], proxy=cfg.get('proxy') or '',
+            **headroom,
         )
     except safe_http.SafeHttpError as exc:
         if method == 'POST' and (exc.status in {0,408,409,425,429} or exc.status>=500):
@@ -218,6 +239,24 @@ def _decode_data_url(value, field):
     return raw
 
 
+def _gemini_references(refs):
+    """Normalize references with the shared Nano Banana validator."""
+    from .banana_provider import _validated_reference
+    return [_validated_reference(value, index) for index, value in enumerate(refs)]
+
+
+def _gemini_image_bytes(response):
+    parts = ((response.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
+    inline = next((part.get('inlineData') for part in parts if part.get('inlineData')), None)
+    if not inline or not inline.get('data'):
+        detail = (response.get('error') or {}).get('message') or '供应商未返回图片'
+        raise ValueError('Gemini 未返回图片：' + str(detail)[:180])
+    try:
+        return base64.b64decode(inline['data'], validate=True)
+    except Exception:
+        raise ValueError('Gemini 返回的图片数据无效') from None
+
+
 def _edits_parts(cfg, payload, refs, placeholder=False):
     spec = cfg.get('parameters') or {}
     fields = {'prompt': str(payload.get('prompt') or ''), 'size': str(payload.get('size') or '1024x1024'), 'n': '1'}
@@ -246,6 +285,21 @@ def build_generation_request(cfg, payload, preview=False):
             body, files = _edits_parts(cfg, payload, refs, placeholder=preview)
             return '/images/edits', body, files
         return '/images/generations', image_request(cfg,payload), None
+    if adapter == 'gemini_image':
+        from .banana_provider import IMAGE_SIZES, MODELS, build_request_body
+        from .channel_parameters import SIZES
+        references = _gemini_references(refs)
+        ratio = str(payload.get('ratio') or SIZES.get(str(payload.get('size') or ''), '1:1'))
+        quality = str(payload.get('quality') or 'std').lower()
+        if quality not in {'std','hd'}:
+            raise ValueError('Gemini 官方生图清晰度仅支持 std/hd')
+        model_key = next((key for key,value in MODELS.items() if value == cfg['model']), '')
+        if not model_key:
+            raise ValueError('Gemini 官方生图仅支持已登记的 Nano Banana 模型')
+        image_size = IMAGE_SIZES[model_key][quality]
+        body = build_request_body(payload['prompt'], ratio, references, image_size)
+        path = '/v1beta/models/' + urllib.parse.quote(cfg['model'], safe='.-_') + ':generateContent'
+        return path, body, None
     if adapter == 'minimax_h3':
         from .video_minimax_h3 import build_request
         body = build_request(payload['prompt'], refs, payload.get('ratio') or '9:16',payload.get('duration') or 5,payload.get('resolution') or '2K')
@@ -350,7 +404,7 @@ def generate(cfg, payload, rid, job_id):
                 raise RuntimeError('乐创视频缺少下载地址')
             store.finish(rid,'running','下载生成视频',provider_id)
             raw = trace.call(job_id,'download',lambda:_download_lechuang(cfg,content),**metadata)
-    elif adapter != 'openai_image':
+    elif adapter not in ('openai_image', 'gemini_image'):
         if not provider_id:
             raise OutcomeUnknown('供应商未返回工单号，禁止自动重发')
         store.finish(rid,'running','供应商已接单',provider_id)
@@ -377,13 +431,15 @@ def generate(cfg, payload, rid, job_id):
         url = (task.get('content') or {}).get('url') if adapter=='minimax_h3' else (task.get('video') or {}).get('url')
         store.finish(rid,'running','下载生成视频',provider_id)
         raw = trace.call(job_id,'download',lambda:_download(cfg,url),**metadata)
+    elif adapter == 'gemini_image':
+        raw = _gemini_image_bytes(result)
     else:
         data = result.get('data') or []
         if not data:
             raise RuntimeError('供应商返回空产物')
         raw = base64.b64decode(data[0]['b64_json'],validate=True) if data[0].get('b64_json') else _download(cfg,data[0].get('url'))
     from . import core
-    media = 'image' if adapter in ('openai_image','lechuang_image') else 'video'
+    media = 'image' if adapter in ('openai_image','gemini_image','lechuang_image') else 'video'
     output_format=payload.get('output_format','png') if cfg.get('parameters') else 'png'
     filename = 'channel_'+uuid.uuid4().hex+('.'+output_format if media=='image' else '.mp4')
     target = core.OUT_DIR / filename
@@ -499,13 +555,13 @@ def execute(rid, payload=None):
             if cfg['adapter']=='minimax_h3':
                 # A nonexistent resource cannot prove valid credentials.
                 raise CheckUnsupported('此协议未提供可靠的独立鉴权证明，请运行完整生成测试')
-            result = request(cfg,'GET','/models')
-            data = result.get('data')
+            result = request(cfg,'GET','/v1beta/models' if cfg['adapter']=='gemini_image' else '/models')
+            data = result.get('models') if cfg['adapter']=='gemini_image' else result.get('data')
             if isinstance(data, dict):
                 # 乐创统一协议：{code,message,data:{list:[{id,...}]}}
                 models = [m.get('id') for m in (data.get('list') or []) if isinstance(m, dict)]
             elif isinstance(data, list):
-                models = [m.get('id') for m in data if isinstance(m, dict)]
+                models = [m.get('id') or str(m.get('name') or '').removeprefix('models/') for m in data if isinstance(m, dict)]
             else:
                 models = []
             if not models or cfg['model'] not in models:
