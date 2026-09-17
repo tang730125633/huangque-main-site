@@ -25,6 +25,7 @@ from . import channel_store
 
 ADAPTERS = {
     'openai_image': {'name': 'OpenAI 兼容文生图', 'kind': 'image', 'references': False},
+    'gemini_image': {'name': 'Google Gemini 官方生图', 'kind': 'image', 'references': True},
     'minimax_h3': {'name': 'MiniMax H3 视频协议', 'kind': 'xiaole_video', 'references': True},
     'xai_video': {'name': 'Grok 视频协议', 'kind': 'xiaole_video', 'references': True},
     # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
