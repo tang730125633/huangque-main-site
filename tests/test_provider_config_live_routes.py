@@ -27,6 +27,7 @@ class LiveRoutesTests(unittest.TestCase):
 
     def setUp(self):
         loop.SeedreamLoopTest.setUp(self)
+        os.environ['CONTENT_OUT'] = str(self.tmp / 'output')
         os.environ[pc.WIRING_ENV] = 'all'
         for name in ('GEMINI_API_KEY', 'OPENAI_API_KEY', 'RUNNINGHUB_API_KEY', 'WAVESPEED_API_KEY'):
             os.environ[name] = 'fixture-A'
