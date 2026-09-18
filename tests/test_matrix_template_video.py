@@ -2467,6 +2467,11 @@ class MatrixTemplateVideoTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
                          "ffmpeg and ffprobe are required")
     def test_hdr_voiceover_preserves_hevc_ten_bit_color_with_and_without_bgm(self):
+        for transfer, transfer_code in (("arib-std-b67", 18), ("smpte2084", 16)):
+            with self.subTest(transfer=transfer):
+                self._assert_hdr_voiceover_color(transfer, transfer_code)
+
+    def _assert_hdr_voiceover_color(self, transfer, transfer_code):
         encoders = subprocess.check_output(["ffmpeg", "-hide_banner", "-encoders"], text=True)
         if "libx265" not in encoders:
             self.skipTest("libx265 required")
@@ -2480,9 +2485,9 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                 "-f", "lavfi", "-i", "sine=frequency=880:duration=0.6",
                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx265",
                 "-preset", "ultrafast", "-x265-params",
-                "pools=1:log-level=error:colorprim=9:colormatrix=9:transfer=18",
+                f"pools=1:log-level=error:colorprim=9:colormatrix=9:transfer={transfer_code}",
                 "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020",
-                "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+                "-color_trc", transfer, "-colorspace", "bt2020nc",
                 "-color_range", "tv", "-tag:v", "hvc1", "-c:a", "aac",
                 "-shortest", str(source),
             ], check=True, capture_output=True, timeout=30)
@@ -2504,8 +2509,13 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                     v = next(s for s in streams if s["codec_type"] == "video")
                     self.assertEqual(v["codec_name"], "hevc")
                     self.assertEqual(v["pix_fmt"], "yuv420p10le")
-                    self.assertEqual(v["color_transfer"], "arib-std-b67")
+                    self.assertEqual(v["color_transfer"], transfer)
                     self.assertEqual(v["color_primaries"], "bt2020")
+                    for field in ("codec_name", "pix_fmt", "color_transfer",
+                                  "color_primaries", "color_space", "color_range"):
+                        self.assertEqual(v.get(field), before_video.get(field), field)
+                    self.assertEqual(["aac"], [s["codec_name"] for s in streams
+                                              if s["codec_type"] == "audio"])
                     self.assertAlmostEqual(duration, 1.7, delta=0.12)
 
     def test_mux_voiceover_uses_ffmpeg_44_compatible_limiter_options(self):
