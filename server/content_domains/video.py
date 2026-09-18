@@ -5630,7 +5630,7 @@ def generate_heygen_video_subscription(image_file, audio_file, resolution, ratio
                                         job_id=None, image_asset_id=None):
     """Generate through OAuth/MCP only, billing the web plan and never the API wallet."""
     existing = get_resumable_heygen_talking_request(job_id)
-    image_asset_id = str((existing or {}).get("image_asset_id") or image_asset_id or "").strip()
+    image_asset_id = str((existing or {}).get("image_asset_id") or "").strip()
     if existing:
         video_id = existing["request_id"]
     else:
@@ -6266,8 +6266,8 @@ def gen_video(payload):
         avatar = get_video_avatar((payload.get("_username") or "").strip(), avatar_id)
         image_file = avatar.get("image_file")
         image_asset_id = str(avatar.get("provider_image_asset_id") or "").strip()
-        if _heygen_subscription_mode() and not image_asset_id:
-            raise ValueError("该数字人形象缺少 HeyGen 图片素材编号，请重新创建形象后再生成")
+        # 订阅(MCP)账户资产空间与 API 钱包不互通，provider_image_asset_id 不可复用；
+        # 生成时改为用本地 image_file 重传（见 generate_heygen_video_subscription）。
     else:
         image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
         image_asset_id = ""

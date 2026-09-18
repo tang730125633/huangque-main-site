@@ -405,6 +405,9 @@ def handle_quote(handler, path, verify, must_change_password, is_shutting_down,
                 payload, user["username"],
                 allow_shared_materials=(
                     matrix_template_video.shared_materials_allowed(user)
+                ),
+                public_only_materials=(
+                    matrix_template_video.public_only_materials(user)
                 ))
         else:
             raise ValueError("CLI 报价不支持该生成类型")

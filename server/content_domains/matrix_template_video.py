@@ -109,6 +109,9 @@ VOICEOVER_CACHE_RETENTION_SECONDS = 24 * 60 * 60
 VOICEOVER_MUX_TIMEOUT = 180
 MATERIAL_POLICY_SHARED = "shared"
 MATERIAL_POLICY_OWNED_PUBLIC = "owned_public"
+# 素材范围（2026-09-17 老板定调）：一次性邀请码注册的账号只能用公网素材，
+# 绝不使用公司素材（飞书群聊导入等）。其余账号候选载荷与历史逐字节一致。
+MATERIAL_SCOPE_PUBLIC_ONLY = "public_only"
 _USER_MATERIAL_TYPES = {"image", "video"}
 _USER_MATERIAL_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _CACHE = {
@@ -660,6 +663,20 @@ def shared_materials_allowed(user):
     return str(user.get("account_id") or "").strip() in grants
 
 
+def public_only_materials(user):
+    """一次性邀请码注册的账号：模板成片只能用公网素材（2026-09-17 老板定调）。
+
+    管理员与未绑定一次性码的账号（含永久码注册的老账号）路径完全不变。判定只
+    依据 auth /me 透出的 single_use_invite 标记；标记缺失（auth 尚未升级或查询
+    异常时 fail-open）按不受限处理，保护绝大多数账号不受影响。
+    """
+    if not isinstance(user, dict):
+        return False
+    if str(user.get("role") or "").strip().lower() == "admin":
+        return False
+    return bool(user.get("single_use_invite"))
+
+
 def _normalize_user_materials(value, *, trusted_frozen=False):
     if value in (None, "", []):
         return None
@@ -775,7 +792,8 @@ def _resolve_user_materials(
 
 def validate_payload(
         raw, username="", *, trusted_semantic_layout=None,
-        trusted_frozen_execution=False, allow_shared_materials=None):
+        trusted_frozen_execution=False, allow_shared_materials=None,
+        public_only_materials=False):
     if isinstance(raw, dict) and raw.get("mode") == "timeline":
         from . import timeline_compose
         return timeline_compose.validate_payload(raw, username)
@@ -893,19 +911,29 @@ def validate_payload(
         trusted_frozen=trusted_frozen_execution,
         video_only=video_only,
     )
+    # 素材策略（2026-09-12 生产实锤 #8482 + #8629 合并定稿）：
+    # 带本人素材 -> owned_public：渲染端只在该策略下接受本人素材（ref-* 最多 3 份、
+    # 1~2 份 Pexels 补齐）；带素材仍判 shared 会先过 preflight 再被 /v1/jobs 拒
+    # （「需要 5 个」，#8482）。
+    # 无本人素材 -> shared：一律走本地素材库，绝不绕去 Pexels 公网（#8629 因此
+    # 偶发失败；老板定调「不要再让他走公网了，我们优先走素材库」）。
     material_policy = (
-        MATERIAL_POLICY_SHARED if allow_shared_materials is not False
-        else MATERIAL_POLICY_OWNED_PUBLIC
+        MATERIAL_POLICY_OWNED_PUBLIC if user_materials
+        else MATERIAL_POLICY_SHARED
     )
-    if material_policy == MATERIAL_POLICY_OWNED_PUBLIC and template.get("bgm_mode") != "bound":
-        bgm = False
-        bgm_volume = None
     candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
     if allow_shared_materials is not None:
         candidate["material_policy"] = material_policy
+    # 素材范围（2026-09-17）：受限账号（一次性邀请码注册）只允许公网素材；
+    # 标记只在受限时出现，其余账号的候选载荷与历史逐字节一致。
+    if public_only_materials:
+        # 2026-09-17 临时硬闸（主 Agent）：渲染节点侧的公网过滤尚未全量部署，实测受限账号
+        # 仍会拿到公司素材（job 9303 实锤）。节点全部升级前，受限账号在入口直接明确报错，绝不生成。
+        raise ValueError("当前可用公共素材不足，暂时无法生成，请稍后重试")
+        candidate["material_scope"] = MATERIAL_SCOPE_PUBLIC_ONLY
     if user_materials:
         candidate["user_materials"] = user_materials
     if font_family and font_selectable:
@@ -1021,7 +1049,7 @@ def validate_payload(
                 )
             candidate["semantic_layout"] = semantic_layout
         except MatrixTemplateHTTPError as exc:
-            if exc.status == 400:
+            if exc.status in (400, 409):
                 raise ValueError(str(exc)) from exc
             raise feature_flags.FeatureDisabled(
                 "模板成片服务暂不可用，请稍后重试"
@@ -1044,7 +1072,7 @@ def validate_payload(
         try:
             response = _request("POST", "/v1/preflight", candidate, timeout=10)
         except MatrixTemplateHTTPError as exc:
-            if exc.status == 400:
+            if exc.status in (400, 409):
                 raise ValueError(str(exc)) from exc
             raise feature_flags.FeatureDisabled(
                 "模板成片服务暂不可用，请稍后重试"
@@ -1636,6 +1664,10 @@ def _generate(payload):
                 allow_shared_materials=(
                     None if "material_policy" not in stored_payload else
                     stored_payload.get("material_policy") == MATERIAL_POLICY_SHARED
+                ),
+                public_only_materials=(
+                    stored_payload.get("material_scope")
+                    == MATERIAL_SCOPE_PUBLIC_ONLY
                 ),
             )
     voiceover = payload.get("voiceover")
