@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import base64, datetime, sqlite3, hashlib, secrets, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, threading, shlex
+import base64, decimal, datetime, sqlite3, hashlib, secrets, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request, threading, shlex
+
+
+def _json_default(value):
+    """PostgreSQL 的 SUM/AVG 返回 decimal.Decimal；裸 json.dumps 会抛 TypeError，
+    再被上层 except 吞成 500（如「用户详情查询失败」）。这里把 Decimal 转成数字
+    （整数值保持 int），其余不可序列化类型仍照常抛出，不做静默兜底。"""
+    if isinstance(value, decimal.Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    raise TypeError("Object of type %s is not JSON serializable" % type(value).__name__)
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -3694,6 +3703,10 @@ def list_points_audit(username="", limit=100, actor="", direction=""):
     c = db()
     try:
         summary = dict(c.execute(summary_sql, args).fetchone())
+        # PostgreSQL 下 SUM(bigint) 是 Decimal，直接进 JSON 会抛 TypeError；
+        # 统一成 int，SQLite/PG 两侧行为一致。
+        for key in ("total", "credits", "debits", "net"):
+            summary[key] = int(summary.get(key) or 0)
         rows = c.execute(sql, args + [limit]).fetchall()
         return {"items": [dict(r) for r in rows], "total": summary["total"], "summary": summary}
     finally:
@@ -4691,7 +4704,7 @@ class H(BaseHTTPRequestHandler):
         req_id = error_contract.request_id(self.headers)
         public_obj, hq_code = error_contract.normalize(code, obj, req_id)
         error_contract.audit(code, obj, req_id, hq_code)
-        body = json.dumps(public_obj, ensure_ascii=False).encode()
+        body = json.dumps(public_obj, ensure_ascii=False, default=_json_default).encode()
         username = self._take_log_user_header()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")

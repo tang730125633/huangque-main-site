@@ -2084,6 +2084,78 @@ def _conv_scan_sessions():
     return payload
 
 
+_IP12_SID_RE = re.compile(r"^[0-9a-fA-F]{8,64}$")
+IP12_SESSION_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _ip12_session_path(sid):
+    """把会话号解析成会话文件路径；只接受十六进制号，并确认解析后未跳出会话目录。"""
+    sid = str(sid or "").strip()
+    if not _IP12_SID_RE.match(sid):
+        raise ValueError("会话号不合法")
+    root = IP12_SESSION_DIR.resolve()
+    candidate = (IP12_SESSION_DIR / ("v4-%s.json" % sid))
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        raise ValueError("会话号不合法")
+    if resolved.parent != root:
+        raise ValueError("会话号不合法")
+    if not resolved.is_file():
+        raise ValueError("会话不存在")
+    if resolved.stat().st_size > IP12_SESSION_MAX_BYTES:
+        raise ValueError("会话文件过大，已拒绝读取")
+    return resolved
+
+
+def conversation_session(sid, include_system=False, limit=2000):
+    """只读导出单个 IP12 会话的对话内容（role / content / created_at）。
+
+    默认跳过 system 消息（那是 20KB 的内部提示词，不是对话内容）。
+    """
+    path = _ip12_session_path(sid)
+    with open(path, "r", encoding="utf-8") as handle:
+        doc = json.load(handle)
+    if not isinstance(doc, dict):
+        raise ValueError("会话文件格式异常")
+    main = doc.get("main") or []
+    meta = doc.get("main_meta") or []
+    owner = doc.get("owner") or {}
+    messages = []
+    for index, item in enumerate(main):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        if role == "system" and not include_system:
+            continue
+        created = None
+        if index < len(meta) and isinstance(meta[index], dict):
+            created = meta[index].get("created_at")
+        messages.append({
+            "seq": len(messages) + 1,
+            "role": role,
+            "content": str(item.get("content") or ""),
+            "created_at": int(created) if created else None,
+        })
+    total = len(messages)
+    truncated = False
+    try:
+        cap = int(limit)
+    except (TypeError, ValueError):
+        cap = 2000
+    if cap > 0 and total > cap:
+        messages = messages[:cap]
+        truncated = True
+    return {
+        "sid": str(sid),
+        "username": str(owner.get("username") or ""),
+        "total_messages": total,
+        "returned_messages": len(messages),
+        "truncated": truncated,
+        "messages": messages,
+    }
+
+
 def conversation_stats(days=7, user=""):
     """按天范围聚合：按天行（带当天用户明细）、最新对话的用户、按用户名搜全部会话。"""
     scanned = _conv_scan_sessions()
@@ -8900,6 +8972,14 @@ class H(BaseHTTPRequestHandler):
             return
         if path == "/api/admin/health":
             return self._send(200, {"ok": True, "service": "huangque-admin"})
+        if path == "/api/admin/conversation-session":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(200, conversation_session((query.get("sid") or [""])[0]))
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(503, {"detail": "会话内容暂时不可用：%s" % str(exc)[:120]})
         if path == "/api/admin/conversation-stats":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:

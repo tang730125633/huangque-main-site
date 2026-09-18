@@ -1281,5 +1281,63 @@ class ActivityWindowTests(unittest.TestCase):
         self.assertGreater(since, int(self.NOW) - 86400)
 
 
+class Ip12ConversationSessionTests(unittest.TestCase):
+    """IP12 会话内容导出：只读、只认十六进制会话号、防目录穿越。"""
+
+    def setUp(self):
+        import json as _json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_dir = admin_api.IP12_SESSION_DIR
+        admin_api.IP12_SESSION_DIR = pathlib.Path(self.tmp.name)
+        self.sid = "a" * 32
+        doc = {
+            "owner": {"username": "u1", "account_id": "acc"},
+            "main": [
+                {"role": "system", "content": "内部提示词"},
+                {"role": "user", "content": "你好"},
+                {"role": "assistant", "content": "在的"},
+            ],
+            "main_meta": [
+                {"created_at": 1700000000000},
+                {"created_at": 1700000001000},
+                {"created_at": 1700000002000},
+            ],
+        }
+        (admin_api.IP12_SESSION_DIR / ("v4-%s.json" % self.sid)).write_text(
+            _json.dumps(doc, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def tearDown(self):
+        admin_api.IP12_SESSION_DIR = self.old_dir
+        self.tmp.cleanup()
+
+    def test_parses_messages_and_skips_system_by_default(self):
+        data = admin_api.conversation_session(self.sid)
+        self.assertEqual(data["username"], "u1")
+        self.assertEqual(data["total_messages"], 2)
+        self.assertEqual([m["role"] for m in data["messages"]], ["user", "assistant"])
+        self.assertEqual(data["messages"][0]["content"], "你好")
+        self.assertEqual(data["messages"][0]["created_at"], 1700000001000)
+        self.assertFalse(data["truncated"])
+
+    def test_include_system_flag(self):
+        data = admin_api.conversation_session(self.sid, include_system=True)
+        self.assertEqual(data["total_messages"], 3)
+
+    def test_limit_marks_truncated(self):
+        data = admin_api.conversation_session(self.sid, limit=1)
+        self.assertTrue(data["truncated"])
+        self.assertEqual(data["returned_messages"], 1)
+
+    def test_rejects_bad_sid_and_traversal(self):
+        for bad in ("", "zzzz", "../../etc/passwd", "a" * 4, "v4-../../x", "a" * 65):
+            with self.assertRaises(ValueError):
+                admin_api.conversation_session(bad)
+
+    def test_missing_session_raises(self):
+        with self.assertRaises(ValueError):
+            admin_api.conversation_session("b" * 32)
+
+
 if __name__ == "__main__":
     unittest.main()
