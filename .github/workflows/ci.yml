@@ -103,7 +103,7 @@ jobs:
 
       - name: 后台渠道管理与任务证据回归
         run: |
-          python -m unittest tests.test_channel_manager tests.test_channel_lifecycle tests.test_channel_parameters tests.test_frontend_channel_matrix tests.test_task_termination tests.test_runtime_observability tests.test_managed_channel_http_security tests.test_managed_channel_recovery tests.test_jobs_store tests.test_admin_request_logs tests.test_imggen_job_cas tests.test_admin_customer_overview_pg -q
+          python -m unittest tests.test_channel_manager tests.test_channel_lifecycle tests.test_channel_parameters tests.test_frontend_channel_matrix tests.test_task_termination tests.test_runtime_observability tests.test_managed_channel_http_security tests.test_managed_channel_recovery tests.test_jobs_store tests.test_admin_request_logs tests.test_imggen_job_cas tests.test_admin_customer_overview_pg tests.test_invite_bulk_codes -q
           node tests/test_admin_task_refresh.js
           node tests/test_channel_catalog.js
           node tests/test_channel_parameter_controls.js
@@ -147,6 +147,7 @@ jobs:
             test_admin_request_logs.py
             test_cli_image_uploads.py
             test_cli_media_uploads.py
+            test_content_domains_hotfix_recapture.py
             test_creator_agent_model_proxy.py
             test_hq_cli_api.py
             test_hq_cli_channel_catalog.py

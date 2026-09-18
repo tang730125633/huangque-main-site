@@ -1230,6 +1230,22 @@ def bind_registration(conn, invitee_user_id, invite_code, source, client_ip="", 
     return conn.execute("SELECT * FROM user_invites WHERE invitee_user_id=?", (invitee_user_id,)).fetchone()
 
 
+def single_use_invite_bound(conn, invitee_user_id):
+    """账号是否由一次性邀请码（single_use=1）注册。
+
+    2026-09-17 素材范围限制判定用：auth /me 透出该标记，content-api 据此把
+    模板成片的素材范围限制为公网素材。只读查询，不改变任何注册语义。
+    """
+    row = conn.execute(
+        """SELECT COUNT(*) AS single_use_count
+           FROM user_invites ui
+           JOIN invite_codes ic ON ic.code = ui.invite_code
+           WHERE ui.invitee_user_id=? AND ic.single_use=1""",
+        (int(invitee_user_id),),
+    ).fetchone()
+    return bool(row and int(row["single_use_count"] or 0))
+
+
 def dashboard(conn, inviter_user_id, now=None):
     now = int(now or time.time())
     user_id = int(inviter_user_id)

@@ -751,37 +751,40 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         self.assertNotIn("provider", payload)
         self.assertNotIn("prompt", payload)
 
-    def test_customer_material_policy_allows_public_only_and_owned_first(self):
+    def test_customer_material_policy_follows_user_materials(self):
+        """素材策略（2026-09-12 生产定稿 #8482/#8629，2026-09-18 回收进 git）：
+        有本人素材 → owned_public；无本人素材 → shared（一律走本地素材库，绝不
+        绕去 Pexels 公网）。与 allow_shared_materials 参数无关，也不再强制关 BGM。"""
         template = self.templates()[0]
         base = {
             "top_text": "客户自己的素材",
             "bottom_text": "上传以后直接制作",
             "template_id": template["id"],
         }
-        public_only = {
+        shared = {
             **base,
-            "bgm": False,
+            "bgm": True,
             "duration": None,
-            "material_policy": self.module.MATERIAL_POLICY_OWNED_PUBLIC,
+            "material_policy": self.module.MATERIAL_POLICY_SHARED,
         }
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(self.module, "public_templates", return_value=[template]), \
              mock.patch.object(
                  self.module, "_request",
-                 return_value={"payload": {**public_only, "duration": 8.0}},
+                 return_value={"payload": {**shared, "duration": 8.0}},
              ) as request:
             result = self.module.validate_payload(
                 base, "alice", allow_shared_materials=False,
             )
-        self.assertEqual(self.module.MATERIAL_POLICY_OWNED_PUBLIC, result["material_policy"])
+        self.assertEqual(self.module.MATERIAL_POLICY_SHARED, result["material_policy"])
         self.assertNotIn("user_materials", result)
         request.assert_called_once_with(
-            "POST", "/v1/preflight", public_only, timeout=10,
+            "POST", "/v1/preflight", shared, timeout=10,
         )
 
         expected = {
             **base,
-            "bgm": False,
+            "bgm": True,
             "duration": None,
             "material_policy": self.module.MATERIAL_POLICY_OWNED_PUBLIC,
             "user_materials": [{
@@ -809,7 +812,7 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             }, "alice", allow_shared_materials=False)
 
         self.assertEqual(self.module.MATERIAL_POLICY_OWNED_PUBLIC, result["material_policy"])
-        self.assertFalse(result["bgm"])
+        self.assertTrue(result["bgm"])
         upload.assert_called_once()
         request.assert_called_once_with("POST", "/v1/preflight", expected, timeout=10)
 
