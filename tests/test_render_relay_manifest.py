@@ -40,10 +40,12 @@ class RenderRelayManifestTests(unittest.TestCase):
             "file_url": "/local/file.mp4",
             "material_manifest": manifest,
             "template_id": "ref-test",
+            "color_profile": {"dynamic_range": "hdr", "color_transfer": "arib-std-b67"},
         })
         self.assertEqual("/v1/files/job.mp4", merged["file_url"])
         self.assertEqual("huangque/render/job.mp4", merged["cos_key"])
         self.assertEqual(manifest, merged["material_manifest"])
+        self.assertEqual("hdr", merged["color_profile"]["dynamic_range"])
 
     def test_node_reports_renderer_metadata_after_binary_upload(self):
         source = (ROOT / "deploy/render-relay/node_poller.py").read_text(

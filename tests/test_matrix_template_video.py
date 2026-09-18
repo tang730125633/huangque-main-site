@@ -2461,6 +2461,50 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             self.assertGreater(bgm_amplitude / voice_amplitude, 0.12)
             self.assertLess(bgm_amplitude / voice_amplitude, 0.4)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                         "ffmpeg and ffprobe are required")
+    def test_hdr_voiceover_preserves_hevc_ten_bit_color_with_and_without_bgm(self):
+        encoders = subprocess.check_output(["ffmpeg", "-hide_banner", "-encoders"], text=True)
+        if "libx265" not in encoders:
+            self.skipTest("libx265 required")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "original.mp4"
+            voice = root / "voice.wav"
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=blue:s=1080x1920:r=30:d=0.6",
+                "-f", "lavfi", "-i", "sine=frequency=880:duration=0.6",
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx265",
+                "-preset", "ultrafast", "-x265-params",
+                "pools=1:log-level=error:colorprim=9:colormatrix=9:transfer=18",
+                "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020",
+                "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+                "-color_range", "tv", "-tag:v", "hvc1", "-c:a", "aac",
+                "-shortest", str(source),
+            ], check=True, capture_output=True, timeout=30)
+            subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=1.7",
+                "-c:a", "pcm_s16le", str(voice),
+            ], check=True, capture_output=True, timeout=30)
+            for bgm in (False, True):
+                with self.subTest(bgm=bgm), mock.patch.object(self.module, "OUT_DIR", root):
+                    video = root / ("mixed-%s.mp4" % bgm)
+                    shutil.copyfile(source, video)
+                    before, _ = self.module._media_probe(video)
+                    before_video = next(s for s in before if s["codec_type"] == "video")
+                    self.assertTrue(self.module._valid_template_video_codec(before_video), before_video)
+                    self.module._mux_voiceover(video.name, {"path": voice, "duration": 1.7},
+                                               time.time() + 30, bgm=bgm)
+                    streams, duration = self.module._media_probe(video)
+                    v = next(s for s in streams if s["codec_type"] == "video")
+                    self.assertEqual(v["codec_name"], "hevc")
+                    self.assertEqual(v["pix_fmt"], "yuv420p10le")
+                    self.assertEqual(v["color_transfer"], "arib-std-b67")
+                    self.assertEqual(v["color_primaries"], "bt2020")
+                    self.assertAlmostEqual(duration, 1.7, delta=0.12)
+
     def test_mux_voiceover_uses_ffmpeg_44_compatible_limiter_options(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2470,7 +2514,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             video.write_bytes(b"source")
             voice.write_bytes(b"voice")
 
-            source_streams = ([{"codec_type": "audio", "codec_name": "aac"}], 8.0)
+            source_streams = ([
+                {"codec_type": "audio", "codec_name": "aac"},
+                {"codec_type": "video", "codec_name": "h264", "width": 1080, "height": 1920},
+            ], 8.0)
             output_streams = ([
                 {
                     "codec_type": "video", "codec_name": "h264",

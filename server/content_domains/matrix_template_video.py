@@ -1107,7 +1107,7 @@ def _media_probe(path, timeout=30):
         completed = run_process(
             [
                 "ffprobe", "-v", "error", "-show_entries",
-                "format=duration:stream=codec_type,codec_name,width,height",
+                "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,color_primaries,color_transfer,color_space,color_range",
                 "-of", "json", str(path),
             ],
             check=True, capture_output=True, text=True,
@@ -1252,6 +1252,15 @@ def _prepare_voiceover_audio(job_id, username, voiceover, batch_id, deadline_at)
     return prepared
 
 
+def _valid_template_video_codec(stream):
+    if stream.get("color_transfer") in {"arib-std-b67", "smpte2084"}:
+        return (stream.get("codec_name") == "hevc"
+                and stream.get("pix_fmt") == "yuv420p10le"
+                and stream.get("color_primaries") == "bt2020"
+                and stream.get("color_space") == "bt2020nc")
+    return stream.get("codec_name") == "h264"
+
+
 def _mux_voiceover(
         video_file, voiceover, deadline_at, *, bgm=False,
         bgm_volume=DEFAULT_VOICEOVER_BGM_VOLUME):
@@ -1260,15 +1269,16 @@ def _mux_voiceover(
     duration = float(voiceover["duration"])
     temporary = video.with_name(video.stem + ".voiceover.part.mp4")
     temporary.unlink(missing_ok=True)
+    source_streams, _ = _media_probe(video, timeout=_remaining_budget(deadline_at))
+    source_video = next((s for s in source_streams if s.get("codec_type") == "video"), {})
+    if not _valid_template_video_codec(source_video):
+        raise MatrixTemplateProviderFailed("模板成片视频色彩格式无效")
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-stream_loop", "-1", "-i", str(video), "-i", str(audio),
     ]
     if bgm:
         volume = _normalize_bgm_volume(bgm_volume)
-        source_streams, _ = _media_probe(
-            video, timeout=_remaining_budget(deadline_at),
-        )
         if not any(item.get("codec_type") == "audio" for item in source_streams):
             raise MatrixTemplateProviderFailed("模板成片背景音乐音轨缺失")
         command.extend([
@@ -1306,7 +1316,11 @@ def _mux_voiceover(
         output_size = temporary.stat().st_size
         if (
             len(video_streams) != 1 or len(audio_streams) != 1
-            or video_streams[0].get("codec_name") != "h264"
+            or not _valid_template_video_codec(video_streams[0])
+            or any(video_streams[0].get(key) != source_video.get(key) for key in (
+                "codec_name", "pix_fmt", "color_primaries", "color_transfer",
+                "color_space", "color_range",
+            ))
             or audio_streams[0].get("codec_name") != "aac"
             or (video_streams[0].get("width"), video_streams[0].get("height"))
                 != (1080, 1920)
@@ -1727,6 +1741,8 @@ def _generate(payload):
                 "file_size": file_size,
                 "material_manifest": result.get("material_manifest") or [],
             }
+            if isinstance(result.get("color_profile"), dict):
+                response["color_profile"] = dict(result["color_profile"])
             if voiceover:
                 response["voiceover"] = {
                     "enabled": True,

@@ -202,7 +202,7 @@ _NODE_RESULT_METADATA_FIELDS = {
     "font_selection", "font_files", "private_font_bundle_sha256",
     "material_selection_contract_version", "material_clip_contract_version",
     "material_manifest", "editing_plan", "bgm_mode", "nine_grid_visuals",
-    "fixed_duration_seconds", "fixed_skill_template",
+    "fixed_duration_seconds", "fixed_skill_template", "color_profile",
 }
 
 
@@ -223,6 +223,7 @@ def _merge_completed_result(existing, incoming):
 # 主站虽然不读它们，但排查渠道故障的人第一眼看的就是这几行，假值会把方向带偏。
 # 现在如实透传：上游给了就报上游的，上游没给就不报（绝不编）。
 _UPSTREAM_HEALTH_FIELDS = (
+    "color_contract_version", "hdr_master_output",
     "worker_alive", "worker_count", "cleanup_worker_alive",
     "worker_degraded", "degraded_jobs",
     "material_library_ready", "pexels_material_ready", "pexels_material_optional",
