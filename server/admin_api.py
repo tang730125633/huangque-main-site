@@ -3623,11 +3623,17 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
         if attributed and it.get("user") in (None, "", "-"):
             continue
         if kind_filter:
-            # 与看板 high_failure 同口径：先经 _operation_feature_key 映射，再比对
+            # 与看板 high_failure 同口径：普通任务走 _operation_feature_key（含 xiaole_video
+            # 按渠道归并）；短剧 provider 镜头在库里 kind 固定为 short_drama_provider_video，
+            # 看板是按 provider 归并的，这里必须走 _provider_feature_key，否则两边对不上。
             detail = it.get("_detail") or {}
             if it.get("source") != "job":
                 continue
-            if _operation_feature_key(detail.get("kind"), detail.get("channel")) not in kind_filter:
+            if str(detail.get("kind") or "").lower() == "short_drama_provider_video":
+                feature = _provider_feature_key(detail.get("provider"))
+            else:
+                feature = _operation_feature_key(detail.get("kind"), detail.get("channel"))
+            if str(feature).lower() not in kind_filter:
                 continue
         direct_match = not q or any(
             q.lower() in str(it.get(field) or "").lower()

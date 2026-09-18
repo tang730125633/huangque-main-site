@@ -639,6 +639,23 @@ class RequestLogUserTests(unittest.TestCase):
         fails = admin_api.activity_logs(category="fail", limit=2, source="http")["items"]
         self.assertTrue(any(x["status_text"] == "404" for x in fails))
 
+    def test_activity_kind_filter_uses_dashboard_feature_keys(self):
+        # 看板 high_failure 的 kind 是两种口径：普通任务→_operation_feature_key，
+        # 短剧 provider 镜头→_provider_feature_key。列表过滤必须两边都能命中。
+        # 夹具里的短剧镜头 provider=minimax_h3 → 看板归并成 minimax_h3_video
+        provider_only = admin_api.activity_logs(category="fail", source="job", kinds="minimax_h3_video")
+        self.assertTrue(provider_only["items"])
+        self.assertTrue(all(x["source"] == "job" for x in provider_only["items"]))
+        # xiaole_video 无 channel 时保持自身 kind
+        self.assertTrue(admin_api.activity_logs(kinds="xiaole_video")["items"])
+        # 未出现的功能键必须为空，不能“点了没反应但看着像全量”
+        self.assertEqual(admin_api.activity_logs(kinds="omni_video")["items"], [])
+        # 带功能键时 HTTP 行没有功能键，必须被排除
+        self.assertTrue(all(
+            x["source"] == "job"
+            for x in admin_api.activity_logs(kinds="xiaole_video,minimax_h3_video")["items"]
+        ))
+
     def test_activity_pagination_returns_stable_pages_and_total(self):
         all_items = admin_api.activity_logs(limit=100)["items"]
         first = admin_api.activity_logs(limit=2, offset=0)
