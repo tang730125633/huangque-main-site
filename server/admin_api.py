@@ -3717,6 +3717,20 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             "done": sum(item.get("cat") == "ok" for item in matching),
             "failed": sum(item.get("cat") == "fail" for item in matching),
             "running": sum(item.get("cat") == "running" for item in matching),
+            # 失败不一定“仍需处理”：按结算状态区分，避免把已退款的历史失败当成待办
+            # refunded: 0=未退款 1=已退款 2=退款待确认（见 _job_evidence 的 billing_state）
+            "refunded": sum(
+                item.get("source") == "job" and item.get("refunded") == 1
+                for item in matching
+            ),
+            "refund_pending": sum(
+                item.get("source") == "job" and item.get("refunded") == 2
+                for item in matching
+            ),
+            "unrefunded": sum(
+                item.get("source") == "job" and not item.get("refunded")
+                for item in matching
+            ),
             "evidence_gaps": sum(
                 item.get("source") == "job"
                 and item.get("evidence_tone") in {"warn", "neutral"}
@@ -7847,6 +7861,8 @@ def dashboard_stats(days=7):
         "high_failure": [],
     }
     if not JOB_DB.exists():
+        # 不能静默返回全零：前端必须能区分“真的为 0”和“根本没读到”
+        out["error"] = "任务库不存在，无法统计"
         return out
     try:
         with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
@@ -7880,7 +7896,9 @@ def dashboard_stats(days=7):
                     (since, *running_states),
                 ).fetchall()
             provider_refund_ids = _provider_refund_pending_ids(connection)
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # 同上：读失败要显式告知，否则前端只能当“真的为 0”而误判为正常
+        out["error"] = "任务库读取失败：%s" % str(exc)[:120]
         return out
     by_kind = {}
     generic_rows = {
