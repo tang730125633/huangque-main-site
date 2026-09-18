@@ -146,6 +146,38 @@ class CrossProcessRecoveryTest(unittest.TestCase):
         self.assertNotIn(SECRET_ENV_A, blob)   # payload 里不落明文
         self.assertNotIn(SECRET_B, blob)
 
+    def test_client_supplied_ref_is_overwritten_by_server(self):
+        # 客户端伪造一个版本号 → 必须被服务端覆盖，且最终版本来自服务端解析
+        fake = {"prompt": "x", "_provider_config": {"target_id": TARGET, "version": 999}}
+        pc.sanitize_payload(fake)
+        self.assertNotIn("_provider_config", fake)
+        fake["_provider_config"] = {"target_id": "attacker", "version": 999}
+        pc.pin_payload(TARGET, fake, actor="creator")
+        self.assertEqual(fake["_provider_config"]["target_id"], TARGET)
+        self.assertNotEqual(fake["_provider_config"]["version"], 999)
+
+    def test_pinned_version_wins_even_when_switch_is_off(self):
+        """关闭灰度开关不能使**已固定版本**的任务偷偷回到当前环境变量。"""
+        ref = {}
+        pc.pin_payload(TARGET, ref, actor="creator")      # 基线快照（env A）
+        pinned = ref["_provider_config"]["version"]
+        draft = pc.save_draft(TARGET, secret=SECRET_B, actor="admin")
+        pc.validate_draft(TARGET, draft["seq"], actor="admin",
+                          probe=lambda u, k: {"connection": {"ok": True},
+                                              "auth": {"ok": True}})
+        pc.publish(TARGET, draft["seq"], expected_seq=pinned, op_id="sw-off", actor="admin")
+        os.environ[ENV_KEY] = "sk-ark-env-CHANGED"
+        os.environ.pop(pc.WIRING_ENV, None)               # 关开关
+        pc.invalidate()
+        # 未带版本的解析（开关关闭）→ 按开关语义走进程启动常量/环境变量
+        self.assertEqual(
+            pc.credentials_for(TARGET, legacy_key="legacy")["source"], pc.SOURCE_ENV)
+        # 带固定版本的任务：仍用**它自己的版本**，不受开关影响
+        out = pc.resolve_pinned(TARGET, pinned, legacy_key=os.environ[ENV_KEY],
+                                legacy_url=ARK_URL)
+        self.assertEqual(out["credential"], SECRET_ENV_A)
+        self.assertEqual(out["version"], pinned)
+
 
 if __name__ == "__main__":
     unittest.main()

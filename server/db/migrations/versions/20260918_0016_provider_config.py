@@ -1,7 +1,7 @@
 """Versioned provider (env-backed line) config for the ops schema.
 
-Revision ID: 20260918_0010
-Revises: 20260915_0009
+Revision ID: 20260918_0016
+Revises: 20260916_0015
 
 Two tables backing ``content_domains/provider_config.py``:
 
@@ -25,8 +25,8 @@ Time convention: second-resolution Unix epoch (BIGINT), same as the rest of
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20260918_0010"
-down_revision = "20260915_0009"
+revision = "20260918_0016"
+down_revision = "20260916_0015"
 branch_labels = None
 depends_on = None
 

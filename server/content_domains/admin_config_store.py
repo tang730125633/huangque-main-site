@@ -376,6 +376,12 @@ def pc_active_version(target_id) -> dict | None:
     return rows[0] if rows else None
 
 
+def _pc_lock(conn, target_id) -> None:
+    """同一 target 的写操作串行化（避免并发重复创建基线 / 双发布）。"""
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                 ("hq-provider-config:" + str(target_id),))
+
+
 def _pc_next_seq(conn, target_id) -> int:
     row = conn.execute(
         "SELECT COALESCE(MAX(seq), 0) AS s FROM ops.provider_config_versions "
@@ -391,6 +397,7 @@ def pc_save_draft(target_id, provider, url, ciphertext, nonce, key_present,
                   key_last4, actor, reason, now) -> dict:
     with _pool_instance().connection() as conn:
         with conn.transaction():
+            _pc_lock(conn, target_id)
             seq = _pc_next_seq(conn, target_id)
             conn.execute(
                 "INSERT INTO ops.provider_config_versions(" + ",".join(_PC_COLUMNS) + ") "
@@ -429,6 +436,7 @@ def _pc_guard(conn, target_id, op_id, expected_seq):
 def pc_publish(target_id, seq, expected_seq, op_id, actor, now) -> dict:
     with _pool_instance().connection() as conn:
         with conn.transaction():
+            _pc_lock(conn, target_id)
             hit = _pc_guard(conn, target_id, op_id, expected_seq)
             if hit:
                 return hit
@@ -464,6 +472,7 @@ def pc_insert_published(target_id, provider, url, ciphertext, nonce, key_present
                         op_id, actor, now) -> dict:
     with _pool_instance().connection() as conn:
         with conn.transaction():
+            _pc_lock(conn, target_id)
             hit = _pc_guard(conn, target_id, op_id, expected_seq)
             if hit:
                 return hit

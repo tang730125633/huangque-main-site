@@ -174,7 +174,7 @@ def mode() -> str:
 
 
 def _pg() -> bool:
-    """postgres 权威：走 admin_config_store（ops.provider_config_*，Alembic 20260918_0010）。"""
+    """postgres 权威：走 admin_config_store（ops.provider_config_*，Alembic 20260918_0016）。"""
     return mode() == "postgres"
 
 
@@ -262,7 +262,7 @@ def _ensure_schema(conn) -> None:
 
 
 def init_db() -> None:
-    """建表（幂等）。sqlite 自建；postgres 的表由 Alembic（20260918_0010）负责。"""
+    """建表（幂等）。sqlite 自建；postgres 的表由 Alembic（20260918_0016）负责。"""
     if _pg():
         return
     _require_sqlite()
@@ -1229,11 +1229,23 @@ def _publish_env_version(target_id, expected_seq, op_id, actor, now=None):
             "source": "env", "rolled_back_from": current_seq}
 
 
-def pin_payload(target_id: str, payload: dict, actor: str = "system") -> dict:
-    """任务创建时调用：把固定版本写进 payload 的保留键（随 job 记录持久化）。
+def sanitize_payload(payload: dict) -> dict:
+    """任务入口第一步：丢掉客户端可能伪造的 ``_provider_config``。
 
-    worker / 恢复重跑时从任务记录读同一个 payload，即可沿用原版本
-    （不依赖进程内存，也不依赖当时的进程内缓存）。
+    配置版本必须**由服务端生成**，不能信任客户端传入（否则可以指定任意版本/绕过发布）。
+    入口应在校验前调它，插入前再调 ``pin_payload`` 写上服务端版本。
+    """
+    if isinstance(payload, dict):
+        payload.pop("_provider_config", None)
+    return payload
+
+
+def pin_payload(target_id: str, payload: dict, actor: str = "system") -> dict:
+    """任务创建时调用：**覆盖式**写入服务端解析出的固定版本（随 job 记录持久化）。
+
+    - 无论 payload 里原先有什么 ``_provider_config`` 都会被服务端值覆盖；
+    - 必须在扣费/入队**之前**调用；写入失败就不得留下“已扣费但无法执行”的任务。
+    - worker / 重试 / 恢复读的是持久化 payload，不依赖进程内存。
     """
     ref = pin(target_id, actor)
     if isinstance(payload, dict):
