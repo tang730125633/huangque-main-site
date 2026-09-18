@@ -3379,8 +3379,11 @@ def _tail_lines(path, max_bytes=2 * 1024 * 1024):
     return lines
 
 
-def _collect_request_entries(limit, status="", q="", include_noise=False):
-    """采集 nginx /api/ 请求 → (按时间倒序的 [(排序键, item)], 错误提示)。已做用户/功能反查。"""
+def _collect_request_entries(limit, status="", q="", include_noise=False, since=None):
+    """采集 nginx /api/ 请求 → (按时间倒序的 [(排序键, item)], 错误提示)。已做用户/功能反查。
+
+    since 非空时只保留该时间戳之后的请求；日常调用不传（HTTP 行按日志尾部“最近一段”呈现）。
+    """
     entries, message = [], None
     existing = [p for p in NGINX_ACCESS_LOGS if p.exists()]
     if not existing:
@@ -3417,6 +3420,11 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
             if q and q not in path and q not in request_id and q not in hq_code:
                 continue
             sort_key, disp = _parse_log_time(m.group("time"))
+            if since is not None and sort_key != (0, 0, 0, 0, 0, 0):
+                # nginx 日志时间与服务器同区；“今日”等窗口必须同样约束 HTTP 行，
+                # 否则改范围只有任务在变、请求不变。
+                if int(time.mktime(tuple(sort_key) + (0, 0, -1))) < int(since):
+                    continue
             jid_match = JOB_PATH_RE.match(path)
             entries.append(
                 (
@@ -3494,11 +3502,13 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False, user=""):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False, user="", kinds=""):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
     source:   '' | job | http
+    kinds:    逗号分隔的功能键（与看板 high_failure 的 kind 同一口径，经 _operation_feature_key 映射），
+              非空时只保留命中的任务行（HTTP 行没有功能键，会被排除）
     """
     limit = max(1, min(int(limit or 200), 100))
     offset = max(0, int(offset or 0))
@@ -3508,11 +3518,21 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     merged, message = [], None
     source_limit = None
     user = str(user or "").strip()
+    kind_filter = {k.strip().lower() for k in str(kinds or "").split(",") if k.strip()}
+    since = _activity_since(days)
+    try:
+        raw_days = int(days)
+    except (TypeError, ValueError):
+        raw_days = 7
+    # HTTP 行取自 nginx 日志尾部，天然只有最近一段；只有明确要求“今日”(days<=0) 时才
+    # 再按窗口裁剪。其余情况保持既有的 7/30 天口径不变（HTTP 行不受 days 约束）。
+    http_since = since if raw_days <= 0 else None
 
-    if source in ("", "http") and category != "running":
-        # 成功/失败下推到采集层，避免"失败行被截断挤掉"
+    if source in ("", "http") and category != "running" and not kind_filter:
+        # 成功/失败下推到采集层，避免“失败行被截断挤掉”
         entries, message = _collect_request_entries(
-            source_limit, status=category if category in ("ok", "fail") else "", include_noise=include_noise
+            source_limit, status=category if category in ("ok", "fail") else "",
+            include_noise=include_noise, since=http_since,
         )
         for key, it in entries:
             cat = "ok" if it["status"] < 400 else "fail"
@@ -3602,6 +3622,19 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             continue
         if attributed and it.get("user") in (None, "", "-"):
             continue
+        if kind_filter:
+            # 与看板 high_failure 同口径：普通任务走 _operation_feature_key（含 xiaole_video
+            # 按渠道归并）；短剧 provider 镜头在库里 kind 固定为 short_drama_provider_video，
+            # 看板是按 provider 归并的，这里必须走 _provider_feature_key，否则两边对不上。
+            detail = it.get("_detail") or {}
+            if it.get("source") != "job":
+                continue
+            if str(detail.get("kind") or "").lower() == "short_drama_provider_video":
+                feature = _provider_feature_key(detail.get("provider"))
+            else:
+                feature = _operation_feature_key(detail.get("kind"), detail.get("channel"))
+            if str(feature).lower() not in kind_filter:
+                continue
         direct_match = not q or any(
             q.lower() in str(it.get(field) or "").lower()
             for field in (
@@ -8403,13 +8436,39 @@ def _short_drama_provider_call_logs(conn, since, limit, defer_evidence=False):
     return items
 
 
+def _activity_window_days(days, default=7, cap=90):
+    """把 days 归一化成可展示的天数；days<=0 代表“今日”，记作 1 天。"""
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        value = default
+    if value <= 0:
+        return 1
+    return max(1, min(value, cap))
+
+
+def _activity_since(days, now=None):
+    """days<=0 → 服务器本地当天零点（“今日”）；否则向前滚动 N 天。"""
+    stamp = int(time.time() if now is None else now)
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        value = 7
+    if value <= 0:
+        local = time.localtime(stamp)
+        return int(time.mktime((
+            local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1,
+        )))
+    return stamp - min(value, 90) * 86400
+
+
 def call_logs(days=7, limit=200, user="", defer_evidence=False):
     unlimited = limit is None
-    days = max(1, min(int(days or 7), 90))
+    since = _activity_since(days)
+    days = _activity_window_days(days)
     limit = -1 if unlimited else max(1, min(int(limit or 200), 500))
     if not JOB_DB.exists():
         return {"days": days, "limit": limit, "items": [], "message": "content_jobs.db not found"}
-    since = int(time.time()) - days * 86400
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
         columns = {row["name"] for row in c.execute("PRAGMA table_info(jobs)")}
@@ -9029,6 +9088,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("offset") or ["0"])[0],
                         (q.get("attributed") or ["0"])[0] in ("1", "true"),
                         (q.get("user") or [""])[0],
+                        (q.get("kind") or [""])[0],
                     ),
                 )
             except Exception as e:

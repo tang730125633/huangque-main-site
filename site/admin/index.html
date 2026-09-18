@@ -100,7 +100,7 @@
     .dashboard-watch{display:grid;gap:7px}.watch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(17,22,19,.7);color:var(--muted);font-size:12px}.watch-row b{color:var(--text);text-align:right}.watch-row.good b{color:var(--ok)}.watch-row.attention{border-color:rgba(224,107,100,.3);background:rgba(224,107,100,.06)}.watch-row.attention b{color:#ffaaa4}.watch-refresh{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}.watch-refresh span{color:var(--muted);font-size:11px}
     .monitor-events{display:grid;gap:7px;margin-top:12px}.monitor-event{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 9px;border:1px solid var(--line);border-radius:7px;background:rgba(7,11,9,.28);font-size:11px}.monitor-event i{width:7px;height:7px;border-radius:50%;background:var(--error)}.monitor-event.recovered i{background:var(--ok)}.monitor-event b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.monitor-event time{color:var(--muted);font-size:9px}.monitor-note{margin-top:10px;padding:8px;border-left:2px solid var(--gold);color:var(--muted);font-size:10px;line-height:1.45}
     .quick-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quick-links button{height:44px;text-align:left}
-    .issue-list{display:grid;gap:8px}.issue-row{display:grid;grid-template-columns:110px minmax(120px,.7fr) minmax(180px,1.4fr) 90px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(46,56,50,.72)}.issue-row:last-child{border-bottom:0}
+    .issue-list{display:grid;gap:8px;max-height:540px;overflow-y:auto;overscroll-behavior:contain;padding-right:6px}.issue-list::-webkit-scrollbar{width:8px}.issue-list::-webkit-scrollbar-thumb{background:rgba(154,166,159,.3);border-radius:4px}.issue-list::-webkit-scrollbar-track{background:transparent}.issue-row{display:grid;grid-template-columns:110px minmax(120px,.7fr) minmax(180px,1.4fr) 90px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(46,56,50,.72)}.issue-row:last-child{border-bottom:0}
     .section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
     .section-head h2{margin:0}
     .hint{font-size:12px;color:var(--muted)}
@@ -356,6 +356,12 @@
 .cm-model-list tbody tr.expanded td{background:rgba(217,155,53,.045);border-bottom-color:rgba(217,155,53,.2)}.cm-model-priority-row{cursor:default!important}.cm-model-priority-row>td{padding:0!important;background:rgba(5,10,7,.34)!important}.cm-priority-editor{padding:18px;border-top:1px solid rgba(217,155,53,.22);border-bottom:1px solid var(--line)}.cm-priority-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.cm-priority-head span{display:block;color:var(--gold);font-size:9px;font-weight:800;letter-spacing:.08em}.cm-priority-head h4{margin:3px 0 0;font-size:16px}.cm-priority-head p{margin:5px 0 0;color:var(--muted);font-size:10px}.cm-priority-head code{color:var(--muted)}.cm-priority-route-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 10px}.cm-priority-route-tabs button{padding:6px 9px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:10px}.cm-priority-route-tabs button.active{border-color:rgba(217,155,53,.42);background:rgba(217,155,53,.09);color:var(--gold)}.cm-priority-notice{margin:10px 0;padding:9px 11px;border-left:3px solid var(--gold);background:rgba(217,155,53,.055);color:#d8c79e;font-size:10px}.cm-priority-state{display:flex;align-items:center;gap:9px;margin:12px 0;color:var(--muted);font-size:10px}.cm-priority-state select,.cm-priority-add select{min-width:220px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:#0d1410;color:var(--text)}.cm-priority-list{display:grid;gap:7px}.cm-priority-channel{display:grid;grid-template-columns:30px 24px minmax(220px,1fr) 72px 92px auto;gap:9px;align-items:center;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:rgba(255,255,255,.018)}.cm-priority-channel[draggable="true"]{cursor:grab}.cm-priority-channel[draggable="true"]:active{cursor:grabbing}.cm-priority-drag{padding:4px;border:0;background:transparent;color:var(--muted);font-size:16px;letter-spacing:-3px}.cm-priority-rank{display:grid;width:22px;height:22px;place-items:center;border-radius:50%;background:rgba(148,164,187,.1);font-size:10px;font-weight:800}.cm-priority-info{min-width:0}.cm-priority-info strong,.cm-priority-info small,.cm-priority-info code{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cm-priority-info strong{font-size:11px}.cm-priority-info small,.cm-priority-info code{margin-top:2px;color:var(--muted);font-size:9px}.cm-priority-role,.cm-priority-health{padding:4px 7px;border-radius:999px;text-align:center;font-size:9px;white-space:nowrap}.cm-priority-role{color:var(--muted);background:rgba(148,164,187,.09)}.cm-priority-role.primary{color:var(--gold);background:rgba(217,155,53,.1)}.cm-priority-health.ok{color:var(--ok);background:rgba(79,212,126,.08)}.cm-priority-health.off{color:var(--muted);background:rgba(148,164,187,.08)}.cm-priority-actions{display:flex;justify-content:flex-end;gap:5px}.cm-priority-actions .mini{padding:5px 7px}.cm-priority-add,.cm-priority-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:11px}.cm-priority-add{justify-content:flex-start}.cm-priority-footer{padding-top:11px;border-top:1px solid var(--line)}.cm-priority-footer>span{color:var(--muted);font-size:10px}.cm-priority-empty{margin:10px 0;padding:12px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);font-size:10px}.cm-priority-history{margin-top:12px}.cm-priority-history summary{color:var(--muted);font-size:10px;cursor:pointer}.cm-priority-history>div{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 @media(max-width:900px){.cm-business-tabs button{min-width:135px}.cm-model-list table{min-width:680px}.cm-model-list .cm-model-actual,.cm-model-list .cm-model-transport{display:none}.cm-model-list th:nth-child(1){width:24%}.cm-model-list th:nth-child(2){width:18%}.cm-model-list th:nth-child(4){width:25%}.cm-model-list th:nth-child(6){width:17%}.cm-model-list th:nth-child(7){width:16%}}
 @media(max-width:650px){.cm-business-tabs{margin-top:13px}.cm-business-tabs button{min-width:126px;padding:8px 10px}.cm-overview-strip{display:grid;grid-template-columns:1fr 1fr}.cm-overview-strip>span,.cm-overview-strip>button{justify-content:center}.cm-overview-strip>small{grid-column:1/-1}.cm-model-list table{min-width:560px}.cm-model-list th,.cm-model-list td{padding:11px 9px}.cm-model-product small{display:none}.cm-model-product .cm-matrix-pill{margin-top:6px}.cm-model-action .mini{padding:6px 8px}.cm-priority-channel{grid-template-columns:26px 22px minmax(170px,1fr) 70px}.cm-priority-health{display:none}.cm-priority-actions{grid-column:3/5;justify-content:flex-start}.cm-priority-add,.cm-priority-footer{align-items:stretch;flex-direction:column}.cm-priority-add select,.cm-priority-add button,.cm-priority-footer .actions,.cm-priority-footer .actions button{width:100%}}
+/* 运营总览 · 状态可信：数据缺失用 unknown，不用零冒充正常 */
+.watch-row.unknown{border-color:rgba(154,166,159,.24);background:rgba(154,166,159,.055);border-style:dashed}
+.watch-row.unknown b{color:var(--muted)}
+/* 运营总览 · 失败区间汇总 */
+.support-range-summary{margin-top:6px;color:var(--muted);font-size:12px;line-height:1.5}
+.support-range-summary b{color:var(--gold);font-weight:800}
 </style>
 </head>
 <body class="admin-locked">
@@ -442,7 +448,7 @@
             <button class="card metric dashboard-metric span3" id="failureMetric" type="button"><span class="metric-main"><span>高失败功能</span><b id="failKinds">-</b></span><span class="metric-copy" id="failureSummary">失败率 ≥ 50%</span></button>
             <button class="card metric dashboard-metric span3" id="pendingMetric" type="button"><span class="metric-main"><span>待审批订单</span><b id="supportPendingOrders">-</b></span><span class="metric-copy" id="pendingOrdersSummary">需要人工处理</span></button>
             <div class="card span8">
-              <div class="section-head"><div><h2>需要处理</h2><div class="hint">按时间列出有明确用户归属的失败任务和请求。</div></div><div class="actions"><button id="days7">近 7 天</button><button id="days30">近 30 天</button><button data-jump-module="logs">进入实时任务</button></div></div>
+              <div class="section-head"><div><h2>需要处理</h2><div class="hint">按时间列出有明确用户归属的失败任务和请求。</div><div class="support-range-summary" id="supportIssueHint">正在统计…</div></div><div class="actions"><span class="pill neutral" id="supportIssueRange">近 7 天</span><button id="supportIssueRefresh">刷新</button><button data-jump-module="logs">进入实时任务</button></div></div>
               <div id="supportIssueBox" class="empty">正在读取最近失败记录...</div>
             </div>
             <div class="card span4">
@@ -810,6 +816,13 @@
             <option value="fail">失败</option>
             <option value="running">进行中</option>
           </select>
+          <select id="reqDays" aria-label="时间范围">
+            <option value="">默认（近 7 天）</option>
+            <option value="0">今日</option>
+            <option value="7">近 7 天</option>
+            <option value="30">近 30 天</option>
+          </select>
+          <button class="pill warn" id="reqKindChip" type="button" hidden></button>
           <input class="field" id="reqUser" type="search" autocomplete="off" aria-label="筛选用户账号" placeholder="用户账号（精确匹配）">
           <input class="field" id="reqSearch" type="search" name="hq_admin_request_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索实时任务" placeholder="任务号 / 关联号 / 用户 / 功能 / 渠道 / 模型 / 供应商任务号">
           <label class="switch"><input type="checkbox" id="reqAttributed" checked> 只看有用户</label>
@@ -855,9 +868,15 @@
 <script>
 (function(){
   var token = '__cookie__';
+  var SUPPORT_DAYS = 7;   // 「需要处理」只统计近 7 天，最多显示 30 条
+  // 实时任务的有效时间窗口：默认近 7 天，用户选了就跟随选择。
+  // 注意：不要回落到 state.days——那个值由「功能状态」页的下拉控制，
+  // 回落到它会让总览数字与列表口径再次错开。
+  function effectiveReqDays(){return (state.reqDays===null||state.reqDays===undefined)?SUPPORT_DAYS:state.reqDays}
   var state = {
     days:7, data:null, userTimer:null, module:'dashboard', membershipRequestId:'',
     userPage:1, userPageSize:20, reqPage:1, reqPageSize:20, reqLoading:false, reqPromise:null, detailUser:'', noticeSending:false,
+    reqDays:null, reqKinds:'',
     overviewLoading:false, overviewPromise:null, dashboardLoading:false, dashboardPromise:null, refreshTimer:null, poolActions:0, drawerReturnFocus:null,
     poolEpoch:0, refreshPending:false, announcementPreview:null, announcementPreviewSignature:'',
     announcementRequestId:'', announcementPreviewLoading:false, announcementPublishing:false,
@@ -1337,11 +1356,13 @@
     Array.prototype.forEach.call(el('reqBox').querySelectorAll('[data-req-page]'),function(btn){btn.onclick=function(){state.reqPage+=Number(btn.getAttribute('data-req-page'));loadReqLogs()}});
   }
   function loadReqLogs(silent){
-    var q='?limit='+state.reqPageSize+'&offset='+((state.reqPage-1)*state.reqPageSize)+'&days='+encodeURIComponent(state.days)
+    var rangeDays=effectiveReqDays();
+    var q='?limit='+state.reqPageSize+'&offset='+((state.reqPage-1)*state.reqPageSize)+'&days='+encodeURIComponent(rangeDays)
       +'&source='+encodeURIComponent(el('reqSource').value||'')
       +'&status='+encodeURIComponent(el('reqStatus').value||'')
       +'&user='+encodeURIComponent(el('reqUser').value.trim())
       +'&q='+encodeURIComponent(el('reqSearch').value||'')
+      +'&kind='+encodeURIComponent(state.reqKinds||'')
       +(el('reqAttributed').checked?'&attributed=1':'')
       +(el('reqNoise').checked?'&noise=1':'');
     if(state.reqLoading&&state.reqQuery===q)return state.reqPromise;
@@ -1362,7 +1383,11 @@
   }
   function renderSupportIssues(data){
     var items=data.items||[],box=el('supportIssueBox');
-    if(!items.length){box.className='empty';box.textContent='近 '+state.days+' 天没有带用户归属的失败记录';return}
+    var range=SUPPORT_DAYS;
+    var total=Number((data&&data.total)||items.length||0);
+    var edge=el('supportIssueHint');
+    if(edge)edge.innerHTML='近 <b>'+range+'</b> 天共 <b>'+total.toLocaleString()+'</b> 条带用户归属的失败记录'+(total>items.length?' · 下方为最近 '+items.length+' 条':'');
+    if(!items.length){box.className='empty';box.textContent='近 '+range+' 天没有带用户归属的失败记录';return}
     box.className='issue-list';
     box.innerHTML=items.map(function(x){
       var user=x.user&&x.user!=='-'?x.user:'';
@@ -1372,16 +1397,35 @@
     Array.prototype.forEach.call(box.querySelectorAll('[data-issue-user]'),function(btn){btn.onclick=function(){var username=btn.getAttribute('data-issue-user');el('globalUserSearch').value=username;openUserDetail(username)}});
     Array.prototype.forEach.call(box.querySelectorAll('[data-issue-log]'),function(btn){btn.onclick=function(){el('reqStatus').value='fail';switchModule('logs')}});
   }
-  function loadSupportQueue(){
-    el('supportIssueBox').className='empty';el('supportIssueBox').textContent='正在读取最近失败记录...';
-    Promise.all([
-      api('/api/admin/activity?limit=8&offset=0&days='+encodeURIComponent(state.days)+'&status=fail&attributed=1'),
-      api('/api/admin/recharge/orders?status=pending&limit=300')
-    ]).then(function(results){
-      renderSupportIssues(results[0]);
-      var orders=results[1].items||[],count=orders.length,oldest=orders.reduce(function(v,x){var t=Number(x.created_at||0);return t&&(!v||t<v)?t:v},0);
-      el('supportPendingOrders').textContent=Number(count).toLocaleString();el('pendingOrdersSummary').textContent=count?(oldest?'最早已等待 '+fmtWait(Date.now()/1000-oldest):'需要人工处理'):'当前无待审批';el('pendingMetric').classList.toggle('attention',count>0);
-    }).catch(function(e){el('supportIssueBox').className='error';el('supportIssueBox').textContent=e.message;el('supportPendingOrders').textContent='-';el('pendingOrdersSummary').textContent='读取失败';el('pendingMetric').classList.add('attention')});
+  function loadSupportQueue(opts){
+    opts=opts||{};
+    var box=el('supportIssueBox');
+    if(!opts.keep){box.className='empty';box.textContent='正在读取最近失败记录...'}
+    // 请求序号：旧请求后返回时直接丢弃，不再覆盖新结果
+    var sequence=(state.supportSequence||0)+1;state.supportSequence=sequence;
+    function settle(p){return p.then(function(d){return{ok:true,data:d}},function(e){return{ok:false,error:e}})}
+    return Promise.all([
+      settle(api('/api/admin/activity?limit=30&offset=0&days='+SUPPORT_DAYS+'&status=fail&attributed=1')),
+      settle(api('/api/admin/recharge/orders?status=pending&limit=300'))
+    ]).then(function(res){
+      if(sequence!==state.supportSequence)return;
+      var issue=res[0],orders=res[1];
+      // 两块各自独立成败，一块挂了不拖累另一块
+      if(issue.ok){renderSupportIssues(issue.data);pollNote(true)}
+      else{if(!opts.keep){box.className='error';box.textContent='失败记录读取失败：'+((issue.error&&issue.error.message)||'未知错误')}pollNote(false)}
+      if(orders.ok){
+        var list=(orders.data&&orders.data.items)||[],capped=list.length>=300,count=list.length;
+        var oldest=list.reduce(function(v,x){var t=Number(x.created_at||0);return t&&(!v||t<v)?t:v},0);
+        el('supportPendingOrders').textContent=capped?(count+'+'):Number(count).toLocaleString();
+        el('pendingOrdersSummary').textContent=capped?('已达 '+count+' 条上限，可能还有更多'):(count?(oldest?'最早已等待 '+fmtWait(Date.now()/1000-oldest):'需要人工处理'):'当前无待审批');
+        el('pendingMetric').classList.toggle('attention',count>0);
+      }else{
+        el('supportPendingOrders').textContent='—';el('pendingOrdersSummary').textContent='读取失败';el('pendingMetric').classList.remove('attention');
+      }
+      // 两块都落定后才写“更新时间”，不让时间戳盖过未完成的数据
+      if(issue.ok&&orders.ok)el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 数据已更新';
+      else if(issue.ok||orders.ok)el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 部分数据未取到';
+    });
   }
   function renderFeatures(items){
     var enabled=items.filter(function(x){return x.enabled}).length;
@@ -2453,18 +2497,32 @@
     var registry=d.function_registry||[],coverage=d.registry_coverage||{verified:registry.filter(function(page){return page.inventory_status==='verified'}).length,total:registry.length};
     var stats=d.stats||{},today=stats.today||{},live=stats.live||{},high=stats.high_failure||[],services=d.services||[],monitor=d.health_monitor||{},monitorSummary=monitor.summary||{},acceptance=monitor.acceptance||{},incidents=services.filter(function(x){return x.incident_open}),confirming=services.filter(function(x){return x.monitor_status==='confirming'});
     el('registryCoverage').textContent=Number(coverage.verified||0)+' / '+Number(coverage.total||0);el('registryCoverageState').textContent='已盘点客户功能页';
-    el('jobTotal').textContent=Number(stats.total||0).toLocaleString();el('statDays').textContent='近 '+(stats.days||state.days)+' 天任务';
-    el('todayTotal').textContent=Number(today.total||0).toLocaleString();el('todaySummary').textContent='完成 '+Number(today.done||0)+' · 失败 '+Number(today.error||0)+(Number(today.running||0)?' · 进行中 '+Number(today.running):'')+(Number(today.other||0)?' · 其他 '+Number(today.other):'');
-    el('activeJobs').textContent=Number(live.running||0).toLocaleString();el('activeSummary').textContent=live.oldest_running_at?'最长已等待 '+fmtWait(Date.now()/1000-Number(live.oldest_running_at)):'当前无排队或生成';el('activeMetric').classList.toggle('attention',Number(live.running||0)>0&&Number(live.oldest_running_at||0)<Date.now()/1000-3600);
-    el('failKinds').textContent=high.length;el('failureSummary').textContent=high.length?high.slice(0,2).map(function(x){return kindName(x.kind)}).join('、'):'暂无高失败功能';el('failureMetric').classList.toggle('attention',high.length>0);
-    el('dashboardServiceState').textContent=incidents.length?incidents.map(function(x){return x.name||x.key}).join('、')+'异常':(confirming.length?'待复核 '+confirming.length+' 项':Number(monitorSummary.base_online||0)+' / '+Number(monitorSummary.total||services.length)+' 基础检查通过');el('dashboardServiceRow').className='watch-row '+(incidents.length?'attention':(confirming.length?'':'good'));
-    el('dashboardRefundState').textContent=Number(live.refund_pending||0)+' 笔';el('dashboardRefundRow').className='watch-row '+(Number(live.refund_pending||0)?'attention':'good');
-    el('healthIncidentCount').textContent=Number(monitorSummary.incidents||0)+' 项'+(Number(monitorSummary.confirming||0)?' · 待复核 '+Number(monitorSummary.confirming):'');el('healthIncidentRow').className='watch-row '+(Number(monitorSummary.incidents||0)?'attention':'good');
-    el('acceptanceFreshCount').textContent=Number(acceptance.fresh||0)+' / '+Number(acceptance.total||0)+(Number(acceptance.due||0)?' · 待验 '+Number(acceptance.due):'');el('acceptanceFreshRow').className='watch-row '+(Number(acceptance.due||0)?'attention':'good');
+    // ——— 数据可信：字段缺失一律显示“未知”，绝不用 0 冒充正常 ———
+    var svcTotal=(monitorSummary.total==null)?(services.length||null):Number(monitorSummary.total);
+    var baseOnline=(monitorSummary.base_online==null)?null:Number(monitorSummary.base_online);
+    var svcKnown=(svcTotal!==null&&baseOnline!==null);
+    el('jobTotal').textContent=(stats.total==null)?'—':Number(stats.total).toLocaleString();el('statDays').textContent='近 '+(stats.days||SUPPORT_DAYS)+' 天任务';
+    el('todayTotal').textContent=(stats.today==null)?'—':Number(today.total||0).toLocaleString();el('todaySummary').textContent=(stats.today==null)?'数据未取到':'完成 '+Number(today.done||0)+' · 失败 '+Number(today.error||0)+(Number(today.running||0)?' · 进行中 '+Number(today.running):'')+(Number(today.other||0)?' · 其他 '+Number(today.other):'');
+    el('activeJobs').textContent=(stats.live==null)?'—':Number(live.running||0).toLocaleString();el('activeSummary').textContent=(stats.live==null)?'数据未取到':(live.oldest_running_at?'最长已等待 '+fmtWait(Date.now()/1000-Number(live.oldest_running_at)):'当前无排队或生成');el('activeMetric').classList.toggle('attention',stats.live!=null&&Number(live.running||0)>0&&Number(live.oldest_running_at||0)<Date.now()/1000-3600);
+    el('failKinds').textContent=(stats.high_failure==null)?'—':high.length;el('failureSummary').textContent=(stats.high_failure==null)?'数据未取到':(high.length?high.slice(0,2).map(function(x){return kindName(x.kind)}).join('、'):'暂无高失败功能');el('failureMetric').classList.toggle('attention',stats.high_failure!=null&&high.length>0);
+    var svcText,svcCls;
+    if(incidents.length){svcText=incidents.map(function(x){return x.name||x.key}).join('、')+'异常';svcCls='attention'}
+    else if(confirming.length){svcText='待复核 '+confirming.length+' 项';svcCls='attention'}
+    else if(!svcKnown){svcText='未知 · 未取到检查结果';svcCls='unknown'}
+    else if(svcTotal>0&&baseOnline>=svcTotal){svcText=baseOnline+' / '+svcTotal+' 基础检查通过';svcCls='good'}
+    else{svcText='仅 '+baseOnline+' / '+svcTotal+' 通过';svcCls='attention'}
+    el('dashboardServiceState').textContent=svcText;el('dashboardServiceRow').className='watch-row '+svcCls;
+    var refundKnown=(stats.live!=null&&live.refund_pending!=null);
+    el('dashboardRefundState').textContent=refundKnown?Number(live.refund_pending)+' 笔':'未知 · 未取到';el('dashboardRefundRow').className='watch-row '+(refundKnown?(Number(live.refund_pending)?'attention':'good'):'unknown');
+    var monKnown=(monitorSummary.incidents!=null);
+    el('healthIncidentCount').textContent=monKnown?Number(monitorSummary.incidents)+' 项'+(Number(monitorSummary.confirming||0)?' · 待复核 '+Number(monitorSummary.confirming):''):'未知 · 未取到';el('healthIncidentRow').className='watch-row '+(monKnown?(Number(monitorSummary.incidents)?'attention':'good'):'unknown');
+    var accTotal=(acceptance.total==null)?null:Number(acceptance.total);
+    if(accTotal===null||accTotal===0){el('acceptanceFreshCount').textContent='未知 · 无验收项';el('acceptanceFreshRow').className='watch-row unknown'}
+    else{el('acceptanceFreshCount').textContent=Number(acceptance.fresh||0)+' / '+accTotal+(Number(acceptance.due||0)?' · 待验 '+Number(acceptance.due):'');el('acceptanceFreshRow').className='watch-row '+(Number(acceptance.due||0)?'attention':'good')}
     el('healthMonitorCycle').textContent=monitor.last_cycle_at?'最近检查 '+new Date(Number(monitor.last_cycle_at)*1000).toLocaleTimeString()+' · 每 '+Number(monitor.interval_seconds||60)+' 秒':'等待第一轮基础检查';
     var notification=monitor.notifications||{},notificationCounts=notification.counts||{};el('healthMonitorCycle').textContent+=' · 告警'+(notification.enabled?'已启用':'未启用')+' · 待发 '+Number(notificationCounts.pending||0)+' / 失败 '+Number(notificationCounts.failed||0)+(notification.error?' · '+notification.error:'');
     var events=monitor.events||[];el('healthMonitorEvents').innerHTML=events.length?events.slice(0,3).map(function(event){var recovered=event.event==='recovered';return '<div class="monitor-event '+(recovered?'recovered':'')+'"><i></i><b>'+esc(event.service||event.service_key||'未知服务')+' · '+(recovered?'已恢复':'异常已确认')+'</b><time>'+esc(event.created_at?new Date(Number(event.created_at)*1000).toLocaleString():'-')+'</time></div>'}).join(''):'<div class="empty">暂无已确认异常或恢复事件</div>';
-    el('dashboardUpdatedAt').textContent=new Date(state.overviewUpdatedAt).toLocaleTimeString()+' · 每 15 秒自动刷新';
+    el('dashboardUpdatedAt').textContent=new Date(state.overviewUpdatedAt).toLocaleTimeString()+' · 自动刷新已关闭';
     if(state.module==='dashboard')loadSupportQueue();
   }
   function render(d){
@@ -2483,7 +2541,7 @@
     if(!state.adminAuthenticated)return Promise.resolve();
     if(state.dashboardLoading)return state.dashboardPromise||Promise.resolve();
     state.dashboardLoading=true;if(!silent)el('dashboardRefresh').disabled=true;
-    state.dashboardPromise=api('/api/admin/dashboard?days='+state.days).then(function(d){state.overviewUpdatedAt=Date.now();state.dashData=d;pollNote(true);renderDashboard(d)}).catch(function(e){if(e.status===401||e.status===403)return;pollNote(false);if(silent){el('dashboardUpdatedAt').textContent='自动刷新失败 · 数据可能已过期';toast('自动刷新失败：'+e.message);return}showAdminLogin('后台数据暂时不可用，请重新验证后再试。',true)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
+    state.dashboardPromise=api('/api/admin/dashboard?days='+SUPPORT_DAYS).then(function(d){state.overviewUpdatedAt=Date.now();state.dashData=d;pollNote(true);renderDashboard(d)}).catch(function(e){pollNote(false);if(e.status===401||e.status===403){showAdminLogin('登录已过期，请重新登录。',true);return}el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 刷新失败，数据可能已过期';toast('刷新失败：'+e.message)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
     return state.dashboardPromise;
   }
   function serverState(item){var label=item.status==='warning'?'告警':(item.online?'在线':'离线');return '<span class="server-state" data-state="'+esc(item.status||'offline')+'">'+esc(label)+'</span>'}
@@ -2520,7 +2578,7 @@
   // 重的模块靠"轻量指纹探测"提速：5~8 秒探一次指纹，只有真变了才拉重接口。
   var POLL_POLICY={
     logs:{active:8000,idle:30000,probe:true},      // 实时任务
-    dashboard:{active:10000,idle:30000},           // 今日行动
+    dashboard:{active:10000,idle:30000,manual:true}, // 今日行动：不自动刷新，进入时加载 / 手动刷新
     operations:{active:30000,idle:60000},          // 运营看板
     servers:{active:5000,idle:10000}               // 服务器状态
   };
@@ -2570,13 +2628,14 @@
   }
   function scheduleNextPoll(){
     clearTimeout(pollTimer);
+    if((POLL_POLICY[state.module]||{}).manual)return;   // 手动刷新模块：不再自动排期
     var active=hqAdminPoll.isActive(state.module,pollModuleData());
     pollTimer=setTimeout(function(){
       if(document.hidden||state.poolActions){scheduleNextPoll();return}
       // 重的实时任务时间线：先探指纹，没变就不拉（省掉 0.9 秒的重查询）
       var policy=POLL_POLICY[state.module];
       if(policy&&policy.probe&&active){
-        api('/api/admin/activity?probe=1&days='+state.days).then(function(d){
+        api('/api/admin/activity?probe=1&days='+effectiveReqDays()).then(function(d){
           var now=Date.now(),fingerprint=d&&d.fingerprint;
           if(hqAdminPoll.shouldFullFetch(now,pollLastFullAt,pollFingerprint,fingerprint)){
             pollFingerprint=fingerprint;pollLastFullAt=now;pollCurrentModule(true);
@@ -2606,10 +2665,27 @@
   el('operationsAttentionOnly').onchange=function(){state.operationsAttentionOnly=el('operationsAttentionOnly').checked;if(state.data){renderOperations(state.data);probeSelectedOperation(false)}};
   el('operationsDays').onchange=function(){state.days=Number(el('operationsDays').value)||7;load(false)};
   el('operationsRefresh').onclick=function(){load(false);probeSelectedOperation(true)};
-  function openDashboardJobs(status){el('reqSource').value='job';el('reqStatus').value=status||'';el('reqSearch').value='';el('reqAttributed').checked=true;state.reqPage=1;switchModule('logs')}
-  el('todayMetric').onclick=function(){openDashboardJobs('')};
-  el('activeMetric').onclick=function(){openDashboardJobs('running')};
-  el('failureMetric').onclick=function(){openDashboardJobs('fail')};
+  function openDashboardJobs(status,opts){
+    opts=opts||{};
+    // 总览卡片跳转必须把“范围”和“功能”一并带过来，否则卡片数字与列表对不上
+    if(opts.days!==undefined){state.reqDays=opts.days;el('reqDays').value=(opts.days===null?'':String(opts.days))}
+    state.reqKinds=opts.kinds||'';
+    el('reqSource').value='job';el('reqStatus').value=status||'';
+    el('reqUser').value='';              // 清掉上次客户筛选，否则总览点进去会被旧筛选挡住
+    el('reqSearch').value='';el('reqAttributed').checked=true;el('reqNoise').checked=false;
+    renderReqKindChip();
+    state.reqPage=1;switchModule('logs');
+  }
+  function renderReqKindChip(){
+    var chip=el('reqKindChip');if(!chip)return;
+    var kinds=String(state.reqKinds||'').split(',').map(function(s){return s.trim()}).filter(Boolean);
+    if(!kinds.length){chip.hidden=true;chip.textContent='';chip.title='';return}
+    chip.hidden=false;chip.textContent='功能：'+kinds.map(function(k){return kindName(k)}).join('、')+'　✕';
+    chip.title='只显示这些功能，点击清除';
+  }
+  el('todayMetric').onclick=function(){openDashboardJobs('',{days:0})};
+  el('activeMetric').onclick=function(){openDashboardJobs('running',{days:SUPPORT_DAYS})};
+  el('failureMetric').onclick=function(){var src=state.dashData||state.data||{};var hs=(src.stats&&src.stats.high_failure)||[];openDashboardJobs('fail',{days:SUPPORT_DAYS,kinds:hs.map(function(x){return x.kind}).join(',')})};
   el('pendingMetric').onclick=function(){el('rechargeStatus').value='pending';switchModule('recharge')};
   el('dashboardRefresh').onclick=function(){loadDashboard(false)};
   el('serverRefresh').onclick=function(){loadServers(false)};
@@ -2617,8 +2693,7 @@
   el('providerKeyCancel').onclick=function(){closeProviderEditor();if(state.operationsChannelMode&&!el('operationsChannelLayer').hidden)renderOperationsChannelDrawer()};
   el('providerKeyAdd').onclick=addProviderKey;
   el('providerKeyProvider').onchange=function(){setProviderBaseDefault(true)};
-  el('days7').onclick=function(){state.days=7;state.data=null;loadDashboard(false)};
-  el('days30').onclick=function(){state.days=30;state.data=null;loadDashboard(false)};
+  el('supportIssueRefresh').onclick=function(){loadSupportQueue({keep:true})};
   el('userRefresh').onclick=loadUsers;
   el('userSort').onchange=function(){state.userPage=1;loadUsers()};
   el('userDir').onchange=function(){state.userPage=1;loadUsers()};
@@ -2628,6 +2703,8 @@
   el('pointsDirection').onchange=loadPoints;
   el('pointsUser').onkeydown=function(e){if(e.key==='Enter') loadPoints()};
   el('reqRefresh').onclick=function(){loadReqLogs(false)};
+  el('reqDays').onchange=function(){var v=el('reqDays').value;state.reqDays=v===''?null:Number(v);state.reqPage=1;loadReqLogs(false)};
+  el('reqKindChip').onclick=function(){state.reqKinds='';renderReqKindChip();state.reqPage=1;loadReqLogs(false)};
   el('reqSource').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqStatus').onchange=function(){state.reqPage=1;loadReqLogs()};
   el('reqAttributed').onchange=function(){state.reqPage=1;loadReqLogs()};
