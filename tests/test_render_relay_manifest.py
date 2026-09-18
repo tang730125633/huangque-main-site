@@ -90,6 +90,7 @@ class RenderRelayManifestTests(unittest.TestCase):
                     (job_id, json.dumps({"user_materials": [{"sha256": sha}]}),
                      "running", "yuelei", 1, 1, 1),
                 )
+            connection.close()
             server = ThreadingHTTPServer(("127.0.0.1", 0), relay.Handler)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()

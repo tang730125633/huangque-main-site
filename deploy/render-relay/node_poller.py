@@ -6,6 +6,7 @@
 全部是出站请求，节点在 NAT 后也能工作。
 """
 import csv
+import base64
 import hashlib
 import json
 import math
@@ -52,10 +53,19 @@ def _call(url, token, method="GET", body=None, raw=None, headers=None, timeout=6
 def claim():
     try:
         out = _call(RELAY + "/v1/claim", NODE_TOKEN, "POST",
-                    body={"node": NODE_NAME}, timeout=30)
+                    body={"node": NODE_NAME, "gpu_render": _renderer_capability()}, timeout=30)
         return out.get("job")
     except Exception as exc:
         print("[poller] claim failed: %s" % exc, flush=True)
+        return None
+
+
+def _renderer_capability():
+    try:
+        health = _call(LOCAL + "/health", LOCAL_TOKEN, timeout=5)
+        value = health.get("gpu_render") if isinstance(health, dict) and health.get("ok") is True else None
+        return value if isinstance(value, dict) and value.get("ready") is True else None
+    except Exception:
         return None
 
 
@@ -103,6 +113,7 @@ def heartbeat():
         try:
             _call(RELAY + "/v1/heartbeat", NODE_TOKEN, "POST", body={
                 "node": NODE_NAME, "gpu": _gpu_snapshot(),
+                "gpu_render": _renderer_capability(),
             }, timeout=8)
         except Exception as exc:
             print("[poller] telemetry failed: %s" % exc, flush=True)
@@ -187,7 +198,7 @@ def sync_user_assets(payload, job_id):
 
 def report(job_id, ok, result=None, error=None):
     _call(RELAY + "/v1/report", NODE_TOKEN, "POST",
-          body={"job_id": job_id, "ok": ok, "result": result, "error": error}, timeout=30)
+          body={"job_id": job_id, "ok": ok, "result": result, "error": error, "node": NODE_NAME}, timeout=30)
 
 
 def upload_result(job_id, file_url, result):
@@ -201,7 +212,12 @@ def upload_result(job_id, file_url, result):
         "X-HQ-Height": str(result.get("height") or 1920),
         "X-HQ-Template": str(result.get("template_id") or ""),
         "X-HQ-Engine": str(result.get("engine") or ""),
+        "X-HQ-Node": NODE_NAME,
     }
+    if isinstance(result.get("gpu_render"), dict):
+        headers["X-HQ-GPU-Render"] = base64.b64encode(
+            json.dumps(result["gpu_render"], separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
     return _call(RELAY + "/v1/result/" + job_id, NODE_TOKEN, "POST",
                  raw=data, headers=headers, timeout=RENDER_TIMEOUT + 120)
 

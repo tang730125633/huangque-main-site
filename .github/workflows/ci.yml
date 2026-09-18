@@ -161,6 +161,7 @@ jobs:
             test_heygen_mcp_oauth.py
             test_jobs_store.py
             test_matrix_template_video.py
+            test_render_relay_gpu.py
             test_provider_key_pool.py
             test_short_drama_advisor.py
             test_video_agent.py
