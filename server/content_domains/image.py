@@ -14,7 +14,7 @@ from .core import (
     ZELONG_BASE, ZELONG_KEY, _NOPROXY, _multipart, _post,
     base64, json, public_url, urllib, uuid,
 )
-from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request
+from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request, xiaole_credentials
 from .image_model_catalog import OPENAI_IMAGE_MODEL, SEEDREAM_MODELS, XIAOLE_IMAGE_MODEL
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 
@@ -266,7 +266,7 @@ def _gen_image_xiaole(prompt, ratio, quality, count, img, references=None):
 def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None):
     """果肉生图渠道(xiaolevideo.cn，与果肉/豆姐视频同账号)：gpt-image-2 文生图/图生图。
     统一 generations API：创建 → 轮询 → 落盘，与 video.py 的 generate_xiaole_video 同一套模式。"""
-    if not XIAOLEVIDEO_API_KEY:
+    if not str(xiaole_credentials().get("credential") or "").strip():
         raise ValueError("果肉生图未配置（XIAOLEVIDEO_API_KEY）")
     resolution = "2k" if quality == "high" else "1k"
     refs = list(references or ([] if not img else [img]))

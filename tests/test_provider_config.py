@@ -25,12 +25,14 @@ if str(ROOT) not in sys.path:
 
 from server.content_domains import provider_config as pc  # noqa: E402
 
-TARGET = "image.xiaole"          # 与号池无关，影响范围干净
-TARGET_POOL_SHARED = "image.banana.nb2"
-ENV_KEY_NAME = "XIAOLEVIDEO_API_KEY"
-ENV_URL_NAME = "XIAOLEVIDEO_API_BASE"
-SECRET_OLD = "sk-xiaole-OLD-0001"
-SECRET_NEW = "sk-xiaole-NEW-9999"
+TARGET = "image.banana.nb2"     # 可编辑；env 同时是号池兜底（pool_shared）
+TARGET_CLEAN = "video.tryon.fast"  # 可编辑；与号池无关
+TARGET_DEPRECATED = "xiaolevideo"  # 已下架：不得出现可编辑按钮
+ENV_KEY_NAME = "GEMINI_API_KEY"
+ENV_URL_NAME = "GEMINI_OFFICIAL_BASE"
+SECRET_OLD = "sk-gemini-OLD-0001"
+SECRET_NEW = "sk-gemini-NEW-9999"
+LEGACY_KEY = "sk-from-process-startup"
 
 
 class ProviderConfigTest(unittest.TestCase):
@@ -43,8 +45,9 @@ class ProviderConfigTest(unittest.TestCase):
         ).decode("ascii")
         os.environ.pop("HQ_ADMIN_CONFIG_STORE", None)
         os.environ.pop("HQ_PROVIDER_BASE_HOST_ALLOWLIST", None)
+        os.environ.pop(pc.WIRING_ENV, None)
         os.environ[ENV_KEY_NAME] = SECRET_OLD
-        os.environ[ENV_URL_NAME] = "https://api.xiaolevideo.cn"
+        os.environ[ENV_URL_NAME] = "https://generativelanguage.googleapis.com"
         pc.invalidate()
         pc.init_db()
 
@@ -78,7 +81,8 @@ class ProviderConfigTest(unittest.TestCase):
 
     def test_1_only_url_keeps_existing_key(self):
         self._publish_first()
-        draft = pc.save_draft(TARGET, url="https://api.xiaolevideo.cn", actor="alice")
+        draft = pc.save_draft(
+            TARGET, url="https://generativelanguage.googleapis.com", actor="alice")
         pc.record_evidence(TARGET, draft["seq"], {"ok": True}, actor="alice")
         pc.publish(TARGET, draft["seq"], expected_seq=1, op_id="op-url", actor="alice")
         res = pc.resolve(TARGET)
@@ -87,13 +91,13 @@ class ProviderConfigTest(unittest.TestCase):
         self.assertEqual(res["version"], draft["seq"])
 
     def test_2_only_key_keeps_existing_url(self):
-        self._publish_first(url="https://api.xiaolevideo.cn")
+        self._publish_first(url="https://generativelanguage.googleapis.com")
         draft = pc.save_draft(TARGET, secret=SECRET_NEW, actor="alice")
         pc.record_evidence(TARGET, draft["seq"], {"ok": True}, actor="alice")
         pc.publish(TARGET, draft["seq"], expected_seq=1, op_id="op-key", actor="alice")
         res = pc.resolve(TARGET)
         self.assertEqual(res["credential"], SECRET_NEW)
-        self.assertEqual(res["url"], "https://api.xiaolevideo.cn")   # URL 未变
+        self.assertEqual(res["url"], "https://generativelanguage.googleapis.com")
 
     def test_3_url_and_key_change_together(self):
         self._publish_first()
@@ -218,11 +222,11 @@ class ProviderConfigTest(unittest.TestCase):
     # ---------- URL 校验 ----------
 
     def test_url_validation_rules(self):
-        ok = pc.validate_url(TARGET, "https://api.xiaolevideo.cn")
-        self.assertEqual(ok, "https://api.xiaolevideo.cn")
-        for bad in ("http://api.xiaolevideo.cn",
-                    "https://user:pw@api.xiaolevideo.cn",
-                    "https://api.xiaolevideo.cn/?k=1",
+        ok = pc.validate_url(TARGET, "https://generativelanguage.googleapis.com")
+        self.assertEqual(ok, "https://generativelanguage.googleapis.com")
+        for bad in ("http://generativelanguage.googleapis.com",
+                    "https://user:pw@generativelanguage.googleapis.com",
+                    "https://generativelanguage.googleapis.com/?k=1",
                     "https://127.0.0.1",
                     "https://evil.example.com"):
             with self.assertRaises(pc.ProviderConfigError):
@@ -233,9 +237,56 @@ class ProviderConfigTest(unittest.TestCase):
             "https://relay.example.com/v1")
 
     def test_pool_shared_target_is_flagged(self):
-        shared = {t["target_id"]: t for t in pc.targets()}
-        self.assertTrue(shared[TARGET_POOL_SHARED]["pool_shared"])
-        self.assertFalse(shared[TARGET]["pool_shared"])
+        by_id = {t["target_id"]: t for t in pc.targets()}
+        self.assertTrue(by_id[TARGET]["pool_shared"])       # gemini→omni 号池共享
+        self.assertEqual(by_id[TARGET]["pool_provider"], "omni")
+        self.assertFalse(by_id[TARGET_CLEAN]["pool_shared"])
+
+    def test_deprecated_target_has_no_editable_button(self):
+        by_id = {t["target_id"]: t for t in pc.targets()}
+        spec = by_id[TARGET_DEPRECATED]
+        self.assertFalse(spec["editable"])
+        self.assertTrue(spec["deprecated"])
+        self.assertIn("下架", spec["deprecated_reason"])
+        st = pc.status(TARGET_DEPRECATED)
+        self.assertFalse(st["editable"])
+        self.assertTrue(st["deprecated"])
+        # 已下架线路不得再产生可编辑草稿（避免“点了无效的修改按钮”）
+        with self.assertRaises(pc.ProviderConfigError):
+            pc.save_draft(TARGET_DEPRECATED, secret=SECRET_NEW, actor="alice")
+
+    # ---------- 接线开关（默认关闭，行为零变化） ----------
+
+    def test_wiring_disabled_returns_process_startup_constants(self):
+        out = pc.credentials_for(TARGET, legacy_key=LEGACY_KEY,
+                                 legacy_url="https://api.xiaolevideo.cn")
+        self.assertFalse(out["wired"])
+        self.assertEqual(out["credential"], LEGACY_KEY)      # 不接管
+        self.assertEqual(out["source"], pc.SOURCE_ENV)
+
+    def test_wiring_enabled_without_publish_still_uses_env(self):
+        os.environ[pc.WIRING_ENV] = TARGET
+        out = pc.credentials_for(TARGET, legacy_key=LEGACY_KEY)
+        self.assertTrue(out["wired"])
+        self.assertEqual(out["source"], pc.SOURCE_ENV)
+        self.assertEqual(out["credential"], SECRET_OLD)      # 读实时 env，而非启动常量
+        self.assertIsNone(out["version"])
+
+    def test_wiring_enabled_with_publish_uses_backend_not_env(self):
+        os.environ[pc.WIRING_ENV] = "all"
+        self._publish_first(secret=SECRET_NEW)
+        # 环境变量此时改成另一个值，也绝不能影响已发布版本
+        os.environ[ENV_KEY_NAME] = "sk-someone-changed-env"
+        pc.invalidate()
+        out = pc.credentials_for(TARGET, legacy_key=LEGACY_KEY)
+        self.assertEqual(out["source"], pc.SOURCE_BACKEND)
+        self.assertEqual(out["credential"], SECRET_NEW)
+        self.assertEqual(out["version"], 1)
+
+    def test_wiring_flag_only_affects_listed_targets(self):
+        os.environ[pc.WIRING_ENV] = TARGET_CLEAN
+        self.assertTrue(pc.wiring_enabled(TARGET_CLEAN))
+        self.assertFalse(pc.wiring_enabled(TARGET))
 
 
 if __name__ == "__main__":

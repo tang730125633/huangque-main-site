@@ -40,6 +40,9 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MASTER_KEY_ENV = "HQ_PROVIDER_KEYS_MASTER_KEY"
+# 接线开关：不设/空 = 完全不接管（行为与改造前逐字节一致）。
+# 取值：all / 1 / true，或逗号分隔的 target_id 白名单。
+WIRING_ENV = "HQ_PROVIDER_CONFIG_WIRING"
 CACHE_TTL_SECONDS = 5.0  # ≤10s 生效目标下，进程内缓存的保守上限
 
 SOURCE_ENV = "env"
@@ -85,12 +88,32 @@ TARGETS = {
     },
     "image.xiaole": {
         "provider": "xiaolevideo", "kind": "image",
-        "features": ["图片生成 → 果肉生图"],
+        "features": ["图片生成 → 果肉生图（已下架）"],
         "env_keys": ("XIAOLEVIDEO_API_KEY",),
         "url_env": ("XIAOLEVIDEO_API_BASE",),
         "url_default": "https://api.xiaolevideo.cn",
         "pool_provider": "",
         "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+        "editable": False,
+        "deprecated": True,
+        "deprecated_reason": "该生图 API 已下架（image.py::validate_image_payload）",
+    },
+    "xiaolevideo": {
+        # 凭据线路目标：video.py::_xiaole_request 是唯一咽喉，果肉生图与
+        # generate_xiaole_video（视频）共用同一份 Key/URL。
+        # 果肉生图已下架；本目标保留为“接线模式”的参考实现，默认不出可编辑按钮。
+        "provider": "xiaolevideo", "kind": "image+video",
+        "features": ["图片生成 → 果肉生图（已下架）",
+                      "视频生成 → 果肉视频（generate_xiaole_video 历史路径）"],
+        "env_keys": ("XIAOLEVIDEO_API_KEY",),
+        "url_env": ("XIAOLEVIDEO_API_BASE",),
+        "url_default": "https://api.xiaolevideo.cn",
+        "pool_provider": "",
+        "choke_point": "content_domains/video.py::_xiaole_request",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+        "editable": False,
+        "deprecated": True,
+        "deprecated_reason": "果肉生图已下架；仅保留为历史视频路径",
     },
     "video.tryon.classic": {
         "provider": "runninghub", "kind": "video",
@@ -103,7 +126,8 @@ TARGETS = {
     },
     "video.tryon.fast": {
         "provider": "wavespeed", "kind": "video",
-        "features": ["视频模块 → 换装换背景 · 线路二"],
+        "features": ["视频模块 → 换装换背景 · 线路二",
+                      "视频模块 → Seedance AI 超清"],
         "env_keys": ("WAVESPEED_API_KEY",),
         "url_env": (),
         "url_default": "",
@@ -330,6 +354,10 @@ def targets() -> list:
                 "env_keys": list(spec["env_keys"]),
                 "pool_provider": spec.get("pool_provider", ""),
                 "pool_shared": bool(spec.get("pool_provider")),
+                "choke_point": spec.get("choke_point", ""),
+                "editable": spec.get("editable", True),
+                "deprecated": bool(spec.get("deprecated")),
+                "deprecated_reason": spec.get("deprecated_reason", ""),
                 "url_default": spec.get("url_default", ""),
             }
         )
@@ -414,7 +442,9 @@ def status(target_id: str) -> dict:
         "url_default": spec.get("url_default", ""),
         "key_present": key_present,
         "key_last4": key_last4,
-        "editable": True,
+        "editable": spec.get("editable", True),
+        "deprecated": bool(spec.get("deprecated")),
+        "deprecated_reason": spec.get("deprecated_reason", ""),
         "vault_ready": vault_ready(),
     }
 
@@ -443,6 +473,9 @@ def save_draft(target_id: str, url=None, secret=None, actor="", reason="",
     URL 与 Key 永远作为同一个版本；改任一字段都产生新版本（旧验证证据自动失效）。
     """
     spec = target(target_id)
+    if not spec.get("editable", True):
+        raise ProviderConfigError(
+            spec.get("deprecated_reason") or "该线路当前不可在后台编辑")
     actor = str(actor or "").strip()
     if not actor:
         raise ProviderConfigError("缺少操作人")
@@ -716,6 +749,8 @@ def resolve(target_id: str, now=None) -> dict:
 
     进程内 5 秒缓存；发布/回滚会显式失效。已发布后台配置后，存储或解密失败
     一律抛 ``ProviderConfigUnavailable``，调用方不得回退环境变量。
+    存储瞬时不可用时，若进程内已有 **任意年龄** 的成功读数（安全缓存），
+    返回该读数——它仍是后台配置，不是任意环境变量，不会造成双份不一致。
     """
     target(target_id)
     ts = time.monotonic()
@@ -723,10 +758,50 @@ def resolve(target_id: str, now=None) -> dict:
         hit = _CACHE.get(str(target_id))
         if hit and ts - hit[0] < CACHE_TTL_SECONDS:
             return hit[1]
-    result = _resolve_uncached(target_id)
+    try:
+        result = _resolve_uncached(target_id)
+    except ProviderConfigUnavailable:
+        with _CACHE_LOCK:
+            stale = _CACHE.get(str(target_id))
+        if stale is not None:
+            return stale[1]  # 安全缓存：宁用上一次真实读数，也不回退环境变量
+        raise
     with _CACHE_LOCK:
         _CACHE[str(target_id)] = (ts, result)
     return result
+
+
+def wiring_enabled(target_id=None) -> bool:
+    """接线开关：默认关闭。未开启时业务方保持旧行为（读进程启动时的 env 常量）。"""
+    raw = str(os.environ.get(WIRING_ENV) or "").strip().lower()
+    if not raw:
+        return False
+    if raw in ("all", "1", "true", "yes", "on"):
+        return True
+    ids = {item.strip() for item in raw.split(",") if item.strip()}
+    if target_id is None:
+        return bool(ids)
+    return str(target_id) in ids
+
+
+def credentials_for(target_id: str, legacy_key="", legacy_url="") -> dict:
+    """生成/提交路径的唯一取凭据入口（各模块统一调它，避免各自读 env）。
+
+    - 未开启接线：原样返回旧常量（行为零变化）；
+    - 已开启但尚无已发布后台配置：返回环境变量，``source='env'``；
+    - 已开启且有已发布后台配置：返回后台版本（不返回环境变量）；
+    - 存储/解密失败：抛 ``ProviderConfigUnavailable``（fail-closed）。
+    """
+    if not wiring_enabled(target_id):
+        return {"target_id": target_id, "url": legacy_url, "credential": legacy_key,
+                "version": None, "source": SOURCE_ENV, "wired": False}
+    out = dict(resolve(target_id))
+    out["wired"] = True
+    if not out.get("credential"):
+        out["credential"] = legacy_key
+    if not out.get("url"):
+        out["url"] = legacy_url
+    return out
 
 
 def reveal(target_id: str, seq: int, actor="", now=None) -> dict:
