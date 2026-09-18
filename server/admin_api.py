@@ -3717,6 +3717,20 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             "done": sum(item.get("cat") == "ok" for item in matching),
             "failed": sum(item.get("cat") == "fail" for item in matching),
             "running": sum(item.get("cat") == "running" for item in matching),
+            # 失败不一定“仍需处理”：按结算状态区分，避免把已退款的历史失败当成待办
+            # refunded: 0=未退款 1=已退款 2=退款待确认（见 _job_evidence 的 billing_state）
+            "refunded": sum(
+                item.get("source") == "job" and item.get("refunded") == 1
+                for item in matching
+            ),
+            "refund_pending": sum(
+                item.get("source") == "job" and item.get("refunded") == 2
+                for item in matching
+            ),
+            "unrefunded": sum(
+                item.get("source") == "job" and not item.get("refunded")
+                for item in matching
+            ),
             "evidence_gaps": sum(
                 item.get("source") == "job"
                 and item.get("evidence_tone") in {"warn", "neutral"}
