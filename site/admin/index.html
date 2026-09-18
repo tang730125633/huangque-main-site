@@ -369,6 +369,28 @@
 /* 运营总览 · 失败区间汇总 */
 .support-range-summary{margin-top:6px;color:var(--muted);font-size:12px;line-height:1.5}
 .support-range-summary b{color:var(--gold);font-weight:800}
+.ip12-drawer{width:min(960px,92vw)}
+.ip12-drawer .ledger-summary{margin-bottom:14px}
+.ip12-drawer a.mini{display:inline-flex;align-items:center;justify-content:center;height:30px;padding:0 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;font-weight:700;text-decoration:none;white-space:nowrap}
+.ip12-drawer a.mini:hover{border-color:rgba(240,190,85,.45);color:var(--gold)}
+.ip12-sort{height:auto;padding:0;border:0;background:none;color:var(--muted);font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}
+.ip12-sort:hover{color:var(--text)}
+.ip12-sort.active{color:var(--gold)}
+/* IP12 对话统计 */
+.ip12-date-bar{align-items:center;gap:12px;margin-bottom:12px}
+.ip12-date-bar .ops-page-picker{flex:none}
+.ip12-date-bar select{min-width:320px}
+.ip12-users{display:grid;gap:5px;max-height:560px;overflow-y:auto;padding-right:6px}
+.ip12-row{display:grid;grid-template-columns:minmax(118px,1.4fr) minmax(72px,.7fr) minmax(82px,.8fr) minmax(82px,.8fr) minmax(72px,.7fr) minmax(76px,.7fr) 100px 58px;gap:8px;align-items:center;min-width:0}
+.ip12-row>span,.ip12-row>time,.ip12-row>b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.ip12-head{position:sticky;top:0;z-index:2;padding:6px 10px;background:#111613;border-bottom:1px solid var(--line);font-size:11px;font-weight:700;color:var(--muted)}
+.ip12-user{padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.6);font-size:12px;color:var(--muted)}
+.ip12-user b{color:var(--text)}
+.ip12-user:hover{border-color:rgba(240,190,85,.28)}
+.ip12-user .mini{padding:4px 8px;font-size:11px;white-space:nowrap;text-decoration:none}
+.ip12-user a.mini{display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 9px;border:1px solid var(--line);border-radius:6px;background:var(--surface2);color:var(--text);font-size:11px;font-weight:700;text-decoration:none}
+.ip12-user a.mini:hover{border-color:rgba(240,190,85,.45);color:var(--gold)}
+@media (max-width:1100px){.ip12-row{grid-template-columns:minmax(104px,1.3fr) repeat(2,64px) 62px 68px 54px}.ip12-row>*:nth-child(4),.ip12-row>*:nth-child(5),.ip12-head>*:nth-child(4),.ip12-head>*:nth-child(5){display:none}.ip12-date-bar select{min-width:0;width:100%}}
 </style>
 </head>
 <body class="admin-locked">
@@ -392,6 +414,7 @@
         <div class="nav-label">内容运营</div>
         <button class="side-nav-item" data-module-tab="announcements">消息与公告</button>
         <button class="side-nav-item" data-module-tab="inspirations">灵感案例</button>
+        <button class="side-nav-item" data-module-tab="ip12Conv">IP12 对话统计</button>
       </div>
       <div class="nav-group">
         <div class="nav-label">系统管理</div>
@@ -584,6 +607,32 @@
         </div>
       </section>
 
+      <section class="card span12 module-card" data-module="ip12Conv" hidden>
+        <div class="section-head">
+          <div><h2>IP12 对话使用统计</h2><div class="hint">按 IP12 落盘会话统计活跃用户、会话数与消息量。只读，不影响任何业务数据。</div></div>
+          <div class="actions"><span class="muted" id="ip12UpdatedAt">尚未读取</span><button id="ip12Refresh">刷新</button></div>
+        </div>
+        <div class="hint" style="margin:-6px 0 10px">数据每 5 秒在后台自动刷新；无变化时不会重绘（不闪动、不打断滚动与勾选）。</div>
+        <div class="toolbar">
+          <select id="ip12Days" aria-label="时间范围">
+            <option value="7">近 7 天</option>
+            <option value="30" selected>近 30 天</option>
+            <option value="90">近 90 天</option>
+            <option value="0">全部</option>
+          </select>
+          <input class="field" id="ip12User" type="search" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="按账号 / 昵称看某个人的会话明细">
+          <button class="primary" id="ip12Search">查询该用户</button>
+          <button id="ip12ClearUser" hidden>清除用户筛选</button>
+        </div>
+        <div class="ledger-summary" id="ip12Summary"></div>
+        <div class="section-head"><div><h3>与 Agent 对话的用户</h3><div class="hint">左上角选日期，下方列出当天与 Agent 对话过的用户；列依次为 用户名称 / 会话数量 / 用户消息 / 助理回复 / 总消息 / 活跃天数 / 最后活跃 / 查看</div></div></div>
+        <div class="toolbar ip12-date-bar">
+          <label class="ops-page-picker">日期<select id="ip12Date" aria-label="选择日期"></select></label>
+          <span class="muted" id="ip12DaySummary">-</span>
+        </div>
+        <div id="ip12DayUsers"><div class="empty">正在读取 IP12 对话统计…</div></div>
+        <div class="hint" style="margin-top:10px">点每行末尾的「查看」，会话明细从右侧抽屉弹出；抽屉里可排序、导出 CSV、直接打开该会话的 IP12 页面。</div>
+      </section>
       <section class="card span12 module-card" data-module="operations" hidden>
         <div class="section-head">
           <div><h2>能力概览</h2><div class="hint">先看能不能用，再看哪里需要处理；任务、线路和完整证据按需展开。</div></div>
@@ -863,6 +912,13 @@
     <div class="user-detail" id="operationsChannelBox"></div>
   </aside>
 </div>
+<div class="customer-layer" id="ip12Layer" hidden>
+  <button class="drawer-backdrop" id="ip12Backdrop" aria-label="关闭会话明细"></button>
+  <aside class="customer-drawer ip12-drawer" id="ip12Drawer" role="dialog" aria-modal="true" aria-labelledby="ip12DrawerTitle" tabindex="-1">
+    <div class="drawer-head"><div><b id="ip12DrawerTitle">会话明细</b><span id="ip12DrawerSubtitle">该用户在所选范围内与 Agent 的会话</span></div><button id="ip12DrawerClose">关闭</button></div>
+    <div id="ip12DrawerBox" class="user-detail"></div>
+  </aside>
+</div>
 <div class="toast" id="toast"></div>
 <script src="/workbench/hq-icons-duotone.js"></script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
@@ -884,6 +940,8 @@
     days:7, data:null, userTimer:null, module:'dashboard', membershipRequestId:'',
     userPage:1, userPageSize:20, reqPage:1, reqPageSize:20, reqLoading:false, reqPromise:null, detailUser:'', noticeSending:false,
     reqDays:null, reqKinds:'',
+    ip12Days:30, ip12User:'', ip12Data:null, ip12Busy:false, ip12Date:'',
+    ip12DrawerUser:'', ip12Sessions:[], ip12Sort:{key:'last_ts',dir:-1}, ip12Picked:{}, ip12Fp:'', ip12DetailFp:'',
     dashStale:false,
     overviewLoading:false, overviewPromise:null, dashboardLoading:false, dashboardPromise:null, refreshTimer:null, poolActions:0, drawerReturnFocus:null,
     poolEpoch:0, refreshPending:false, announcementPreview:null, announcementPreviewSignature:'',
@@ -908,6 +966,7 @@
     points:['订单与点数 · 点数退款','核对任务扣点、失败退款和人工调整'],
     invite:['邀请与增长','查看邀请链路、奖励台账和风控状态'],
     announcements:['消息与公告','编辑公告、核对受众并查看发布历史'],
+    ip12Conv:['IP12 对话统计','黄雀 IP12 对话的活跃用户、会话数与消息量'],
     inspirations:['灵感案例','管理首页展示案例与做同款入口'],
     operations:['功能状态','查看各项能力是否可用，以及需要处理的位置'],
     servers:['服务器监控','查看主备生产网络与服务器实时资源状态'],
@@ -918,7 +977,7 @@
   };
   var moduleIcons = {
     dashboard:'home',users:'users',logs:'clock',recharge:'coins',points:'trend',invite:'userPlus',
-    announcements:'message',inspirations:'sparkles',operations:'layers',servers:'server',channels:'lock',managedChannels:'layers',features:'sliders',pricing:'coins'
+    announcements:'message',inspirations:'sparkles',ip12Conv:'message',operations:'layers',servers:'server',channels:'lock',managedChannels:'layers',features:'sliders',pricing:'coins'
   };
   var sidebarModule = {points:'recharge',pricing:'features'};
   el('operationsEnvironment').textContent=/zelong/i.test(location.hostname)?'泽龙测试环境':'当前环境';
@@ -2534,6 +2593,7 @@
     if(name==='invite'){loadInvite()}
     if(name==='announcements'){loadAnnouncements()}
     if(name==='inspirations'){loadInspirations()}
+    if(name==='ip12Conv'){loadIp12Conv();ip12StartPoll()}else{ip12StopPoll()}
     if(name==='operations'&&state.data){renderOperations(state.data);probeSelectedOperation(false)}
     if(moduleMeta[name]&&state.adminAuthenticated)restartPolling();   // 切模块：重置退避并按新模块节奏重排
     if(['operations','channels','features','pricing'].indexOf(name)>=0&&!state.data)load(false)
@@ -2557,6 +2617,297 @@
     });
     ['todayMetric','activeMetric','failureMetric','pendingMetric'].forEach(function(id){dashMetric(id,'stale')});
     el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 刷新失败，以上为上次数据（可能已过期）'+(detail?('：'+detail):'');
+  }
+  // ===== IP12 对话使用统计 =====
+  function ip12Fmt(ts){return ts?new Date(Number(ts)).toLocaleString():'-'}
+  function ip12FmtShort(ts){if(!ts)return '-';var d=new Date(Number(ts));var p=function(n){return(n<10?'0':'')+n};return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())}
+  // 用户 -> 在所选范围内活跃过几天
+  function ip12ActiveDays(d){var m={};(d.days||[]).forEach(function(r){(r.users_detail||[]).forEach(function(u){m[u.username]=(m[u.username]||0)+1})});return m}
+  var IP12_HEAD='<div class="ip12-row ip12-head"><span>用户名称</span><span>会话数量</span><span>用户消息</span><span>助理回复</span><span>总消息</span><span>活跃天数</span><span>最后活跃</span><span>查看</span></div>';
+  // 列顺序：用户名称 / 会话数量 / 用户消息 / 助理回复 / 总消息 / 活跃天数 / 最后活跃时间 / 查看
+  // 「查看」是带参数的锚点（#ip12?user=…&days=…）：可复制、刷新后直达，不是按钮
+  function ip12UserRow(u,activeDays){
+    var total=Number(u.user_msgs||0)+Number(u.assistant_msgs||0);
+    var href='#ip12?user='+encodeURIComponent(u.username)+'&days='+encodeURIComponent(state.ip12Days);
+    return '<div class="ip12-row ip12-user">'
+      +'<b title="'+esc(u.username)+'">'+esc(u.username)+'</b>'
+      +'<span title="会话数量">'+Number(u.sessions||0)+'</span>'
+      +'<span title="用户消息">'+Number(u.user_msgs||0)+'</span>'
+      +'<span title="助理回复">'+Number(u.assistant_msgs||0)+'</span>'
+      +'<span title="总消息">'+total+'</span>'
+      +'<span title="活跃天数">'+(Number(activeDays)||0)+' 天</span>'
+      +'<time title="'+esc(ip12Fmt(u.last_ts))+'">'+esc(ip12FmtShort(u.last_ts))+'</time>'
+      +'<a class="mini" href="'+esc(href)+'" data-ip12-open="'+esc(u.username)+'" title="在右侧抽屉查看该用户的会话明细">查看</a>'
+      +'</div>';
+  }
+  // 深链：#ip12?user=<账号>&days=<天数>（无 user 则关闭抽屉）
+  function ip12ParseHash(){
+    var m=/^#ip12(?:\?(.*))?$/.exec(location.hash||'');
+    if(!m)return null;
+    var p={};
+    (m[1]||'').split('&').forEach(function(kv){if(!kv)return;var i=kv.indexOf('=');if(i>0)p[kv.slice(0,i)]=decodeURIComponent(kv.slice(i+1))});
+    return {user:String(p.user||'').trim(),days:(p.days!==undefined&&p.days!=='')?(Number(p.days)||0):null};
+  }
+  function closeIp12User(){
+    el('ip12Layer').hidden=true;state.ip12DrawerUser='';
+    // 关掉抽屉就把 hash 复位：避免下次进入本模块又自动弹窗
+    if(/^#ip12(\?|$)/.test(location.hash||'')){try{history.replaceState(null,'','#ip12')}catch(e){}}
+    if(el('customerLayer').hidden&&el('operationsChannelLayer').hidden)document.body.classList.remove('drawer-open');
+  }
+  function ip12Th(key,label){
+    var on=state.ip12Sort.key===key;
+    return '<th><button type="button" class="ip12-sort'+(on?' active':'')+'" data-ip12-sort="'+key+'">'+esc(label)+(on?(state.ip12Sort.dir<0?' ↓':' ↑'):'')+'</button></th>';
+  }
+  function ip12SortedSessions(){
+    var ss=(state.ip12Sessions||[]).slice(),k=state.ip12Sort.key,d=state.ip12Sort.dir;
+    ss.sort(function(a,b){
+      var va,vb;
+      if(k==='sid'){va=String(a.sid||'');vb=String(b.sid||'')}
+      else{va=Number(a[k]||0);vb=Number(b[k]||0)}
+      if(va<vb)return -d;
+      if(va>vb)return d;
+      return 0;
+    });
+    return ss;
+  }
+  function ip12Csv(rows){
+    return rows.map(function(r){return r.map(function(cell){var s=String(cell==null?'':cell);
+      return /[",\n\r]/.test(s)?('"'+s.replace(/"/g,'""')+'"'):s}).join(',')}).join('\r\n');
+  }
+  function ip12Download(name,csv){
+    var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(a.href)},3000);
+  }
+  function ip12RoleName(role){return ({user:'用户',assistant:'Agent',system:'系统',tool:'工具'})[role]||role}
+  function ip12ExportCsv(){
+    var u=state.ip12DrawerUser||'',ss=ip12SortedSessions();
+    ip12Download('IP12对话列表-'+(u||'user')+'-'+(state.ip12Days||'all')+'天.csv',ip12Csv(
+      [['会话','首次','最后','用户消息','助理回复','总消息']].concat(ss.map(function(x){
+        return [x.sid, ip12Fmt(x.first_ts), ip12Fmt(x.last_ts),
+                Number(x.user_msgs||0), Number(x.assistant_msgs||0), Number(x.total_msgs||0)];
+      }))));
+    toast('已导出 '+ss.length+' 条会话列表');
+  }
+  // 勾选会话 → 导出该会话的对话内容（role/content/时间）
+  function ip12PickedSids(){
+    return Object.keys(state.ip12Picked||{}).filter(function(k){return state.ip12Picked[k]});
+  }
+  function ip12SyncPick(){
+    var n=ip12PickedSids().length,btn=el('ip12ExportChat'),all=el('ip12CheckAll');
+    if(btn){btn.disabled=!n;btn.textContent=n?('导出所选对话内容 ('+n+')'):'导出所选对话内容'}
+    var boxes=document.querySelectorAll('.ip12-chat-pick');
+    if(all)all.checked=!!boxes.length&&n===boxes.length;
+  }
+  function ip12ExportChats(){
+    var sids=ip12PickedSids();
+    if(!sids.length){toast('先勾选要导出的会话');return}
+    var btn=el('ip12ExportChat'),label=btn.textContent;
+    btn.disabled=true;
+    var rows=[['会话','序号','角色','时间','内容']],done=0,failed=0;
+    var chain=Promise.resolve();
+    sids.forEach(function(sid){
+      chain=chain.then(function(){
+        btn.textContent='导出中… ('+done+'/'+sids.length+')';
+        return api('/api/admin/conversation-session?sid='+encodeURIComponent(sid)).then(function(d){
+          (d.messages||[]).forEach(function(m){
+            rows.push([sid,m.seq,ip12RoleName(m.role),ip12Fmt(m.created_at),m.content]);
+          });
+        }).catch(function(e){failed++;rows.push([sid,'','','','【读取失败】'+e.message])}).then(function(){
+          done++;btn.textContent='导出中… ('+done+'/'+sids.length+')';
+        });
+      });
+    });
+    chain.then(function(){
+      ip12Download('IP12对话内容-'+(state.ip12DrawerUser||'user')+'-'+sids.length+'个会话.csv',ip12Csv(rows));
+      btn.textContent=label;btn.disabled=false;
+      toast('已导出 '+sids.length+' 个会话的对话内容'+(failed?('，'+failed+' 个失败'):''));
+    });
+  }
+  // 输入的账号可能是大小写不一致或只是前缀：先在已取到的用户集里换回真实写法
+  function ip12ResolveUser(input){
+    var v=String(input||'').trim();
+    if(!v)return '';
+    var known={},d=state.ip12Data||{};
+    (d.days||[]).forEach(function(r){(r.users_detail||[]).forEach(function(u){known[u.username]=1})});
+    (d.recent_users||[]).forEach(function(u){known[u.username]=1});
+    if(known[v])return v;
+    var low=v.toLowerCase(),hit='';
+    Object.keys(known).forEach(function(k){if(!hit&&k.toLowerCase()===low)hit=k});
+    return hit||v;
+  }
+  // 查询用户 = 直接打开该用户的会话明细抽屉
+  // （日列表与汇总是全站口径，后端不按用户过滤，所以不能靠“重拉列表”体现筛选）
+  function ip12SearchUser(){
+    var raw=(el('ip12User').value||'').trim();
+    if(!raw){toast('请输入账号或昵称');return}
+    var v=ip12ResolveUser(raw);
+    state.ip12User=v;el('ip12User').value=v;el('ip12ClearUser').hidden=false;
+    openIp12User(v);
+  }
+  function renderIp12UserDetail(d){
+    var det=d.user_detail,box=el('ip12DrawerBox');
+    var ss=(det&&det.sessions)||[];
+    if(!ss.length){
+      var cand=(det&&det.candidates)||[];
+      if(cand.length){
+        box.innerHTML='<div class="empty">没找到完整账号 <b>'+esc(det.username)+'</b>，是否指：</div>'
+          +'<div class="actions" style="margin-top:10px">'+cand.map(function(name){
+            return '<button class="mini" type="button" data-ip12-cand="'+esc(name)+'">'+esc(name)+'</button>';
+          }).join('')+'</div>';
+        Array.prototype.forEach.call(box.querySelectorAll('[data-ip12-cand]'),function(b){
+          b.onclick=function(){var name=b.getAttribute('data-ip12-cand');
+            state.ip12User=name;el('ip12User').value=name;el('ip12ClearUser').hidden=false;openIp12User(name)};
+        });
+      }else{
+        box.innerHTML='<div class="empty">没找到 <b>'+esc((det&&det.username)||state.ip12DrawerUser||'')+'</b>：该账号不存在，或它在所选范围内没有会话</div>';
+      }
+      el('ip12DrawerSubtitle').textContent='未命中';
+      return;
+    }
+    state.ip12Sessions=ss;
+    var um=0,am=0,tot=0,last=0;
+    ss.forEach(function(x){um+=Number(x.user_msgs||0);am+=Number(x.assistant_msgs||0);tot+=Number(x.total_msgs||0);if(x.last_ts>last)last=x.last_ts});
+    var u=det.username||state.ip12DrawerUser||'';
+    el('ip12DrawerSubtitle').textContent=(state.ip12Days?('近 '+state.ip12Days+' 天'):'全部')+' · '+ss.length+' 个会话 · 最后活跃 '+ip12Fmt(last);
+    box.innerHTML='<div class="ledger-summary">'
+      +[['会话数',ss.length],['用户消息',um],['助理回复',am],['总消息',tot]]
+        .map(function(p){return '<div class="ledger-stat"><span>'+p[0]+'</span><b>'+Number(p[1]||0).toLocaleString()+'</b></div>'}).join('')
+      +'</div>'
+      +'<div class="row" style="margin:0 0 10px"><div class="muted" style="font-size:12px">点表头可排序；勾选会话后可导出该会话的对话内容</div><div class="actions">'
+        +'<a class="mini" href="/workbench/ip12/" target="_blank" rel="noopener">打开 IP12 工作台</a>'
+        +'<button class="mini" id="ip12Export" type="button">导出会话列表</button>'
+        +'<button class="mini primary" id="ip12ExportChat" type="button" disabled>导出所选对话内容</button></div></div>'
+      +'<div class="table-wrap"><table><thead><tr>'
+        +'<th style="width:36px"><input type="checkbox" id="ip12CheckAll" title="全选本用户的会话"></th>'
+        +ip12Th('sid','会话')+ip12Th('first_ts','首次')+ip12Th('last_ts','最后')
+        +ip12Th('user_msgs','用户消息')+ip12Th('assistant_msgs','助理回复')+ip12Th('total_msgs','总消息')
+        +'<th>操作</th></tr></thead><tbody>'
+      +ip12SortedSessions().map(function(x){
+        var on=!!(state.ip12Picked||{})[x.sid];
+        return '<tr><td><input type="checkbox" class="ip12-chat-pick" data-sid="'+esc(x.sid)+'"'+(on?' checked':'')+'></td>'
+          +'<td><code>'+esc(x.sid)+'</code></td><td>'+esc(ip12Fmt(x.first_ts))+'</td><td>'+esc(ip12Fmt(x.last_ts))+'</td>'
+          +'<td>'+Number(x.user_msgs||0)+'</td><td>'+Number(x.assistant_msgs||0)+'</td><td>'+Number(x.total_msgs||0)+'</td>'
+          +'<td><a class="mini" href="/workbench/ip12/?sid='+encodeURIComponent(x.sid)+'" target="_blank" rel="noopener">打开会话</a></td></tr>';
+      }).join('')
+      +'</tbody></table></div>';
+    el('ip12Export').onclick=ip12ExportCsv;
+    el('ip12ExportChat').onclick=ip12ExportChats;
+    el('ip12CheckAll').onchange=function(){
+      var on=el('ip12CheckAll').checked;
+      Array.prototype.forEach.call(box.querySelectorAll('.ip12-chat-pick'),function(c){c.checked=on;state.ip12Picked[c.getAttribute('data-sid')]=on});
+      ip12SyncPick();
+    };
+    Array.prototype.forEach.call(box.querySelectorAll('.ip12-chat-pick'),function(c){
+      c.onchange=function(){state.ip12Picked[c.getAttribute('data-sid')]=c.checked;ip12SyncPick()};
+    });
+    ip12SyncPick();
+    Array.prototype.forEach.call(box.querySelectorAll('[data-ip12-sort]'),function(th){
+      th.onclick=function(){var k=th.getAttribute('data-ip12-sort');
+        if(state.ip12Sort.key===k)state.ip12Sort.dir=-state.ip12Sort.dir;
+        else{state.ip12Sort.key=k;state.ip12Sort.dir=-1}
+        renderIp12UserDetail(d)};
+    });
+  }
+  // 「查看」：从右侧抽屉弹出该用户的会话明细；同时把参数写进 URL（可分享/刷新直达）
+  function openIp12User(username){
+    username=String(username||'').trim();if(!username)return;
+    var want='#ip12?user='+encodeURIComponent(username)+'&days='+encodeURIComponent(state.ip12Days);
+    if(location.hash!==want){try{history.replaceState(null,'',want)}catch(e){location.hash=want}}
+    el('ip12Layer').hidden=false;document.body.classList.add('drawer-open');
+    el('ip12DrawerTitle').textContent='会话明细 · '+username;
+    el('ip12DrawerSubtitle').textContent='正在读取…';
+    el('ip12DrawerBox').innerHTML='<div class="muted">正在读取 '+esc(username)+' 的会话明细…</div>';
+    state.ip12DrawerUser=username;state.ip12Picked={};
+    try{el('ip12Drawer').focus()}catch(e){}
+    api('/api/admin/conversation-stats?days='+encodeURIComponent(state.ip12Days)+'&user='+encodeURIComponent(username))
+      .then(function(d){if(state.ip12DrawerUser===username){state.ip12DetailFp=ip12FingerprintDetail(d);renderIp12UserDetail(d)}})
+      .catch(function(e){if(state.ip12DrawerUser===username)el('ip12DrawerBox').innerHTML='<div class="error">读取失败：'+esc(e.message)+'</div>'});
+  }
+  // 5 秒自动静默刷新：数据没变就一个 DOM 都不碰；变了也只做保留状态的就地重渲染
+  var IP12_POLL_MS=5000, ip12Timer=null;
+  function ip12FingerprintMain(d){
+    var s=d.summary||{};
+    return [s.users,s.sessions,s.user_msgs,s.assistant_msgs,s.days_covered,
+      (d.days||[]).map(function(r){return [r.date,r.users,r.sessions,r.user_msgs,r.assistant_msgs].join(':')}).join('|')].join('~');
+  }
+  function ip12FingerprintDetail(d){
+    var det=d.user_detail||{};
+    return (det.username||'')+'~'+((det.sessions||[]).map(function(x){return x.sid+':'+x.last_ts+':'+x.total_msgs}).join('|'));
+  }
+  function ip12StopPoll(){if(ip12Timer){clearInterval(ip12Timer);ip12Timer=null}}
+  function ip12StartPoll(){
+    ip12StopPoll();
+    ip12Timer=setInterval(function(){
+      if(document.hidden||state.module!=='ip12Conv')return;   // 后台标签页 / 已切走：不拉
+      loadIp12Conv(true);
+      ip12RefreshDrawer();
+    },IP12_POLL_MS);
+  }
+  // 抽屉开着时也静默刷新；内容没变不动 DOM，变了保留滚动位置
+  function ip12RefreshDrawer(){
+    var u=state.ip12DrawerUser;
+    if(!u||el('ip12Layer').hidden)return;
+    api('/api/admin/conversation-stats?days='+encodeURIComponent(state.ip12Days)+'&user='+encodeURIComponent(u)).then(function(d){
+      if(state.ip12DrawerUser!==u)return;
+      var fp=ip12FingerprintDetail(d);
+      if(fp===state.ip12DetailFp)return;
+      state.ip12DetailFp=fp;
+      var box=el('ip12DrawerBox'),scr=box?box.scrollTop:0;
+      renderIp12UserDetail(d);
+      if(box)box.scrollTop=scr;
+    }).catch(function(){});
+  }
+  function loadIp12Conv(silent){
+    if(!state.adminAuthenticated||state.ip12Busy)return;
+    state.ip12Busy=true;
+    if(!silent){el('ip12Refresh').disabled=true;el('ip12UpdatedAt').textContent='读取中…'}
+    var box=el('ip12DayUsers');
+    var q='?days='+encodeURIComponent(state.ip12Days)+'&user='+encodeURIComponent(state.ip12User||'');
+    api('/api/admin/conversation-stats'+q).then(function(d){
+      state.ip12Data=d;
+      var fp=ip12FingerprintMain(d);
+      // 静默刷新且指纹未变 → 完全不碰 DOM（不闪动、不打断滚动/日期/勾选/排序）
+      if(!(silent&&fp===state.ip12Fp)){state.ip12Fp=fp;renderIp12Conv(d)}
+      el('ip12UpdatedAt').textContent=new Date().toLocaleTimeString()+(silent?' · 每 5 秒自动刷新':' · 共 '+Number((d.summary||{}).sessions||0).toLocaleString()+' 个会话');
+    }).catch(function(e){
+      if(silent)return;   // 后台刷新失败不打扰，等下一轮
+      el('ip12UpdatedAt').textContent=new Date().toLocaleTimeString()+' · 读取失败';
+      if(box){box.className='empty error';box.textContent='读取失败：'+e.message}
+      if(e.status!==401&&e.status!==403)toast('IP12 对话统计读取失败：'+e.message);
+    }).finally(function(){state.ip12Busy=false;if(!silent)el('ip12Refresh').disabled=false});
+  }
+  function renderIp12Conv(d){
+    var s=d.summary||{},days=d.days||[],users=d.recent_users||[],detail=d.user_detail;
+    var active=ip12ActiveDays(d);
+    el('ip12Summary').innerHTML=[
+      ['活跃用户',s.users],['会话数',s.sessions],['用户消息',s.user_msgs],['助理回复',s.assistant_msgs],
+      ['覆盖天数',s.days_covered],['历史未归属会话',s.legacy_sessions]
+    ].map(function(p){return '<div class="ledger-stat"><span>'+esc(p[0])+'</span><b>'+Number(p[1]||0).toLocaleString()+'</b></div>'}).join('');
+    var sel=el('ip12Date');
+    var want=state.ip12Date;
+    if(!days.some(function(r){return r.date===want}))want=days.length?days[0].date:'';
+    state.ip12Date=want;
+    sel.innerHTML=days.map(function(r){
+      return '<option value="'+esc(r.date)+'">'+esc(r.date)+'　活跃 '+Number(r.users||0)+' · 会话 '+Number(r.sessions||0)+' · 用户消息 '+Number(r.user_msgs||0)+'</option>';
+    }).join('');
+    sel.value=want;
+    var box=el('ip12DayUsers');
+    var scr=box?box.scrollTop:0;
+    var day=days.filter(function(r){return r.date===want})[0];
+    if(!day){box.className='empty';box.textContent='该范围内没有对话记录';el('ip12DaySummary').textContent='-'}
+    else{
+      box.className='ip12-users';
+      box.innerHTML=IP12_HEAD+((day.users_detail||[]).map(function(u){return ip12UserRow(u,active[u.username])}).join('')||'<div class="muted">当天没有用户明细</div>');
+      el('ip12DaySummary').textContent='活跃用户 '+Number(day.users||0)+' · 会话 '+Number(day.sessions||0)+' · 用户消息 '+Number(day.user_msgs||0)+' · 助理回复 '+Number(day.assistant_msgs||0);
+    }
+    if(box)box.scrollTop=scr;
+    // 「最近活跃用户」表已按需求删除，只保留按天明细的抽屉
+    // 「查看」用显式 onclick：即使 hash 与上次相同（hashchange 不触发）也能打开
+    Array.prototype.forEach.call(document.querySelectorAll('[data-ip12-open]'),function(a){
+      a.onclick=function(ev){ev.preventDefault();openIp12User(a.getAttribute('data-ip12-open'))};
+    });
   }
   function renderDashboard(d){
     setUser(d.user||{});el('app').style.display='block';el('gate').style.display='none';
@@ -2808,7 +3159,25 @@
   el('announcementPreview').onclick=previewAnnouncementAudience;
   el('announcementPublish').onclick=publishAnnouncement;
   el('announcementHistoryRefresh').onclick=loadAnnouncements;
-  el('caseRefresh').onclick=loadInspirations;el('caseNew').onclick=resetCaseEditor;el('caseReset').onclick=resetCaseEditor;el('caseSave').onclick=function(){saveCase(false)};el('casePublish').onclick=function(){saveCase(true)};el('caseFilter').onchange=renderCaseList;
+  el('caseRefresh').onclick=loadInspirations;
+  el('ip12Refresh').onclick=function(){loadIp12Conv()};
+  // 切回标签页立即拉一次（定时器在隐藏时是空转的）
+  document.addEventListener('visibilitychange',function(){if(!document.hidden&&state.module==='ip12Conv'&&state.adminAuthenticated){loadIp12Conv(true);ip12RefreshDrawer()}});
+  el('ip12Days').onchange=function(){state.ip12Days=Number(el('ip12Days').value)||0;loadIp12Conv()};
+  el('ip12Date').onchange=function(){state.ip12Date=el('ip12Date').value;if(state.ip12Data)renderIp12Conv(state.ip12Data)};
+  el('ip12Search').onclick=ip12SearchUser;
+  el('ip12User').onkeydown=function(e){if(e.key==='Enter')el('ip12Search').click()};
+  el('ip12ClearUser').onclick=function(){state.ip12User='';el('ip12User').value='';el('ip12ClearUser').hidden=true;closeIp12User()};
+  el('ip12DrawerClose').onclick=closeIp12User;
+  el('ip12Backdrop').onclick=closeIp12User;
+  // 外部改 hash（手改地址欄/回退/刷新）时接管：?user= 开抽屉，无 user 关抽屉
+  window.addEventListener('hashchange',function(){
+    var req=ip12ParseHash();
+    if(req===null)return;
+    if(state.module!=='ip12Conv')switchModule('ip12Conv');
+    if(req.days!==null&&req.days!==state.ip12Days){state.ip12Days=req.days;el('ip12Days').value=String(req.days);loadIp12Conv()}
+    if(req.user)openIp12User(req.user);else closeIp12User();
+  });el('caseNew').onclick=resetCaseEditor;el('caseReset').onclick=resetCaseEditor;el('caseSave').onclick=function(){saveCase(false)};el('casePublish').onclick=function(){saveCase(true)};el('caseFilter').onchange=renderCaseList;
   el('caseMediaType').onchange=function(){syncCaseMedia(true)};
   el('caseTarget').onchange=function(){var shouldBeImage=imageTargets.indexOf(el('caseTarget').value)>=0;if((el('caseMediaType').value==='image')!==shouldBeImage){el('caseMediaType').value=shouldBeImage?'image':'video';syncCaseMedia(true)}else renderCasePreview()};
   ['caseTitle','caseCategory'].forEach(function(id){el(id).oninput=renderCasePreview});
@@ -2830,7 +3199,7 @@
   el('globalUserSearch').onkeydown=function(e){if(e.key==='Enter')searchCustomer()};
   el('drawerClose').onclick=closeUserDetail;el('userDetailBackdrop').onclick=closeUserDetail;
   el('operationsChannelClose').onclick=closeOperationsChannels;el('operationsChannelBackdrop').onclick=closeOperationsChannels;
-  document.addEventListener('keydown',function(e){if(e.key!=='Escape')return;if(!el('operationsChannelLayer').hidden)closeOperationsChannels();else if(!el('customerLayer').hidden)closeUserDetail();else closeSidebar()});
+  document.addEventListener('keydown',function(e){if(e.key!=='Escape')return;if(!el('ip12Layer').hidden)closeIp12User();else if(!el('operationsChannelLayer').hidden)closeOperationsChannels();else if(!el('customerLayer').hidden)closeUserDetail();else closeSidebar()});
   document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if(!state.adminAuthenticated||state.poolActions)return;if(state.module==='dashboard')loadDashboard(true);else if(state.module==='servers')loadServers(true);else if(state.module==='operations')load(true);else if(state.module==='logs')loadReqLogs(true)});
   window.addEventListener('pagehide',clearSecretWindows);
   window.addEventListener('pageshow',clearSecretWindows);
