@@ -817,7 +817,7 @@
             <option value="running">进行中</option>
           </select>
           <select id="reqDays" aria-label="时间范围">
-            <option value="">默认（跟随总览）</option>
+            <option value="">默认（近 7 天）</option>
             <option value="0">今日</option>
             <option value="7">近 7 天</option>
             <option value="30">近 30 天</option>
@@ -869,6 +869,10 @@
 (function(){
   var token = '__cookie__';
   var SUPPORT_DAYS = 7;   // 「需要处理」只统计近 7 天，最多显示 30 条
+  // 实时任务的有效时间窗口：默认近 7 天，用户选了就跟随选择。
+  // 注意：不要回落到 state.days——那个值由「功能状态」页的下拉控制，
+  // 回落到它会让总览数字与列表口径再次错开。
+  function effectiveReqDays(){return (state.reqDays===null||state.reqDays===undefined)?SUPPORT_DAYS:state.reqDays}
   var state = {
     days:7, data:null, userTimer:null, module:'dashboard', membershipRequestId:'',
     userPage:1, userPageSize:20, reqPage:1, reqPageSize:20, reqLoading:false, reqPromise:null, detailUser:'', noticeSending:false,
@@ -1352,7 +1356,7 @@
     Array.prototype.forEach.call(el('reqBox').querySelectorAll('[data-req-page]'),function(btn){btn.onclick=function(){state.reqPage+=Number(btn.getAttribute('data-req-page'));loadReqLogs()}});
   }
   function loadReqLogs(silent){
-    var rangeDays=(state.reqDays===null||state.reqDays===undefined)?state.days:state.reqDays;
+    var rangeDays=effectiveReqDays();
     var q='?limit='+state.reqPageSize+'&offset='+((state.reqPage-1)*state.reqPageSize)+'&days='+encodeURIComponent(rangeDays)
       +'&source='+encodeURIComponent(el('reqSource').value||'')
       +'&status='+encodeURIComponent(el('reqStatus').value||'')
@@ -2537,7 +2541,7 @@
     if(!state.adminAuthenticated)return Promise.resolve();
     if(state.dashboardLoading)return state.dashboardPromise||Promise.resolve();
     state.dashboardLoading=true;if(!silent)el('dashboardRefresh').disabled=true;
-    state.dashboardPromise=api('/api/admin/dashboard?days='+state.days).then(function(d){state.overviewUpdatedAt=Date.now();state.dashData=d;pollNote(true);renderDashboard(d)}).catch(function(e){pollNote(false);if(e.status===401||e.status===403){showAdminLogin('登录已过期，请重新登录。',true);return}el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 刷新失败，数据可能已过期';toast('刷新失败：'+e.message)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
+    state.dashboardPromise=api('/api/admin/dashboard?days='+SUPPORT_DAYS).then(function(d){state.overviewUpdatedAt=Date.now();state.dashData=d;pollNote(true);renderDashboard(d)}).catch(function(e){pollNote(false);if(e.status===401||e.status===403){showAdminLogin('登录已过期，请重新登录。',true);return}el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 刷新失败，数据可能已过期';toast('刷新失败：'+e.message)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
     return state.dashboardPromise;
   }
   function serverState(item){var label=item.status==='warning'?'告警':(item.online?'在线':'离线');return '<span class="server-state" data-state="'+esc(item.status||'offline')+'">'+esc(label)+'</span>'}
@@ -2631,7 +2635,7 @@
       // 重的实时任务时间线：先探指纹，没变就不拉（省掉 0.9 秒的重查询）
       var policy=POLL_POLICY[state.module];
       if(policy&&policy.probe&&active){
-        api('/api/admin/activity?probe=1&days='+state.days).then(function(d){
+        api('/api/admin/activity?probe=1&days='+effectiveReqDays()).then(function(d){
           var now=Date.now(),fingerprint=d&&d.fingerprint;
           if(hqAdminPoll.shouldFullFetch(now,pollLastFullAt,pollFingerprint,fingerprint)){
             pollFingerprint=fingerprint;pollLastFullAt=now;pollCurrentModule(true);
@@ -2680,8 +2684,8 @@
     chip.title='只显示这些功能，点击清除';
   }
   el('todayMetric').onclick=function(){openDashboardJobs('',{days:0})};
-  el('activeMetric').onclick=function(){openDashboardJobs('running',{days:state.days})};
-  el('failureMetric').onclick=function(){var src=state.dashData||state.data||{};var hs=(src.stats&&src.stats.high_failure)||[];openDashboardJobs('fail',{days:state.days,kinds:hs.map(function(x){return x.kind}).join(',')})};
+  el('activeMetric').onclick=function(){openDashboardJobs('running',{days:SUPPORT_DAYS})};
+  el('failureMetric').onclick=function(){var src=state.dashData||state.data||{};var hs=(src.stats&&src.stats.high_failure)||[];openDashboardJobs('fail',{days:SUPPORT_DAYS,kinds:hs.map(function(x){return x.kind}).join(',')})};
   el('pendingMetric').onclick=function(){el('rechargeStatus').value='pending';switchModule('recharge')};
   el('dashboardRefresh').onclick=function(){loadDashboard(false)};
   el('serverRefresh').onclick=function(){loadServers(false)};
