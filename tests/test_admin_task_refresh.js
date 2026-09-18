@@ -72,7 +72,9 @@ test('reconciliation dialog states the unconfirmed risk and relabels the action'
 function setup() {
   const elements = Object.fromEntries(['reqSource','reqStatus','reqUser','reqSearch','reqAttributed','reqNoise','reqUpdatedAt'].map(id => [id, {value:'',checked:false,textContent:''}]));
   const pending=[], rendered=[];
-  const context={state:{reqPage:1,reqPageSize:20,days:7},el:id=>elements[id],encodeURIComponent,Promise,toast:()=>{},renderActivity:d=>rendered.push(d),api:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject})),pollNote:()=>{}};
+  // loadReqLogs 现在通过 effectiveReqDays() 取时间窗口（默认近 7 天，可被 reqDays 覆盖）。
+  // 本用例集只验证请求编排/防重入，不验证窗口换算，所以给一个固定 7 天的 stub。
+  const context={state:{reqPage:1,reqPageSize:20,days:7},el:id=>elements[id],encodeURIComponent,Promise,toast:()=>{},renderActivity:d=>rendered.push(d),api:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject})),pollNote:()=>{},effectiveReqDays:()=>7};
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('  function loadReqLogs('),source.indexOf('  function ',source.indexOf('  function loadReqLogs(')+12)),context);
   return {context,elements,pending,rendered};
