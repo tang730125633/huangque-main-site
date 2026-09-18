@@ -1108,7 +1108,7 @@ def init_db():
     pricing.init_db()
     if provider_keys is not None:
         provider_keys.init_db()
-    if provider_config is not None:
+    if provider_config is not None and provider_config.wiring_enabled():
         provider_config.init_db()
     if short_drama_lipsync_rollout is not None:
         short_drama_lipsync_rollout.init_db(lipsync_db)

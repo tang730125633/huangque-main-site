@@ -13,7 +13,7 @@ import base64
 import json
 import os
 import shutil
-import sqlite3
+import psycopg
 import sys
 import tempfile
 import unittest
@@ -43,7 +43,8 @@ class ProviderConfigTest(unittest.TestCase):
         os.environ["HQ_PROVIDER_KEYS_MASTER_KEY"] = base64.urlsafe_b64encode(
             b"0123456789abcdef0123456789abcdef"
         ).decode("ascii")
-        os.environ.pop("HQ_ADMIN_CONFIG_STORE", None)
+        from tests.provider_config_fixture import configure
+        configure(self, pc)
         os.environ.pop("HQ_PROVIDER_BASE_HOST_ALLOWLIST", None)
         os.environ.pop(pc.WIRING_ENV, None)
         os.environ[ENV_KEY_NAME] = SECRET_OLD
@@ -198,16 +199,16 @@ class ProviderConfigTest(unittest.TestCase):
         ]
         for blob in blobs:
             self.assertNotIn(SECRET_OLD, blob)
-        with sqlite3.connect(str(self.tmp / "admin_config.db")) as conn:
+        with psycopg.connect(os.environ['HQ_DATABASE_URL']) as conn:
             raw = conn.execute(
-                "SELECT url, key_last4, evidence FROM provider_config_versions"
+                "SELECT url, key_last4, evidence FROM ops.provider_config_versions"
             ).fetchall()
         self.assertNotIn(SECRET_OLD, json.dumps(raw, ensure_ascii=False))
 
     def test_no_silent_fallback_when_published_credential_is_broken(self):
         self._publish_first()
-        with sqlite3.connect(str(self.tmp / "admin_config.db")) as conn:
-            conn.execute("UPDATE provider_config_versions SET ciphertext=? WHERE seq=1",
+        with psycopg.connect(os.environ['HQ_DATABASE_URL']) as conn:
+            conn.execute("UPDATE ops.provider_config_versions SET ciphertext=%s WHERE seq=1",
                          (b"tampered-ciphertext",))
             conn.commit()
         pc.invalidate()
@@ -221,6 +222,14 @@ class ProviderConfigTest(unittest.TestCase):
         os.environ.pop("HQ_DATABASE_URL", None)
         with self.assertRaises((pc.ProviderConfigUnavailable, RuntimeError)):
             pc.status(TARGET)
+
+    def test_sqlite_mode_is_rejected_without_creating_database(self):
+        os.environ['HQ_ADMIN_CONFIG_STORE'] = 'sqlite'
+        with self.assertRaises(pc.ProviderConfigUnavailable):
+            pc.init_db()
+        with self.assertRaises(pc.ProviderConfigUnavailable):
+            pc.save_draft(TARGET, secret=SECRET_NEW, actor='tester')
+        self.assertFalse((self.tmp / 'admin_config.db').exists())
 
     # ---------- URL 校验 ----------
 

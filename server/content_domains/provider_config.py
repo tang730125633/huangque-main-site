@@ -18,9 +18,9 @@
 
 存储
 ----
-沿用 `provider_keys.py` 的 `admin_config.db`（`ADMIN_DB`）与主密钥
-`HQ_PROVIDER_KEYS_MASTER_KEY`（AESGCM）。当前只实现 SQLite；当
-``HQ_ADMIN_CONFIG_STORE=postgres`` 时**显式拒绝**（fail-closed），避免两处权威。
+仅支持 PostgreSQL 的 ops.provider_config_* 表，由 Alembic 建表。
+必须显式设置 HQ_ADMIN_CONFIG_STORE=postgres 与 HQ_DATABASE_URL，不提供 SQLite 回退。
+沿用主密钥 HQ_PROVIDER_KEYS_MASTER_KEY（AESGCM），不改变旧业务存储。
 
 这个模块默认不生效：只有业务方调用 ``resolve()`` 且存在 published 版本时才覆盖。
 """
@@ -30,12 +30,9 @@ from __future__ import annotations
 import base64
 import json
 import os
-import sqlite3
 import threading
 import time
 import urllib.parse
-from contextlib import closing
-from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -157,118 +154,30 @@ class NotVerified(ProviderConfigError):
     """该版本还没有可用验证证据，禁止发布。"""
 
 
-def _db_path() -> Path:
-    return Path(
-        os.environ.get(
-            "ADMIN_DB",
-            str(Path(__file__).resolve().parent.parent / "admin_config.db"),
-        )
-    )
 
 
 def mode() -> str:
     value = (os.environ.get("HQ_ADMIN_CONFIG_STORE") or "sqlite").strip().lower()
-    if value not in ("sqlite", "postgres"):
-        raise ProviderConfigUnavailable("HQ_ADMIN_CONFIG_STORE 配置非法")
+    if value != "postgres":
+        raise ProviderConfigUnavailable("线路配置仅支持 PostgreSQL，请设置 HQ_ADMIN_CONFIG_STORE=postgres")
+    if not (os.environ.get("HQ_DATABASE_URL") or "").strip():
+        raise ProviderConfigUnavailable("线路配置缺少 HQ_DATABASE_URL")
     return value
 
 
-def _pg() -> bool:
-    """postgres 权威：走 admin_config_store（ops.provider_config_*，Alembic 20260918_0016）。"""
-    return mode() == "postgres"
 
 
-def _require_sqlite() -> None:
-    if _pg():
-        raise ProviderConfigUnavailable("postgres 权威下不应走 SQLite 路径")
 
 
-_SCHEMA_READY = set()
-_SCHEMA_LOCK = threading.Lock()
 
 
-def _connect() -> sqlite3.Connection:
-    _require_sqlite()
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        conn.close()
-        raise
-    # 每个进程第一次访问时自建表（只 CREATE IF NOT EXISTS，不改变已有列），
-    # 这样任何解析凭据的服务都不会因为漏调 init_db 而报 no such table。
-    key = str(path)
-    if key not in _SCHEMA_READY:
-        with _SCHEMA_LOCK:
-            if key not in _SCHEMA_READY:
-                _ensure_schema(conn)
-                conn.commit()
-                _SCHEMA_READY.add(key)
-    return conn
 
 
-def _ensure_schema(conn) -> None:
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS provider_config_versions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target_id TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            seq INTEGER NOT NULL,
-            url TEXT NOT NULL DEFAULT '',
-            ciphertext BLOB,
-            nonce BLOB,
-            key_present INTEGER NOT NULL DEFAULT 0,
-            key_last4 TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL,
-            evidence TEXT,
-            evidence_at INTEGER,
-            op_id TEXT,
-            actor TEXT NOT NULL,
-            reason TEXT NOT NULL DEFAULT '',
-            source TEXT NOT NULL DEFAULT 'backend',
-            created_at INTEGER NOT NULL,
-            published_at INTEGER,
-            UNIQUE(target_id, seq)
-        )"""
-    )
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(provider_config_versions)")}
-    if "source" not in cols:
-        conn.execute(
-            "ALTER TABLE provider_config_versions "
-            "ADD COLUMN source TEXT NOT NULL DEFAULT 'backend'"
-        )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS provider_config_versions_active "
-        "ON provider_config_versions(target_id, status, seq DESC)"
-    )
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS provider_config_versions_op "
-        "ON provider_config_versions(target_id, op_id) WHERE op_id IS NOT NULL"
-    )
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS provider_config_runtime(
-            target_id TEXT NOT NULL,
-            instance_id TEXT NOT NULL,
-            version INTEGER,
-            source TEXT NOT NULL,
-            loaded_at INTEGER NOT NULL,
-            PRIMARY KEY(target_id, instance_id)
-        )"""
-    )
 
 
 def init_db() -> None:
-    """建表（幂等）。sqlite 自建；postgres 的表由 Alembic（20260918_0016）负责。"""
-    if _pg():
-        return
-    _require_sqlite()
-    with closing(_connect()) as conn:
-        _ensure_schema(conn)
-        conn.commit()
+    """Check configured storage; schema is exclusively managed by Alembic."""
+    mode()
 
 
 # ---------------------------------------------------------------------------
@@ -413,14 +322,9 @@ def targets() -> list:
 # ---------------------------------------------------------------------------
 
 def _version_row(target_id: str, seq):
-    """按版本号取整行（含密文）；两种权威都能用。"""
-    if _pg():
-        return admin_config_store.pc_get_version(target_id, seq)
-    rows = _rows(
-        "SELECT * FROM provider_config_versions WHERE target_id=? AND seq=?",
-        (str(target_id), int(seq)),
-    )
-    return rows[0] if rows else None
+    """按版本号取整行（含密文）；PostgreSQL 为唯一权威。"""
+    mode()
+    return admin_config_store.pc_get_version(target_id, seq)
 
 
 def _evidence_payload(checks: dict, actor, now) -> dict:
@@ -435,34 +339,18 @@ def _evidence_payload(checks: dict, actor, now) -> dict:
     }
 
 
-def _rows(sql, params=()):
-    with closing(_connect()) as conn:
-        return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
 def active_version(target_id: str):
     target(target_id)
-    if _pg():
-        return admin_config_store.pc_active_version(target_id)
-    rows = _rows(
-        "SELECT * FROM provider_config_versions "
-        "WHERE target_id=? AND status=? ORDER BY seq DESC LIMIT 1",
-        (str(target_id), STATUS_PUBLISHED),
-    )
-    return rows[0] if rows else None
+    mode()
+    return admin_config_store.pc_active_version(target_id)
 
 
 def list_versions(target_id: str) -> list:
     target(target_id)
-    if _pg():
-        rows = admin_config_store.pc_list_versions(target_id)
-    else:
-        rows = _rows(
-            "SELECT seq, url, source, key_present, key_last4, status, evidence, evidence_at, "
-            "op_id, actor, reason, created_at, published_at "
-            "FROM provider_config_versions WHERE target_id=? ORDER BY seq DESC",
-            (str(target_id),),
-        )
+    mode()
+    rows = admin_config_store.pc_list_versions(target_id)
     for row in rows:
         if row.get("evidence"):
             try:
@@ -539,12 +427,6 @@ def _now(now=None) -> int:
     return int(now if now is not None else time.time())
 
 
-def _next_seq(conn, target_id: str) -> int:
-    row = conn.execute(
-        "SELECT COALESCE(MAX(seq),0) AS s FROM provider_config_versions WHERE target_id=?",
-        (str(target_id),),
-    ).fetchone()
-    return int(row["s"]) + 1
 
 
 def save_draft(target_id: str, url=None, secret=None, actor="", reason="",
@@ -591,24 +473,11 @@ def save_draft(target_id: str, url=None, secret=None, actor="", reason="",
     if not key_present:
         raise ProviderConfigError("缺少 API Key（留空仅当已有可用 Key）")
 
-    if _pg():
-        out = admin_config_store.pc_save_draft(
-            target_id, spec["provider"], candidate_url, ciphertext, nonce,
-            key_present, key_last4, actor, reason, ts)
-        seq = int(out["seq"])
-    else:
-        with closing(_connect()) as conn:
-            seq = _next_seq(conn, target_id)
-            conn.execute(
-                "INSERT INTO provider_config_versions("
-                "target_id, provider, seq, url, ciphertext, nonce, key_present, key_last4,"
-                " status, evidence, evidence_at, op_id, actor, reason, source, created_at, published_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,'backend',?,NULL)",
-                (str(target_id), spec["provider"], seq, candidate_url, ciphertext, nonce,
-                 key_present, key_last4, STATUS_DRAFT, actor,
-                 str(reason or "")[:200], ts),
-            )
-            conn.commit()
+    mode()
+    out = admin_config_store.pc_save_draft(
+        target_id, spec["provider"], candidate_url, ciphertext, nonce,
+        key_present, key_last4, actor, reason, ts)
+    seq = int(out["seq"])
     invalidate(target_id)
     return {"target_id": target_id, "seq": seq, "url": candidate_url,
             "key_present": bool(key_present), "key_last4": key_last4,
@@ -620,37 +489,12 @@ def record_evidence(target_id: str, seq: int, checks: dict, actor="", now=None) 
     target(target_id)
     checks = checks or {}
     ok = bool(checks.get("ok"))
-    if _pg():
-        payload = _evidence_payload(checks, actor, now)
-        if not admin_config_store.pc_set_evidence(
-                target_id, int(seq),
-                json.dumps(payload, ensure_ascii=False, sort_keys=True), payload["at"]):
-            raise ProviderConfigError("只能给草稿版本写验证证据")
-        return payload
-    payload = {
-        "checks": checks.get("checks") or {},
-        "ok": ok,
-        "free_verification": bool(checks.get("free_verification")),
-        "note": str(checks.get("note") or "")[:300],
-        "at": _now(now),
-        "actor": str(actor or ""),
-    }
-    with closing(_connect()) as conn:
-        row = conn.execute(
-            "SELECT status FROM provider_config_versions WHERE target_id=? AND seq=?",
-            (str(target_id), int(seq)),
-        ).fetchone()
-        if not row:
-            raise ProviderConfigError("配置版本不存在")
-        if row["status"] != STATUS_DRAFT:
-            raise ProviderConfigError("只能给草稿版本写验证证据")
-        conn.execute(
-            "UPDATE provider_config_versions SET evidence=?, evidence_at=? "
-            "WHERE target_id=? AND seq=?",
-            (json.dumps(payload, ensure_ascii=False, sort_keys=True),
-             payload["at"], str(target_id), int(seq)),
-        )
-        conn.commit()
+    mode()
+    payload = _evidence_payload(checks, actor, now)
+    if not admin_config_store.pc_set_evidence(
+            target_id, int(seq),
+            json.dumps(payload, ensure_ascii=False, sort_keys=True), payload["at"]):
+        raise ProviderConfigError("只能给草稿版本写验证证据")
     return payload
 
 
@@ -668,76 +512,14 @@ def publish(target_id: str, seq: int, expected_seq, op_id, actor="", now=None) -
         raise ProviderConfigError("缺少操作人")
     ts = _now(now)
 
-    if _pg():
-        try:
-            return admin_config_store.pc_publish(
-                target_id, int(seq), expected_seq, op_id, actor, ts)
-        except admin_config_store.ProviderConfigConflict as exc:
-            raise VersionConflict(str(exc)) from exc
-        except admin_config_store.ProviderConfigNotVerified as exc:
-            raise NotVerified(str(exc)) from exc
-
-    with closing(_connect()) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            done = conn.execute(
-                "SELECT seq, url, status FROM provider_config_versions "
-                "WHERE target_id=? AND op_id=?",
-                (str(target_id), op_id),
-            ).fetchone()
-            if done:
-                conn.commit()
-                return {"target_id": target_id, "seq": done["seq"], "url": done["url"],
-                        "status": done["status"], "idempotent": True}
-
-            current = conn.execute(
-                "SELECT COALESCE(MAX(seq),0) AS s FROM provider_config_versions "
-                "WHERE target_id=? AND status=?",
-                (str(target_id), STATUS_PUBLISHED),
-            ).fetchone()
-            current_seq = int(current["s"]) or None
-            want = None if expected_seq in (None, "", 0, "0") else int(expected_seq)
-            if current_seq != want:
-                raise VersionConflict(
-                    "配置已被他人修改：当前发布版本 %s，你基于 %s"
-                    % (current_seq, want)
-                )
-
-            draft = conn.execute(
-                "SELECT * FROM provider_config_versions WHERE target_id=? AND seq=?",
-                (str(target_id), int(seq)),
-            ).fetchone()
-            if not draft:
-                raise ProviderConfigError("待发布版本不存在")
-            if draft["status"] != STATUS_DRAFT:
-                raise ProviderConfigError("该版本不是草稿，无法发布")
-            evidence = None
-            if draft["evidence"]:
-                try:
-                    evidence = json.loads(draft["evidence"])
-                except (TypeError, ValueError):
-                    evidence = None
-            if not evidence or not evidence.get("ok"):
-                raise NotVerified("该版本没有通过的验证证据，禁止发布")
-
-            conn.execute(
-                "UPDATE provider_config_versions SET status=? "
-                "WHERE target_id=? AND status=?",
-                (STATUS_SUPERSEDED, str(target_id), STATUS_PUBLISHED),
-            )
-            conn.execute(
-                "UPDATE provider_config_versions "
-                "SET status=?, published_at=?, op_id=?, actor=? "
-                "WHERE target_id=? AND seq=?",
-                (STATUS_PUBLISHED, ts, op_id, actor, str(target_id), int(seq)),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-    invalidate(target_id)
-    return {"target_id": target_id, "seq": int(seq), "url": draft["url"],
-            "status": STATUS_PUBLISHED, "idempotent": False, "published_at": ts}
+    mode()
+    try:
+        return admin_config_store.pc_publish(
+            target_id, int(seq), expected_seq, op_id, actor, ts)
+    except admin_config_store.ProviderConfigConflict as exc:
+        raise VersionConflict(str(exc)) from exc
+    except admin_config_store.ProviderConfigNotVerified as exc:
+        raise NotVerified(str(exc)) from exc
 
 
 def rollback(target_id: str, expected_seq, op_id, actor="", to_seq=None, now=None) -> dict:
@@ -757,66 +539,20 @@ def rollback(target_id: str, expected_seq, op_id, actor="", to_seq=None, now=Non
             return _publish_env_version(target_id, expected_seq, op_id, actor, now)
         target_seq = candidates[0]["seq"]
     ts = _now(now)
-    if _pg():
-        src = admin_config_store.pc_get_version(target_id, target_seq)
-        if not src:
-            raise ProviderConfigError("回滚目标版本不存在")
-        before = admin_config_store.pc_active_version(target_id)
-        out = admin_config_store.pc_insert_published(
-            target_id, src["provider"], src["url"], src["ciphertext"], src["nonce"],
-            src["key_present"], src["key_last4"], src["source"] or "backend",
-            src["evidence"], "rollback to seq %s" % int(target_seq),
-            expected_seq, op_id, actor, ts)
-        invalidate(target_id)
-        out["restored_seq"] = int(target_seq)
-        out["rolled_back_from"] = int(before["seq"]) if before else None
-        return out
-    with closing(_connect()) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            src = conn.execute(
-                "SELECT * FROM provider_config_versions WHERE target_id=? AND seq=?",
-                (str(target_id), int(target_seq)),
-            ).fetchone()
-            if not src:
-                raise ProviderConfigError("回滚目标版本不存在")
-            cur = conn.execute(
-                "SELECT COALESCE(MAX(seq),0) AS s FROM provider_config_versions "
-                "WHERE target_id=? AND status=?",
-                (str(target_id), STATUS_PUBLISHED),
-            ).fetchone()
-            current_seq = int(cur["s"]) or None
-            want = None if expected_seq in (None, "", 0, "0") else int(expected_seq)
-            if current_seq != want:
-                raise VersionConflict(
-                    "配置已被他人修改：当前发布版本 %s，你基于 %s" % (current_seq, want)
-                )
-            seq = _next_seq(conn, target_id)
-            conn.execute(
-                "UPDATE provider_config_versions SET status=? "
-                "WHERE target_id=? AND status=?",
-                (STATUS_SUPERSEDED, str(target_id), STATUS_PUBLISHED),
-            )
-            conn.execute(
-                "INSERT INTO provider_config_versions("
-                "target_id, provider, seq, url, ciphertext, nonce, key_present, key_last4,"
-                " status, evidence, evidence_at, op_id, actor, reason, source, created_at, published_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (str(target_id), src["provider"], seq, src["url"], src["ciphertext"],
-                 src["nonce"], src["key_present"], src["key_last4"], STATUS_PUBLISHED,
-                 src["evidence"], src["evidence_at"], op_id, actor,
-                 "rollback to seq %s" % int(target_seq),
-                 (src["source"] if "source" in src.keys() else "backend") or "backend", ts, ts),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    mode()
+    src = admin_config_store.pc_get_version(target_id, target_seq)
+    if not src:
+        raise ProviderConfigError("回滚目标版本不存在")
+    before = admin_config_store.pc_active_version(target_id)
+    out = admin_config_store.pc_insert_published(
+        target_id, src["provider"], src["url"], src["ciphertext"], src["nonce"],
+        src["key_present"], src["key_last4"], src["source"] or "backend",
+        src["evidence"], "rollback to seq %s" % int(target_seq),
+        expected_seq, op_id, actor, ts)
     invalidate(target_id)
-    return {"target_id": target_id, "seq": seq, "url": src["url"],
-            "status": STATUS_PUBLISHED,
-            "source": (src["source"] if "source" in src.keys() else "backend") or "backend",
-            "rolled_back_from": current_seq, "restored_seq": int(target_seq)}
+    out["restored_seq"] = int(target_seq)
+    out["rolled_back_from"] = int(before["seq"]) if before else None
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1004,33 +740,17 @@ def report_loaded(target_id: str, version, source: str, instance_id=None,
     """运行服务在真正使用某个版本时上报。生效判断只看这张表。"""
     target(target_id)
     ts = _now(now)
-    if _pg():
-        admin_config_store.pc_runtime_upsert(
-            target_id, _instance_id(instance_id), version, str(source), ts)
-        return
-    with closing(_connect()) as conn:
-        conn.execute(
-            "INSERT INTO provider_config_runtime("
-            "target_id, instance_id, version, source, loaded_at) VALUES(?,?,?,?,?) "
-            "ON CONFLICT(target_id, instance_id) DO UPDATE SET "
-            "version=excluded.version, source=excluded.source, loaded_at=excluded.loaded_at",
-            (str(target_id), _instance_id(instance_id),
-             None if version is None else int(version), str(source), ts),
-        )
-        conn.commit()
+    mode()
+    admin_config_store.pc_runtime_upsert(
+        target_id, _instance_id(instance_id), version, str(source), ts)
+    return
 
 
 def runtime_instances(target_id: str, now=None) -> list:
     target(target_id)
     ts = _now(now)
-    if _pg():
-        rows = admin_config_store.pc_runtime_list(target_id)
-    else:
-        rows = _rows(
-            "SELECT instance_id, version, source, loaded_at FROM provider_config_runtime "
-            "WHERE target_id=? ORDER BY loaded_at DESC",
-            (str(target_id),),
-        )
+    mode()
+    rows = admin_config_store.pc_runtime_list(target_id)
     for row in rows:
         row["fresh"] = (ts - int(row["loaded_at"] or 0)) <= RUNTIME_FRESH_SECONDS
     return rows
@@ -1177,56 +897,16 @@ def _publish_env_version(target_id, expected_seq, op_id, actor, now=None):
         snap_cipher, snap_nonce = _seal(target_id, env_secret)
         snap_present, snap_last4 = 1, _last4(env_secret)
 
-    if _pg():
-        before = admin_config_store.pc_active_version(target_id)
-        out = admin_config_store.pc_insert_published(
-            target_id, target(target_id)["provider"], env_url, snap_cipher, snap_nonce,
-            snap_present, snap_last4, "env", evidence,
-            "rollback to environment variables", expected_seq, op_id, actor, ts)
-        invalidate(target_id)
-        out["source"] = "env"
-        out["rolled_back_from"] = int(before["seq"]) if before else None
-        return out
-
-    with closing(_connect()) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            done = conn.execute(
-                "SELECT seq, url, status FROM provider_config_versions "
-                "WHERE target_id=? AND op_id=?", (str(target_id), op_id)).fetchone()
-            if done:
-                conn.commit()
-                return {"target_id": target_id, "seq": done["seq"], "url": done["url"],
-                        "status": done["status"], "idempotent": True, "source": "env"}
-            cur = conn.execute(
-                "SELECT COALESCE(MAX(seq),0) AS s FROM provider_config_versions "
-                "WHERE target_id=? AND status=?",
-                (str(target_id), STATUS_PUBLISHED)).fetchone()
-            current_seq = int(cur["s"]) or None
-            want = None if expected_seq in (None, "", 0, "0") else int(expected_seq)
-            if current_seq != want:
-                raise VersionConflict(
-                    "配置已被他人修改：当前发布版本 %s，你基于 %s" % (current_seq, want))
-            seq = _next_seq(conn, target_id)
-            conn.execute(
-                "UPDATE provider_config_versions SET status=? "
-                "WHERE target_id=? AND status=?",
-                (STATUS_SUPERSEDED, str(target_id), STATUS_PUBLISHED))
-            conn.execute(
-                "INSERT INTO provider_config_versions("
-                "target_id, provider, seq, url, ciphertext, nonce, key_present, key_last4,"
-                " status, evidence, evidence_at, op_id, actor, reason, source, created_at, published_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'env',?,?)",
-                (str(target_id), target(target_id)["provider"], seq, env_url, snap_cipher,
-                 snap_nonce, snap_present, snap_last4, STATUS_PUBLISHED,
-                 evidence, ts, op_id, actor, "rollback to environment variables", ts, ts))
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    mode()
+    before = admin_config_store.pc_active_version(target_id)
+    out = admin_config_store.pc_insert_published(
+        target_id, target(target_id)["provider"], env_url, snap_cipher, snap_nonce,
+        snap_present, snap_last4, "env", evidence,
+        "rollback to environment variables", expected_seq, op_id, actor, ts)
     invalidate(target_id)
-    return {"target_id": target_id, "seq": seq, "url": env_url, "status": STATUS_PUBLISHED,
-            "source": "env", "rolled_back_from": current_seq}
+    out["source"] = "env"
+    out["rolled_back_from"] = int(before["seq"]) if before else None
+    return out
 
 
 def sanitize_payload(payload: dict) -> dict:
@@ -1308,8 +988,8 @@ def _http_probe(url, key, timeout=8):
     except urllib.error.HTTPError as exc:
         # 能拿到 HTTP 状态就说明网络可达（401/403/404 都算可达）。
         out["connection"] = {"ok": True, "status": int(exc.code)}
-    except Exception as exc:  # noqa: BLE001
-        out["connection"] = {"ok": False, "error": str(exc)[:160]}
+    except Exception:  # noqa: BLE001
+        out["connection"] = {"ok": False, "error": "连接探测失败，请检查地址或稍后重试"}
         out["auth"] = {"ok": False, "error": "连接未建立，鉴权未验证"}
         return out
     try:
@@ -1317,12 +997,19 @@ def _http_probe(url, key, timeout=8):
             base + "/models", method="GET",
             headers={"Authorization": "Bearer " + str(key or "")})
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            out["auth"] = {"ok": int(resp.status) < 400, "status": int(resp.status)}
+            status = int(resp.status)
+            out["auth"] = {"ok": 200 <= status < 300, "status": status}
     except urllib.error.HTTPError as exc:
-        out["auth"] = {"ok": int(exc.code) not in (401, 403), "status": int(exc.code),
-                       "note": "非鉴权类错误" if int(exc.code) not in (401, 403) else "凭据被拒绝"}
-    except Exception as exc:  # noqa: BLE001
-        out["auth"] = {"ok": False, "error": str(exc)[:160]}
+        # Reachable is not authenticated. A missing endpoint, rate limit or
+        # upstream failure supplies no positive evidence and MUST NOT publish.
+        status = int(exc.code)
+        note = ("凭据被拒绝" if status in (401, 403) else
+                "验证接口不存在，请检查 URL" if status == 404 else
+                "上游限流，鉴权未验证，请稍后重试" if status == 429 else
+                "上游验证失败，鉴权未验证，请稍后重试")
+        out["auth"] = {"ok": False, "status": status, "note": note}
+    except Exception:  # noqa: BLE001
+        out["auth"] = {"ok": False, "error": "鉴权探测失败，请检查配置或稍后重试"}
     return out
 
 
@@ -1356,4 +1043,5 @@ def validate_draft(target_id: str, seq: int, actor="", probe=None, now=None) -> 
     return {"target_id": target_id, "seq": int(seq), "ok": ok,
             "checks": {"connection": connection, "auth": auth},
             "evidence": evidence,
-            "note": "验证通过仅代表连接与鉴权可用，不代表生成成功率"}
+            "note": ("验证通过仅代表连接与鉴权可用，不代表生成成功率" if ok else
+                     "验证未通过，不能发布；当前生效配置未改变")}

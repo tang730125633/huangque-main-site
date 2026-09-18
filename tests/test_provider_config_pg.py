@@ -37,12 +37,16 @@ SECRET_B = "sk-ark-pub-B-2222"
 ARK_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 _pg_url = None
+_env_before = None
 
 
 def setUpModule():
     """建立 PG 权威；失败直接报错（不 skip）。"""
-    global _pg_url
-    _pg_url = pg_harness.postgres_url(fresh=True)
+    global _pg_url, _env_before
+    _env_before = dict(os.environ)
+    # Each test resets its fixture target. Do not DROP a database still used by
+    # another test module's pool; execution order must not change the result.
+    _pg_url = pg_harness.postgres_url()
     os.environ["HQ_DATABASE_URL"] = _pg_url
     os.environ["HQ_ADMIN_CONFIG_STORE"] = "postgres"
     os.environ["HQ_PROVIDER_KEYS_MASTER_KEY"] = base64.urlsafe_b64encode(
@@ -51,6 +55,14 @@ def setUpModule():
     os.environ[ENV_BASE] = ARK_URL
     from content_domains import provider_config as pc
     pc.invalidate()
+
+
+def tearDownModule():
+    from content_domains import provider_config as pc
+    pc.admin_config_store.close_pool()
+    pc.invalidate()
+    os.environ.clear()
+    os.environ.update(_env_before)
 
 
 class ProviderConfigPglike(unittest.TestCase):

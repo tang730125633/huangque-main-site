@@ -450,7 +450,14 @@ def pc_publish(target_id, seq, expected_seq, op_id, actor, now) -> dict:
             ok = False
             if draft["evidence"]:
                 try:
-                    ok = bool(json.loads(draft["evidence"]).get("ok"))
+                    evidence = json.loads(draft["evidence"])
+                    ok = bool(evidence.get("ok"))
+                    # Reject persisted false-positive evidence from older
+                    # validators too; a deployment must not bless an old 404.
+                    checks = evidence.get("checks") or {}
+                    auth = checks.get("auth") if isinstance(checks, dict) else None
+                    if isinstance(auth, dict) and 'status' in auth:
+                        ok = ok and auth.get('ok') is True and 200 <= int(auth['status']) < 300
                 except (TypeError, ValueError):
                     ok = False
             if not ok:

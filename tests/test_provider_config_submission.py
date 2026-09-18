@@ -46,7 +46,7 @@ print('EVIDENCE:'+json.dumps(calls))
 
 
 class ProviderSubmissionTests(unittest.TestCase):
-    config_store = 'sqlite'
+    config_store = 'postgres'
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -60,6 +60,8 @@ class ProviderSubmissionTests(unittest.TestCase):
             'ARK_BASE': 'https://ark.cn-beijing.volces.com/api/v3',
             'HQ_PROVIDER_KEYS_MASTER_KEY': base64.urlsafe_b64encode(b'0'*32).decode(),
         }))
+        from tests.provider_config_fixture import configure
+        configure(self, pc)
         self.tmp.joinpath('out').mkdir()
         from content_domains import core, image, video, points, channel_manager, channel_parameters, upstream_guard
         self.core, self.image = core, image

@@ -59,7 +59,8 @@ class SeedreamLoopTest(unittest.TestCase):
         os.environ["ADMIN_DB"] = str(self.tmp / "admin_config.db")
         os.environ["HQ_PROVIDER_KEYS_MASTER_KEY"] = base64.urlsafe_b64encode(
             b"0123456789abcdef0123456789abcdef").decode("ascii")
-        os.environ.pop("HQ_ADMIN_CONFIG_STORE", None)
+        from tests.provider_config_fixture import configure
+        configure(self, pc)
         os.environ.pop(pc.WIRING_ENV, None)
         os.environ[ENV_KEY_NAME] = SECRET_A          # 生产起点：环境变量 A
         os.environ[ENV_URL_NAME] = ARK_URL

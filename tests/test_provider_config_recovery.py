@@ -62,7 +62,8 @@ class CrossProcessRecoveryTest(unittest.TestCase):
         os.environ["ADMIN_DB"] = str(self.db)
         os.environ["HQ_PROVIDER_KEYS_MASTER_KEY"] = base64.urlsafe_b64encode(
             b"0123456789abcdef0123456789abcdef").decode("ascii")
-        os.environ.pop("HQ_ADMIN_CONFIG_STORE", None)
+        from tests.provider_config_fixture import configure
+        configure(self, pc)
         os.environ.pop(pc.WIRING_ENV, None)
         os.environ[ENV_KEY] = SECRET_ENV_A
         os.environ[ENV_BASE] = ARK_URL
@@ -79,7 +80,7 @@ class CrossProcessRecoveryTest(unittest.TestCase):
         env = dict(os.environ)
         env["ADMIN_DB"] = str(self.db)
         env["HQ_PROVIDER_KEYS_MASTER_KEY"] = os.environ["HQ_PROVIDER_KEYS_MASTER_KEY"]
-        env["PYTHONPATH"] = os.pathsep.join([str(SERVER), str(ROOT)])
+        env["PYTHONPATH"] = os.pathsep.join([str(SERVER), str(ROOT), os.environ.get('PYTHONPATH', '')])
         proc = subprocess.run(
             [sys.executable, "-c", _child_code(ROOT, rec_path)],
             capture_output=True, text=True, env=env, timeout=90)
