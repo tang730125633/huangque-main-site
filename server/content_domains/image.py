@@ -497,18 +497,23 @@ def _seedream_post(fn, tries=None, max_wait=None):
             print("[seedream] 429 并发限流，退避重试(%d/%d) 等%.1fs" % (i + 1, tries, delay), flush=True)
             time.sleep(delay)
 
-def seedream_credentials():
+def seedream_credentials(config_ref=None):
     """黄雀引擎 1（Seedream / 火山方舟，图片线路）凭据统一入口。
 
     与视频侧的 video_seedance 各自独立：本入口只服务图片线路 image.seedream，
     后台改这条线路的 URL/Key 不会连带改动视频渠道。
+    任务若带固定版本（payload 保留键 ``_provider_config``，随 job 持久化），
+    则**按该版本解析**——重启、排队重跑、恢复都沿用同一版本。
     未开启 HQ_PROVIDER_CONFIG_WIRING 时返回进程启动常量（行为零变化）。
     """
     from . import provider_config
+    version = config_ref.get("version") if isinstance(config_ref, dict) else None
+    if version:
+        return provider_config.resolve_pinned("image.seedream", version, ARK_API_KEY, ARK_BASE)
     return provider_config.credentials_for("image.seedream", ARK_API_KEY, ARK_BASE)
 
 
-def _seedream_one(model, prompt, size, images):
+def _seedream_one(model, prompt, size, images, config_ref=None):
     """出一张图，返回 PNG 字节。
 
     response_format 用 url 而非 b64_json：PNG 的 b64 响应体有 4~5MB，实测会 IncompleteRead，
@@ -524,7 +529,7 @@ def _seedream_one(model, prompt, size, images):
         refs = ["data:image/png;base64," + img for img in images]
         body["image"] = refs[0] if len(refs) == 1 else refs
     data = json.dumps(body, ensure_ascii=False).encode()
-    creds = seedream_credentials()
+    creds = seedream_credentials(config_ref)
     try:
         d = _seedream_post(lambda: _post("/images/generations", data, "application/json",
                                         base=creds["url"] or ARK_BASE, key=creds["credential"], proxy=False))
@@ -536,11 +541,11 @@ def _seedream_one(model, prompt, size, images):
         raise ValueError("黄雀引擎 1 返回为空")
     return _seedream_fetch(url)
 
-def _gen_image_seedream(prompt, ratio, quality, count, images, variant):
+def _gen_image_seedream(prompt, ratio, quality, count, images, variant, config_ref=None):
     """Seedream 5.0 / 5.0 Pro：文生图 + 图生图（同一端点，带 image 即图生图）。
     实测耗时(PNG 输出)：标准约 30~40s，Pro 约 85s —— Pro 慢一倍多，前端提示要分开写。
     单图 2~7MB。SEEDREAM_MAX_N=2 时 Pro 最坏约 170s，在 reaper image 900s 宽限内。"""
-    if not str(seedream_credentials().get("credential") or "").strip():
+    if not str(seedream_credentials(config_ref).get("credential") or "").strip():
         raise ValueError("黄雀引擎 1 暂未配置，请联系管理员")
     _seedream_check_ref(images)     # 坏参考图会让 Ark 回 500，先在本地拦掉并说人话
     model = SEEDREAM_MODELS.get(variant) or SEEDREAM_MODELS["std"]
@@ -690,7 +695,8 @@ def gen_image(payload):
         q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"   # Seedream 按像素分档，不用 high/medium
         count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))
         seedream_refs = refs if len(refs) > 1 else (refs[0] if refs else None)
-        result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant)
+        result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant,
+                                     payload.get("_provider_config"))
         result["prompt"] = user_prompt
         return result
     size  = SIZES.get(ratio, "1024x1024")

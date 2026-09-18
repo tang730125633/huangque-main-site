@@ -214,9 +214,12 @@ class ProviderConfigTest(unittest.TestCase):
         with self.assertRaises(pc.ProviderConfigUnavailable):
             pc.resolve(TARGET)      # 绝不回退到环境变量
 
-    def test_postgres_authority_is_refused(self):
+    def test_postgres_authority_does_not_silently_use_sqlite(self):
+        # postgres 权威已支持；没有 HQ_DATABASE_URL 时必须报错，
+        # 绝不能默默回退到 SQLite（否则会出现存储分裂）。
         os.environ["HQ_ADMIN_CONFIG_STORE"] = "postgres"
-        with self.assertRaises(pc.ProviderConfigUnavailable):
+        os.environ.pop("HQ_DATABASE_URL", None)
+        with self.assertRaises((pc.ProviderConfigUnavailable, RuntimeError)):
             pc.status(TARGET)
 
     # ---------- URL 校验 ----------

@@ -95,16 +95,17 @@ class SeedreamLoopTest(unittest.TestCase):
     def test_full_loop(self):
         os.environ[pc.WIRING_ENV] = "all"
 
-        # 起点：没有后台配置 → 用环境变量 A
+        # 起点：没有后台配置 → 用环境变量 A，但任务仍会固定到一个可恢复的「基线版本」
         task_a = self._new_task()
         self.assertEqual(task_a["source"], pc.SOURCE_ENV)
         self.assertEqual(task_a["credential"], SECRET_A)
-        self.assertIsNone(task_a["pinned_version"])
+        self.assertIsNotNone(task_a["pinned_version"], "任务必须有可恢复的版本引用")
+        baseline_seq = task_a["pinned_version"]
 
         # 后台编辑（只改 Key）→ 验证 → 发布 B
         draft, validation = self._draft_and_validate(secret=SECRET_B)
         self.assertTrue(validation["ok"])
-        self._publish(draft, expected=0, op_id="loop-publish-B")
+        self._publish(draft, expected=baseline_seq, op_id="loop-publish-B")
 
         # 发布后、服务尚未加载新版本 → 绝不能显示「配置已生效」
         eff = pc.effective_status(TARGET)
