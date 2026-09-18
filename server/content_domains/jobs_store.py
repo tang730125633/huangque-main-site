@@ -454,6 +454,15 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
             if invocation_source == 'internal'
             else channel_manager.capture(kind, payload, invocation_source=invocation_source)
         )) for cost, payload in items]
+        # All ordinary image admission paths converge here BEFORE deduct or
+        # before_charge. Persist the server-owned provider version with the job.
+        from . import provider_config
+        try:
+            items = [(cost, provider_config.prepare_job_payload(kind, payload, username))
+                     for cost, payload in items]
+        except Exception as exc:
+            # Do not expose database errors or credentials in HTTP responses.
+            raise PaidJobDeductError(503, "图片渠道配置暂不可用，未扣点，请稍后重试") from exc
         from .channel_parameters import quote
         for cost,payload in items:
             expected=quote(kind,payload)

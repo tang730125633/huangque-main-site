@@ -14,7 +14,7 @@ from .core import (
     ZELONG_BASE, ZELONG_KEY, _NOPROXY, _multipart, _post,
     base64, json, public_url, urllib, uuid,
 )
-from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request
+from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request, xiaole_credentials
 from .image_model_catalog import OPENAI_IMAGE_MODEL, SEEDREAM_MODELS, XIAOLE_IMAGE_MODEL
 from .image_mentions import resolve_image_mentions, validate_image_mentions
 
@@ -266,7 +266,7 @@ def _gen_image_xiaole(prompt, ratio, quality, count, img, references=None):
 def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None):
     """果肉生图渠道(xiaolevideo.cn，与果肉/豆姐视频同账号)：gpt-image-2 文生图/图生图。
     统一 generations API：创建 → 轮询 → 落盘，与 video.py 的 generate_xiaole_video 同一套模式。"""
-    if not XIAOLEVIDEO_API_KEY:
+    if not str(xiaole_credentials().get("credential") or "").strip():
         raise ValueError("果肉生图未配置（XIAOLEVIDEO_API_KEY）")
     resolution = "2k" if quality == "high" else "1k"
     refs = list(references or ([] if not img else [img]))
@@ -497,7 +497,30 @@ def _seedream_post(fn, tries=None, max_wait=None):
             print("[seedream] 429 并发限流，退避重试(%d/%d) 等%.1fs" % (i + 1, tries, delay), flush=True)
             time.sleep(delay)
 
-def _seedream_one(model, prompt, size, images):
+def seedream_credentials(config_ref=None):
+    """黄雀引擎 1（Seedream / 火山方舟，图片线路）凭据统一入口。
+
+    与视频侧的 video_seedance 各自独立：本入口只服务图片线路 image.seedream，
+    后台改这条线路的 URL/Key 不会连带改动视频渠道。
+    任务若带固定版本（payload 保留键 ``_provider_config``，随 job 持久化），
+    则**按该版本解析**——重启、排队重跑、恢复都沿用同一版本。
+    未开启 HQ_PROVIDER_CONFIG_WIRING 时返回进程启动常量（行为零变化）。
+    """
+    from . import provider_config
+    version = config_ref.get("version") if isinstance(config_ref, dict) else None
+    if version:
+        if config_ref.get("target_id") != "image.seedream":
+            raise provider_config.ProviderConfigError("图片任务配置线路不匹配")
+        credentials = provider_config.resolve_pinned("image.seedream", version, ARK_API_KEY, ARK_BASE)
+        try:
+            provider_config.report_loaded("image.seedream", credentials["version"], credentials["source"])
+        except Exception:
+            pass  # Reporting failure must not turn an accepted task into a retry.
+        return credentials
+    return provider_config.credentials_for("image.seedream", ARK_API_KEY, ARK_BASE)
+
+
+def _seedream_one(model, prompt, size, images, config_ref=None):
     """出一张图，返回 PNG 字节。
 
     response_format 用 url 而非 b64_json：PNG 的 b64 响应体有 4~5MB，实测会 IncompleteRead，
@@ -513,9 +536,10 @@ def _seedream_one(model, prompt, size, images):
         refs = ["data:image/png;base64," + img for img in images]
         body["image"] = refs[0] if len(refs) == 1 else refs
     data = json.dumps(body, ensure_ascii=False).encode()
+    creds = seedream_credentials(config_ref)
     try:
         d = _seedream_post(lambda: _post("/images/generations", data, "application/json",
-                                        base=ARK_BASE, key=ARK_API_KEY, proxy=False))
+                                        base=creds["url"] or ARK_BASE, key=creds["credential"], proxy=False))
     except urllib.error.HTTPError as e:
         raise _seedream_error(e)
     items = d.get("data") or []
@@ -524,18 +548,18 @@ def _seedream_one(model, prompt, size, images):
         raise ValueError("黄雀引擎 1 返回为空")
     return _seedream_fetch(url)
 
-def _gen_image_seedream(prompt, ratio, quality, count, images, variant):
+def _gen_image_seedream(prompt, ratio, quality, count, images, variant, config_ref=None):
     """Seedream 5.0 / 5.0 Pro：文生图 + 图生图（同一端点，带 image 即图生图）。
     实测耗时(PNG 输出)：标准约 30~40s，Pro 约 85s —— Pro 慢一倍多，前端提示要分开写。
     单图 2~7MB。SEEDREAM_MAX_N=2 时 Pro 最坏约 170s，在 reaper image 900s 宽限内。"""
-    if not ARK_API_KEY:
+    if not str(seedream_credentials(config_ref).get("credential") or "").strip():
         raise ValueError("黄雀引擎 1 暂未配置，请联系管理员")
     _seedream_check_ref(images)     # 坏参考图会让 Ark 回 500，先在本地拦掉并说人话
     model = SEEDREAM_MODELS.get(variant) or SEEDREAM_MODELS["std"]
     size = _seedream_size(ratio, quality, variant)   # Pro 的像素上限低得多，必须按型号夹逼
     files_out, urls = [], []
     for _ in range(count):
-        raw = _seedream_one(model, prompt, size, images)
+        raw = _seedream_one(model, prompt, size, images, config_ref=config_ref)
         fn = "img_%s.png" % uuid.uuid4().hex   # 不可猜键(#185)
         (OUT_DIR / fn).write_bytes(raw)
         files_out.append(fn)
@@ -678,7 +702,8 @@ def gen_image(payload):
         q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"   # Seedream 按像素分档，不用 high/medium
         count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))
         seedream_refs = refs if len(refs) > 1 else (refs[0] if refs else None)
-        result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant)
+        result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant,
+                                     payload.get("_provider_config"))
         result["prompt"] = user_prompt
         return result
     size  = SIZES.get(ratio, "1024x1024")

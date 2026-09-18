@@ -257,7 +257,7 @@ def grok_video_is_open():
     """Return whether the configured Grok path can accept new work."""
     try:
         if GROK_VIDEO_PROVIDER == "xiaole":
-            return bool(XIAOLEVIDEO_API_KEY)
+            return bool(str(xiaole_credentials().get("credential") or "").strip())
         from . import video_xai
         return bool(video_xai.available())
     except Exception:
@@ -6690,11 +6690,26 @@ def gen_tryon(payload):
         "message": "换装换背景视频生成完成"
     }
 
+def xiaole_credentials():
+    """xiaolevideo 凭据统一入口：后台覆盖优先、环境变量兜底。
+
+    未开启 ``HQ_PROVIDER_CONFIG_WIRING`` 时原样返回进程启动常量（行为零变化）；
+    开启后若已发布后台配置则使用后台版本，且存储/解密失败一律抛错、不回退。
+    果肉生图与视频共用本入口（_xiaole_request 是唯一咽喉）。
+    """
+    from . import provider_config
+    return provider_config.credentials_for(
+        "xiaolevideo", XIAOLEVIDEO_API_KEY, XIAOLEVIDEO_API_BASE)
+
+
 def _xiaole_request(method, path, body=None, timeout=90, retry_deadline=None):
-    if not XIAOLEVIDEO_API_KEY:
+    creds = xiaole_credentials()
+    api_key = str(creds.get("credential") or "").strip()
+    api_base = str(creds.get("url") or XIAOLEVIDEO_API_BASE).rstrip("/")
+    if not api_key:
         raise ValueError("视频生成服务未配置（XIAOLEVIDEO_API_KEY）")
-    url = path if path.startswith("http") else (XIAOLEVIDEO_API_BASE + path)
-    headers = {"Authorization": "Bearer " + XIAOLEVIDEO_API_KEY, "User-Agent": "huangque-content/1.0"}
+    url = path if path.startswith("http") else (api_base + path)
+    headers = {"Authorization": "Bearer " + api_key, "User-Agent": "huangque-content/1.0"}
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"

@@ -61,6 +61,8 @@ egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 function_registry = import_module(_DOMAIN_PACKAGE + ".function_registry")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
+# 环境变量型线路的「后台覆盖配置」：版本化存储 + 统一解析入口（PR #1608）。
+provider_config = import_module(_DOMAIN_PACKAGE + ".provider_config")
 # M3D：admin_config.db 的 PostgreSQL 存储层。默认 HQ_ADMIN_CONFIG_STORE=sqlite，
 # 所有 SQLite 路径逐字节保留；只有下面明确标注的表在 postgres 模式下改走本模块。
 admin_config_store = import_module(_DOMAIN_PACKAGE + ".admin_config_store")
@@ -1106,6 +1108,8 @@ def init_db():
     pricing.init_db()
     if provider_keys is not None:
         provider_keys.init_db()
+    if provider_config is not None and provider_config.wiring_enabled():
+        provider_config.init_db()
     if short_drama_lipsync_rollout is not None:
         short_drama_lipsync_rollout.init_db(lipsync_db)
     if short_drama_lipsync_observability is not None:
@@ -3235,6 +3239,85 @@ def channel_workspace_overview():
         result['legacy_events'] = []
         result['legacy_audit_error'] = '现有线路操作记录暂不可读'
     return result
+
+
+def provider_config_admin_snapshot():
+    """后台读取：每个目标线路的配置来源、版本、密钥是否配置（不含明文）+ 生效状态。"""
+    items = []
+    for spec in provider_config.targets():
+        target_id = spec["target_id"]
+        try:
+            st = provider_config.status(target_id)
+            eff = provider_config.effective_status(target_id)
+        except provider_config.ProviderConfigUnavailable as exc:
+            items.append({**spec, "available": False, "reason": str(exc)})
+            continue
+        items.append({
+            **spec,
+            "available": True,
+            "source": st["source"],
+            "version": st["version"],
+            "url": st["url"],
+            "url_default": st["url_default"],
+            "key_present": st["key_present"],
+            "key_last4": st["key_last4"],
+            "effective": eff,
+        })
+    return {"ok": True, "items": items, "vault_ready": provider_config.vault_ready()}
+
+
+def provider_config_save_draft(actor, body):
+    return provider_config.save_draft(
+        body.get("target_id"),
+        url=body.get("url"),
+        secret=body.get("secret"),
+        actor=actor,
+        reason=body.get("reason") or "",
+    )
+
+
+def provider_config_validate(actor, body):
+    return provider_config.validate_draft(
+        body.get("target_id"), int(body.get("version") or 0), actor=actor)
+
+
+def provider_config_publish(actor, body):
+    return provider_config.publish(
+        body.get("target_id"),
+        int(body.get("version") or 0),
+        expected_seq=body.get("expected_version"),
+        op_id=body.get("op_id"),
+        actor=actor,
+    )
+
+
+def provider_config_rollback(actor, body):
+    return provider_config.rollback(
+        body.get("target_id"),
+        expected_seq=body.get("expected_version"),
+        op_id=body.get("op_id"),
+        actor=actor,
+        to_seq=body.get("to_version"),
+    )
+
+
+def provider_config_runtime(actor, body):
+    return provider_config.effective_status(body.get("target_id"))
+
+
+def provider_config_reveal(actor, body):
+    """查看指定版本明文；写审计，不返回给未经确认的页面。"""
+    target_id = body.get("target_id")
+    version = int(body.get("version") or 0)
+    out = provider_config.reveal(target_id, version, actor=actor)
+    try:
+        admin_config_store.write_audit(
+            actor, "provider_config.reveal", "%s#%s" % (target_id, version),
+            "{}", int(__import__("time").time()),
+        ) if admin_config_store.enabled() else None
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def reveal_channel_secret(actor, body):
@@ -8994,6 +9077,13 @@ class H(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._send(503, {"detail": "对话统计暂时不可用：%s" % exc})
 
+        if path == "/api/admin/provider-config":
+            try:
+                return self._send(200, provider_config_admin_snapshot())
+            except provider_config.ProviderConfigUnavailable as exc:
+                return self._send(503, {"detail": str(exc)})
+            except Exception:
+                return self._send(503, {"detail": "配置存储不可用"})
         if path == "/api/admin/channel-manager":
             try:
                 return self._send(200, channel_workspace_overview())
@@ -9613,6 +9703,37 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "保存失败"})
             return self._send(200, {"ok": True, "channel": item})
+        if path.startswith('/api/admin/provider-config/'):
+            action = path.rsplit('/', 1)[-1]
+            actor = user.get('username') or 'admin'
+            try:
+                body = self._body()
+            except Exception:
+                body = {}
+            try:
+                if action == 'draft':
+                    return self._send(200, provider_config_save_draft(actor, body))
+                if action == 'validate':
+                    return self._send(200, provider_config_validate(actor, body))
+                if action == 'publish':
+                    return self._send(200, provider_config_publish(actor, body))
+                if action == 'rollback':
+                    return self._send(200, provider_config_rollback(actor, body))
+                if action == 'runtime':
+                    return self._send(200, provider_config_runtime(actor, body))
+                if action == 'reveal':
+                    return self._send(200, provider_config_reveal(actor, body))
+                return self._send(404, {'detail': '未知配置操作'})
+            except provider_config.VersionConflict as exc:
+                return self._send(409, {'detail': str(exc)})
+            except provider_config.NotVerified as exc:
+                return self._send(409, {'detail': str(exc)})
+            except ValueError as exc:
+                return self._send(400, {'detail': str(exc)[:240]})
+            except provider_config.ProviderConfigUnavailable as exc:
+                return self._send(503, {'detail': str(exc)})
+            except Exception:
+                return self._send(503, {'detail': '配置操作未完成，请检查密钥保险箱与存储配置'})
         if path.startswith('/api/admin/channel-manager/'):
             if int(self.headers.get('Content-Length') or 0) > 12*1024*1024:
                 return self._send(413, {'detail':'渠道配置与素材总大小不得超过12MB'})
