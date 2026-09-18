@@ -7847,6 +7847,8 @@ def dashboard_stats(days=7):
         "high_failure": [],
     }
     if not JOB_DB.exists():
+        # 不能静默返回全零：前端必须能区分“真的为 0”和“根本没读到”
+        out["error"] = "任务库不存在，无法统计"
         return out
     try:
         with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
@@ -7880,7 +7882,9 @@ def dashboard_stats(days=7):
                     (since, *running_states),
                 ).fetchall()
             provider_refund_ids = _provider_refund_pending_ids(connection)
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # 同上：读失败要显式告知，否则前端只能当“真的为 0”而误判为正常
+        out["error"] = "任务库读取失败：%s" % str(exc)[:120]
         return out
     by_kind = {}
     generic_rows = {

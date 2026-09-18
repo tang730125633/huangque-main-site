@@ -100,7 +100,7 @@
     .dashboard-watch{display:grid;gap:7px}.watch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:rgba(17,22,19,.7);color:var(--muted);font-size:12px}.watch-row b{color:var(--text);text-align:right}.watch-row.good b{color:var(--ok)}.watch-row.attention{border-color:rgba(224,107,100,.3);background:rgba(224,107,100,.06)}.watch-row.attention b{color:#ffaaa4}.watch-refresh{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}.watch-refresh span{color:var(--muted);font-size:11px}
     .monitor-events{display:grid;gap:7px;margin-top:12px}.monitor-event{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 9px;border:1px solid var(--line);border-radius:7px;background:rgba(7,11,9,.28);font-size:11px}.monitor-event i{width:7px;height:7px;border-radius:50%;background:var(--error)}.monitor-event.recovered i{background:var(--ok)}.monitor-event b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.monitor-event time{color:var(--muted);font-size:9px}.monitor-note{margin-top:10px;padding:8px;border-left:2px solid var(--gold);color:var(--muted);font-size:10px;line-height:1.45}
     .quick-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.quick-links button{height:44px;text-align:left}
-    .issue-list{display:grid;gap:8px;max-height:540px;overflow-y:auto;overscroll-behavior:contain;padding-right:6px}.issue-list::-webkit-scrollbar{width:8px}.issue-list::-webkit-scrollbar-thumb{background:rgba(154,166,159,.3);border-radius:4px}.issue-list::-webkit-scrollbar-track{background:transparent}.issue-row{display:grid;grid-template-columns:110px minmax(120px,.7fr) minmax(180px,1.4fr) 90px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(46,56,50,.72)}.issue-row:last-child{border-bottom:0}
+    .issue-list{display:grid;gap:8px;max-height:540px;overflow-y:auto;overscroll-behavior:contain;padding-right:6px}.issue-list.refreshing{opacity:.55}.issue-list::-webkit-scrollbar{width:8px}.issue-list::-webkit-scrollbar-thumb{background:rgba(154,166,159,.3);border-radius:4px}.issue-list::-webkit-scrollbar-track{background:transparent}.issue-row{display:grid;grid-template-columns:110px minmax(120px,.7fr) minmax(180px,1.4fr) 90px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(46,56,50,.72)}.issue-row:last-child{border-bottom:0}
     .section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
     .section-head h2{margin:0}
     .hint{font-size:12px;color:var(--muted)}
@@ -359,6 +359,15 @@
 /* 运营总览 · 状态可信：数据缺失用 unknown，不用零冒充正常 */
 .watch-row.unknown{border-color:rgba(154,166,159,.24);background:rgba(154,166,159,.055);border-style:dashed}
 .watch-row.unknown b{color:var(--muted)}
+/* 运营总览四态：ok=good / unknown / stale(上次成功·本次刷新失败) / error(读取失败) */
+.watch-row.stale{border-color:rgba(217,155,53,.34);background:rgba(217,155,53,.06);border-style:dashed}
+.watch-row.stale b{color:var(--warn)}
+.watch-row.error{border-color:rgba(224,107,100,.34);background:rgba(224,107,100,.07)}
+.watch-row.error b{color:#ffaaa4}
+.metric.stale{opacity:.72}
+.metric.stale .metric-copy{color:var(--warn)}
+.metric.fail b{color:var(--error)}
+.metric.fail .metric-copy{color:#ffaaa4}
 /* 运营总览 · 失败区间汇总 */
 .support-range-summary{margin-top:6px;color:var(--muted);font-size:12px;line-height:1.5}
 .support-range-summary b{color:var(--gold);font-weight:800}
@@ -877,6 +886,7 @@
     days:7, data:null, userTimer:null, module:'dashboard', membershipRequestId:'',
     userPage:1, userPageSize:20, reqPage:1, reqPageSize:20, reqLoading:false, reqPromise:null, detailUser:'', noticeSending:false,
     reqDays:null, reqKinds:'',
+    dashStale:false,
     overviewLoading:false, overviewPromise:null, dashboardLoading:false, dashboardPromise:null, refreshTimer:null, poolActions:0, drawerReturnFocus:null,
     poolEpoch:0, refreshPending:false, announcementPreview:null, announcementPreviewSignature:'',
     announcementRequestId:'', announcementPreviewLoading:false, announcementPublishing:false,
@@ -1400,7 +1410,10 @@
   function loadSupportQueue(opts){
     opts=opts||{};
     var box=el('supportIssueBox');
-    if(!opts.keep){box.className='empty';box.textContent='正在读取最近失败记录...'}
+    var hadList=!!box&&box.className==='issue-list';
+    // 已有列表时不再清空重显“正在读取”，避免打断阅读/滚动（首次加载仍显示占位）
+    if(!opts.keep&&!hadList){box.className='empty';box.textContent='正在读取最近失败记录...'}
+    else if(hadList){box.classList.add('refreshing');el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 正在刷新…'}
     // 请求序号：旧请求后返回时直接丢弃，不再覆盖新结果
     var sequence=(state.supportSequence||0)+1;state.supportSequence=sequence;
     function settle(p){return p.then(function(d){return{ok:true,data:d}},function(e){return{ok:false,error:e}})}
@@ -1409,10 +1422,11 @@
       settle(api('/api/admin/recharge/orders?status=pending&limit=300'))
     ]).then(function(res){
       if(sequence!==state.supportSequence)return;
+      box.classList.remove('refreshing');
       var issue=res[0],orders=res[1];
       // 两块各自独立成败，一块挂了不拖累另一块
       if(issue.ok){renderSupportIssues(issue.data);pollNote(true)}
-      else{if(!opts.keep){box.className='error';box.textContent='失败记录读取失败：'+((issue.error&&issue.error.message)||'未知错误')}pollNote(false)}
+      else{if(!hadList){box.className='error';box.textContent='失败记录读取失败：'+((issue.error&&issue.error.message)||'未知错误')}pollNote(false)}
       if(orders.ok){
         var list=(orders.data&&orders.data.items)||[],capped=list.length>=300,count=list.length;
         var oldest=list.reduce(function(v,x){var t=Number(x.created_at||0);return t&&(!v||t<v)?t:v},0);
@@ -1423,8 +1437,11 @@
         el('supportPendingOrders').textContent='—';el('pendingOrdersSummary').textContent='读取失败';el('pendingMetric').classList.remove('attention');
       }
       // 两块都落定后才写“更新时间”，不让时间戳盖过未完成的数据
-      if(issue.ok&&orders.ok)el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 数据已更新';
-      else if(issue.ok||orders.ok)el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 部分数据未取到';
+      if(issue.ok&&orders.ok){el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 数据已更新'}
+      else{
+        var bad=[];if(!issue.ok)bad.push('失败记录');if(!orders.ok)bad.push('待审批订单');
+        markDashboardStale(bad.join(' 与 ')+'读取失败');
+      }
     });
   }
   function renderFeatures(items){
@@ -2492,6 +2509,26 @@
     if(moduleMeta[name]&&state.adminAuthenticated)restartPolling();   // 切模块：重置退避并按新模块节奏重排
     if(['operations','channels','features','pricing'].indexOf(name)>=0&&!state.data)load(false)
   }
+  // 运营总览四态：ok 正常 / unknown 字段缺失 / stale 上次成功·本次刷新失败 / error 读取失败
+  function dashRow(rowId,stateId,status,text){
+    var row=el(rowId);if(row)row.className='watch-row '+(status==='ok'?'good':status);
+    var st=el(stateId);if(st)st.textContent=text;
+  }
+  function dashMetric(cardId,status){
+    var card=el(cardId);if(!card)return;
+    card.classList.toggle('stale',status==='stale');
+    card.classList.toggle('fail',status==='error');
+  }
+  // 刷新失败：旧值一律标为“过期”，不再让上一次的绿色代表现在（含两块附加数据都失败）
+  function markDashboardStale(detail){
+    state.dashStale=true;
+    ['dashboardServiceRow','dashboardRefundRow','healthIncidentRow','acceptanceFreshRow'].forEach(function(id){
+      var row=el(id);if(!row)return;
+      if(row.className.indexOf('unknown')<0)row.className='watch-row stale';
+    });
+    ['todayMetric','activeMetric','failureMetric','pendingMetric'].forEach(function(id){dashMetric(id,'stale')});
+    el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 刷新失败，以上为上次数据（可能已过期）'+(detail?('：'+detail):'');
+  }
   function renderDashboard(d){
     setUser(d.user||{});el('app').style.display='block';el('gate').style.display='none';
     var registry=d.function_registry||[],coverage=d.registry_coverage||{verified:registry.filter(function(page){return page.inventory_status==='verified'}).length,total:registry.length};
@@ -2501,24 +2538,30 @@
     var svcTotal=(monitorSummary.total==null)?(services.length||null):Number(monitorSummary.total);
     var baseOnline=(monitorSummary.base_online==null)?null:Number(monitorSummary.base_online);
     var svcKnown=(svcTotal!==null&&baseOnline!==null);
-    el('jobTotal').textContent=(stats.total==null)?'—':Number(stats.total).toLocaleString();el('statDays').textContent='近 '+(stats.days||SUPPORT_DAYS)+' 天任务';
-    el('todayTotal').textContent=(stats.today==null)?'—':Number(today.total||0).toLocaleString();el('todaySummary').textContent=(stats.today==null)?'数据未取到':'完成 '+Number(today.done||0)+' · 失败 '+Number(today.error||0)+(Number(today.running||0)?' · 进行中 '+Number(today.running):'')+(Number(today.other||0)?' · 其他 '+Number(today.other):'');
-    el('activeJobs').textContent=(stats.live==null)?'—':Number(live.running||0).toLocaleString();el('activeSummary').textContent=(stats.live==null)?'数据未取到':(live.oldest_running_at?'最长已等待 '+fmtWait(Date.now()/1000-Number(live.oldest_running_at)):'当前无排队或生成');el('activeMetric').classList.toggle('attention',stats.live!=null&&Number(live.running||0)>0&&Number(live.oldest_running_at||0)<Date.now()/1000-3600);
-    el('failKinds').textContent=(stats.high_failure==null)?'—':high.length;el('failureSummary').textContent=(stats.high_failure==null)?'数据未取到':(high.length?high.slice(0,2).map(function(x){return kindName(x.kind)}).join('、'):'暂无高失败功能');el('failureMetric').classList.toggle('attention',stats.high_failure!=null&&high.length>0);
+    // 任务类指标：后端读库失败必须显式报错，绝不能用 0 冒充“正常”
+    var readError=String((stats&&stats.error)||'').trim();
+    el('jobTotal').textContent=readError?'读取失败':((stats.total==null)?'—':Number(stats.total).toLocaleString());el('statDays').textContent='近 '+(stats.days||SUPPORT_DAYS)+' 天任务';
+    el('todayTotal').textContent=readError?'读取失败':((stats.today==null)?'—':Number(today.total||0).toLocaleString());el('todaySummary').textContent=readError?readError:((stats.today==null)?'数据未取到':'完成 '+Number(today.done||0)+' · 失败 '+Number(today.error||0)+(Number(today.running||0)?' · 进行中 '+Number(today.running):'')+(Number(today.other||0)?' · 其他 '+Number(today.other):''));dashMetric('todayMetric',readError?'error':'ok');
+    el('activeJobs').textContent=readError?'读取失败':((stats.live==null)?'—':Number(live.running||0).toLocaleString());el('activeSummary').textContent=readError?readError:((stats.live==null)?'数据未取到':(live.oldest_running_at?'最长已等待 '+fmtWait(Date.now()/1000-Number(live.oldest_running_at)):'当前无排队或生成'));el('activeMetric').classList.toggle('attention',!readError&&stats.live!=null&&Number(live.running||0)>0&&Number(live.oldest_running_at||0)<Date.now()/1000-3600);dashMetric('activeMetric',readError?'error':'ok');
+    el('failKinds').textContent=readError?'读取失败':((stats.high_failure==null)?'—':high.length);el('failureSummary').textContent=readError?readError:((stats.high_failure==null)?'数据未取到':(high.length?high.slice(0,2).map(function(x){return kindName(x.kind)}).join('、'):'暂无高失败功能'));el('failureMetric').classList.toggle('attention',!readError&&stats.high_failure!=null&&high.length>0);dashMetric('failureMetric',readError?'error':'ok');
     var svcText,svcCls;
     if(incidents.length){svcText=incidents.map(function(x){return x.name||x.key}).join('、')+'异常';svcCls='attention'}
     else if(confirming.length){svcText='待复核 '+confirming.length+' 项';svcCls='attention'}
     else if(!svcKnown){svcText='未知 · 未取到检查结果';svcCls='unknown'}
-    else if(svcTotal>0&&baseOnline>=svcTotal){svcText=baseOnline+' / '+svcTotal+' 基础检查通过';svcCls='good'}
+    else if(svcTotal>0&&baseOnline>=svcTotal){svcText=baseOnline+' / '+svcTotal+' 基础检查通过';svcCls='ok'}
     else{svcText='仅 '+baseOnline+' / '+svcTotal+' 通过';svcCls='attention'}
-    el('dashboardServiceState').textContent=svcText;el('dashboardServiceRow').className='watch-row '+svcCls;
-    var refundKnown=(stats.live!=null&&live.refund_pending!=null);
-    el('dashboardRefundState').textContent=refundKnown?Number(live.refund_pending)+' 笔':'未知 · 未取到';el('dashboardRefundRow').className='watch-row '+(refundKnown?(Number(live.refund_pending)?'attention':'good'):'unknown');
+    dashRow('dashboardServiceRow','dashboardServiceState',svcCls,svcText);
+    var refundKnown=(!readError&&stats.live!=null&&live.refund_pending!=null);
+    dashRow('dashboardRefundRow','dashboardRefundState',readError?'error':(refundKnown?(Number(live.refund_pending)?'attention':'ok'):'unknown'),readError?'读取失败':(refundKnown?Number(live.refund_pending)+' 笔':'未知 · 未取到'));
     var monKnown=(monitorSummary.incidents!=null);
-    el('healthIncidentCount').textContent=monKnown?Number(monitorSummary.incidents)+' 项'+(Number(monitorSummary.confirming||0)?' · 待复核 '+Number(monitorSummary.confirming):''):'未知 · 未取到';el('healthIncidentRow').className='watch-row '+(monKnown?(Number(monitorSummary.incidents)?'attention':'good'):'unknown');
+    dashRow('healthIncidentRow','healthIncidentCount',monKnown?(Number(monitorSummary.incidents)?'attention':'ok'):'unknown',monKnown?Number(monitorSummary.incidents)+' 项'+(Number(monitorSummary.confirming||0)?' · 待复核 '+Number(monitorSummary.confirming):''):'未知 · 未取到');
+    // 验收：总数与“待验数”必须都取到才能判绿；due 缺失属于未知，不是正常
     var accTotal=(acceptance.total==null)?null:Number(acceptance.total);
-    if(accTotal===null||accTotal===0){el('acceptanceFreshCount').textContent='未知 · 无验收项';el('acceptanceFreshRow').className='watch-row unknown'}
-    else{el('acceptanceFreshCount').textContent=Number(acceptance.fresh||0)+' / '+accTotal+(Number(acceptance.due||0)?' · 待验 '+Number(acceptance.due):'');el('acceptanceFreshRow').className='watch-row '+(Number(acceptance.due||0)?'attention':'good')}
+    var accDue=(acceptance.due==null)?null:Number(acceptance.due);
+    if(accTotal===null||accTotal===0){dashRow('acceptanceFreshRow','acceptanceFreshCount','unknown','未知 · 无验收项')}
+    else if(accDue===null){dashRow('acceptanceFreshRow','acceptanceFreshCount','unknown','未知 · 未取到待验数')}
+    else if(accDue>0){dashRow('acceptanceFreshRow','acceptanceFreshCount','attention',Number(acceptance.fresh||0)+' / '+accTotal+' · 待验 '+accDue)}
+    else{dashRow('acceptanceFreshRow','acceptanceFreshCount','ok',Number(acceptance.fresh||0)+' / '+accTotal)}
     el('healthMonitorCycle').textContent=monitor.last_cycle_at?'最近检查 '+new Date(Number(monitor.last_cycle_at)*1000).toLocaleTimeString()+' · 每 '+Number(monitor.interval_seconds||60)+' 秒':'等待第一轮基础检查';
     var notification=monitor.notifications||{},notificationCounts=notification.counts||{};el('healthMonitorCycle').textContent+=' · 告警'+(notification.enabled?'已启用':'未启用')+' · 待发 '+Number(notificationCounts.pending||0)+' / 失败 '+Number(notificationCounts.failed||0)+(notification.error?' · '+notification.error:'');
     var events=monitor.events||[];el('healthMonitorEvents').innerHTML=events.length?events.slice(0,3).map(function(event){var recovered=event.event==='recovered';return '<div class="monitor-event '+(recovered?'recovered':'')+'"><i></i><b>'+esc(event.service||event.service_key||'未知服务')+' · '+(recovered?'已恢复':'异常已确认')+'</b><time>'+esc(event.created_at?new Date(Number(event.created_at)*1000).toLocaleString():'-')+'</time></div>'}).join(''):'<div class="empty">暂无已确认异常或恢复事件</div>';
@@ -2541,7 +2584,7 @@
     if(!state.adminAuthenticated)return Promise.resolve();
     if(state.dashboardLoading)return state.dashboardPromise||Promise.resolve();
     state.dashboardLoading=true;if(!silent)el('dashboardRefresh').disabled=true;
-    state.dashboardPromise=api('/api/admin/dashboard?days='+SUPPORT_DAYS).then(function(d){state.overviewUpdatedAt=Date.now();state.dashData=d;pollNote(true);renderDashboard(d)}).catch(function(e){pollNote(false);if(e.status===401||e.status===403){showAdminLogin('登录已过期，请重新登录。',true);return}el('dashboardUpdatedAt').textContent=new Date().toLocaleTimeString()+' · 刷新失败，数据可能已过期';toast('刷新失败：'+e.message)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
+    state.dashboardPromise=api('/api/admin/dashboard?days='+SUPPORT_DAYS).then(function(d){state.overviewUpdatedAt=Date.now();state.dashData=d;state.dashStale=false;pollNote(true);renderDashboard(d)}).catch(function(e){pollNote(false);if(e.status===401||e.status===403){showAdminLogin('登录已过期，请重新登录。',true);return}markDashboardStale(e.message);toast('刷新失败：'+e.message)}).finally(function(){state.dashboardLoading=false;state.dashboardPromise=null;el('dashboardRefresh').disabled=false});
     return state.dashboardPromise;
   }
   function serverState(item){var label=item.status==='warning'?'告警':(item.online?'在线':'离线');return '<span class="server-state" data-state="'+esc(item.status||'offline')+'">'+esc(label)+'</span>'}
