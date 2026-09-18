@@ -497,6 +497,17 @@ def _seedream_post(fn, tries=None, max_wait=None):
             print("[seedream] 429 并发限流，退避重试(%d/%d) 等%.1fs" % (i + 1, tries, delay), flush=True)
             time.sleep(delay)
 
+def seedream_credentials():
+    """黄雀引擎 1（Seedream / 火山方舟，图片线路）凭据统一入口。
+
+    与视频侧的 video_seedance 各自独立：本入口只服务图片线路 image.seedream，
+    后台改这条线路的 URL/Key 不会连带改动视频渠道。
+    未开启 HQ_PROVIDER_CONFIG_WIRING 时返回进程启动常量（行为零变化）。
+    """
+    from . import provider_config
+    return provider_config.credentials_for("image.seedream", ARK_API_KEY, ARK_BASE)
+
+
 def _seedream_one(model, prompt, size, images):
     """出一张图，返回 PNG 字节。
 
@@ -513,9 +524,10 @@ def _seedream_one(model, prompt, size, images):
         refs = ["data:image/png;base64," + img for img in images]
         body["image"] = refs[0] if len(refs) == 1 else refs
     data = json.dumps(body, ensure_ascii=False).encode()
+    creds = seedream_credentials()
     try:
         d = _seedream_post(lambda: _post("/images/generations", data, "application/json",
-                                        base=ARK_BASE, key=ARK_API_KEY, proxy=False))
+                                        base=creds["url"] or ARK_BASE, key=creds["credential"], proxy=False))
     except urllib.error.HTTPError as e:
         raise _seedream_error(e)
     items = d.get("data") or []
@@ -528,7 +540,7 @@ def _gen_image_seedream(prompt, ratio, quality, count, images, variant):
     """Seedream 5.0 / 5.0 Pro：文生图 + 图生图（同一端点，带 image 即图生图）。
     实测耗时(PNG 输出)：标准约 30~40s，Pro 约 85s —— Pro 慢一倍多，前端提示要分开写。
     单图 2~7MB。SEEDREAM_MAX_N=2 时 Pro 最坏约 170s，在 reaper image 900s 宽限内。"""
-    if not ARK_API_KEY:
+    if not str(seedream_credentials().get("credential") or "").strip():
         raise ValueError("黄雀引擎 1 暂未配置，请联系管理员")
     _seedream_check_ref(images)     # 坏参考图会让 Ark 回 500，先在本地拦掉并说人话
     model = SEEDREAM_MODELS.get(variant) or SEEDREAM_MODELS["std"]

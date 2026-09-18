@@ -113,6 +113,12 @@ test('frontend function center uses a model list and keeps technical details in 
   bananaModel.routes[0].candidate.management={kind:'managed_channel',uid:'managed:shadow-channel'};
   bananaModel.routes[1].primary.management={kind:'server_env',uid:'legacy:gemini'};
   workspace.render(workspaceData);
+  // 产品默认是「简洁视图」（入口保留）；本用例验证的是高级视图契约，
+  // 因此显式点「高级视图 / 优先级」进入，而不是假定高级视图为默认。
+  assert.match(elements.cmMatrix.innerHTML,/cm-simple/);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-simple-toggle/);
+  const simpleToggle={dataset:{cmSimpleToggle:''}};
+  root.listeners.click({target:{closest:()=>simpleToggle}});
   assert.match(elements.cmMatrix.innerHTML,/cm-function-workspace/);
   for(const group of ['内容创作','人物与声音','智能工具','基础服务'])assert.match(elements.cmMatrix.innerHTML,new RegExp(group));
   for(const label of ['生图','生视频'])assert.match(elements.cmMatrix.innerHTML,new RegExp(label));
