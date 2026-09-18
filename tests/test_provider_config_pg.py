@@ -193,7 +193,7 @@ class ProviderConfigPostgresTest(unittest.TestCase):
         env["HQ_ADMIN_CONFIG_STORE"] = "postgres"
         env["HQ_DATABASE_URL"] = _pg_url
         env["PYTHONPATH"] = os.pathsep.join(
-            [str(SERVER), str(ROOT), os.environ.get("HQ_PG_TOOLS_DIR")
+            [str(SERVER), str(ROOT), os.environ.get("PYTHONPATH", ""), os.environ.get("HQ_PG_TOOLS_DIR")
              or r"E:\AI\pg-tools\embedded-pg"])
         proc = subprocess.run([sys.executable, "-c", code, str(rec)],
                               env=env, capture_output=True, text=True, timeout=120)

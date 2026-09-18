@@ -509,7 +509,14 @@ def seedream_credentials(config_ref=None):
     from . import provider_config
     version = config_ref.get("version") if isinstance(config_ref, dict) else None
     if version:
-        return provider_config.resolve_pinned("image.seedream", version, ARK_API_KEY, ARK_BASE)
+        if config_ref.get("target_id") != "image.seedream":
+            raise provider_config.ProviderConfigError("图片任务配置线路不匹配")
+        credentials = provider_config.resolve_pinned("image.seedream", version, ARK_API_KEY, ARK_BASE)
+        try:
+            provider_config.report_loaded("image.seedream", credentials["version"], credentials["source"])
+        except Exception:
+            pass  # Reporting failure must not turn an accepted task into a retry.
+        return credentials
     return provider_config.credentials_for("image.seedream", ARK_API_KEY, ARK_BASE)
 
 
@@ -552,7 +559,7 @@ def _gen_image_seedream(prompt, ratio, quality, count, images, variant, config_r
     size = _seedream_size(ratio, quality, variant)   # Pro 的像素上限低得多，必须按型号夹逼
     files_out, urls = [], []
     for _ in range(count):
-        raw = _seedream_one(model, prompt, size, images)
+        raw = _seedream_one(model, prompt, size, images, config_ref=config_ref)
         fn = "img_%s.png" % uuid.uuid4().hex   # 不可猜键(#185)
         (OUT_DIR / fn).write_bytes(raw)
         files_out.append(fn)

@@ -689,6 +689,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(503, {"detail": str(e)})
             body = self._json_body()
             try:
+                from content_domains import provider_config
+                body = provider_config.sanitize_payload(body)
                 body = validate_banana_payload(body)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})

@@ -57,6 +57,12 @@ def _start_local(data_dir: str):
     path = Path(data_dir)
     path.mkdir(parents=True, exist_ok=True)
     server = ep.get_server(str(path), cleanup_mode=None)
+    if os.name == "nt" and not (path / "PG_VERSION").exists():
+        # Windows locale defaults may contain a non-UTF8 locale name. Documented
+        # --locale=C must also be applied by the automated harness itself.
+        from embedded_postgres._commands import initdb
+        initdb(['--auth=trust', '--auth-local=trust', '--encoding=utf8',
+                '--locale=C', '-U', server.postgres_user], pgdata=path)
     server.ensure_pgdata_inited()
     server.ensure_postgres_running()
     return server
@@ -71,10 +77,13 @@ def _with_db(base_uri: str, name: str) -> str:
 def _alembic_upgrade(url: str) -> None:
     env = dict(os.environ)
     env["HQ_DATABASE_URL"] = url
-    parts = [str(SERVER), str(ROOT), os.environ.get("HQ_PG_TOOLS_DIR") or DEFAULT_TOOLS]
+    parts = [str(SERVER), str(ROOT)]
     extra = env.get("PYTHONPATH") or ""
     if extra:
         parts.extend(p for p in extra.split(os.pathsep) if p)
+    # Explicit interpreter-compatible dependencies take precedence over the
+    # optional embedded-tools directory (which may target another Python ABI).
+    parts.append(os.environ.get("HQ_PG_TOOLS_DIR") or DEFAULT_TOOLS)
     env["PYTHONPATH"] = os.pathsep.join(parts)
     proc = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],

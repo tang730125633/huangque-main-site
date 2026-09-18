@@ -1261,6 +1261,28 @@ def retained_versions(target_id: str) -> list:
             if v["status"] in (STATUS_PUBLISHED, STATUS_SUPERSEDED)]
 
 
+def prepare_job_payload(kind: str, payload: dict, actor: str = "system") -> dict:
+    """Server-owned snapshot at the shared, pre-charge admission boundary.
+
+    Never reuse a caller's version. Managed routes own their own immutable
+    binding; only the legacy Seedream image route uses this pilot. The switch
+    controls admission of NEW jobs, not resolution of already pinned jobs.
+    """
+    clean = sanitize_payload(dict(payload))
+    if (kind != "image" or clean.get("_channel_binding")
+            or str(clean.get("provider") or "").strip().lower() != "seedream"
+            or not wiring_enabled("image.seedream")):
+        return clean
+    pin_payload("image.seedream", clean, actor)
+    ref = clean["_provider_config"]
+    if not ref.get("version"):
+        raise ProviderConfigUnavailable("无法固定图片渠道配置版本，未扣点")
+    credentials = resolve_pinned("image.seedream", ref["version"])
+    if not credentials.get("credential") or not credentials.get("url"):
+        raise ProviderConfigUnavailable("图片渠道配置不完整，未扣点")
+    return clean
+
+
 # ---------------------------------------------------------------------------
 # 草稿验证：只用连接 + 鉴权探测，**不触发生成、不产生费用**
 # ---------------------------------------------------------------------------

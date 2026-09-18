@@ -164,6 +164,23 @@ def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None,
         if not claim or claim["request_hash"] != digest:
             connection.rollback()
             raise AttemptConflict("submission idempotency claim is missing or changed")
+        if kind == "image":
+            existing = connection.execute(
+                "SELECT 1 FROM matrix_template_submission_attempts "
+                "WHERE username=? AND endpoint=? AND idem_key=?",
+                (username, endpoint, idem_key),
+            ).fetchone()
+            if not existing:
+                # Digital-human image children use durable charge attempts,
+                # not create_paid_job. Freeze BEFORE any charging begins and
+                # retain execution_json unchanged on recovery/replay.
+                from . import provider_config
+                from .jobs_store import PaidJobDeductError
+                try:
+                    execution_body = provider_config.prepare_job_payload(kind, execution_body, username)
+                    execution_encoded = _json(execution_body)
+                except Exception as exc:
+                    raise PaidJobDeductError(503, "图片渠道配置暂不可用，未扣点，请稍后重试") from exc
         inserted = connection.execute(
             """INSERT OR IGNORE INTO matrix_template_submission_attempts(
                username,endpoint,idem_key,request_hash,input_json,execution_json,kind,cost,
