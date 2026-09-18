@@ -380,7 +380,10 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         self.assertNotIn("top-secret", detail)
         self.assertNotIn("sensitive provider detail", detail)
 
-    def test_subscription_video_reuses_oauth_image_asset_and_strict_mcp_poll(self):
+    def test_subscription_video_uploads_local_image_and_uses_strict_mcp_poll(self):
+        """2026-09-18 线上定稿：订阅(MCP)账户的 asset 空间与 API 钱包不互通，
+        传入的 provider_image_asset_id 不可复用 —— 改为把本地 image_file 重传到
+        订阅空间（只有续跑时才复用已落库的 image_asset_id）。"""
         image = Path("i.jpg")
         audio = Path("a.mp3")
         with patch.object(video, "_resolve_out_file", side_effect=[image, audio]), \
@@ -394,18 +397,24 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
              patch.object(video, "_download_video_file_direct", return_value="video/out.mp4"), \
              patch.object(video, "_extract_first_frame_cover", return_value=None), \
              patch.object(video, "heygen_slot", side_effect=lambda _label: nullcontext()), \
-             patch.object(video, "update_video_asset_phase"), \
-             patch.object(video, "_heygen_mcp_upload_asset") as mcp_upload, \
+             patch.object(video, "update_video_asset_phase") as phase, \
+             patch.object(video, "_heygen_mcp_upload_asset", return_value="mcp-image-1") as mcp_upload, \
              patch.object(video, "_heygen_upload_asset") as upload:
             result = video.generate_heygen_video_subscription(
                 "i.jpg", "a.mp3", "1080p", "9:16", "medium",
                 image_asset_id="oauth-image-1")
         upload.assert_not_called()
-        mcp_upload.assert_not_called()
+        # 关键：不再复用 API 钱包传来的 asset id，而是重传到订阅空间
+        mcp_upload.assert_called_once()
         create.assert_called_once_with(
-            {"type": "asset_id", "asset_id": "oauth-image-1"},
+            {"type": "asset_id", "asset_id": "mcp-image-1"},
             None, "1080p", "9:16", "medium",
             audio_url="https://cos.example/private-audio",
+        )
+        # 落库的 asset id 必须是重传后那个，否则续跑会再传一次
+        phase.assert_any_call(
+            None, "polling_video", provider_video_id="video-plan-1",
+            image_asset_id="mcp-image-1", model="heygen_mcp_subscription",
         )
         poll.assert_called_once_with(
             "video-plan-1", deadline_s=video.VIDEO_GEN_DEADLINE, mcp=True,
@@ -516,7 +525,11 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         self.assertEqual(result["provider"], "heygen_mcp_subscription")
         self.assertEqual(result["billing_mode"], "subscription")
 
-    def test_legacy_subscription_avatar_without_image_asset_fails_before_audio(self):
+    def test_legacy_subscription_avatar_without_image_asset_reuploads_local_image(self):
+        """2026-09-18 线上定稿：不再在 gen_video 里对「旧形象缺 provider_image_asset_id」
+        报错 —— 订阅空间的 asset 不能复用 API 钱包的，本地 image_file 会重传，所以
+        旧形象照样能生成。真正的拦截在 validate_video_payload（见
+        test_legacy_subscription_avatar_is_rejected_before_job_charge）。"""
         avatar = {
             "id": 2, "image_file": "avatar.jpg",
             "provider_avatar_id": "look-2",
@@ -525,15 +538,20 @@ class HeyGenMcpOAuthTests(unittest.TestCase):
         with patch.object(video, "_HEYGEN_BILLING_MODE", "subscription"), \
              patch.object(video, "_heygen_mcp_enabled", return_value=True), \
              patch.object(video, "get_video_avatar", return_value=avatar), \
-             patch.object(video, "gen_audio") as audio, \
-             patch.object(video, "generate_heygen_video") as generate:
-            with self.assertRaisesRegex(ValueError, "缺少.*图片素材编号"):
-                video.gen_video({
-                    "_username": "owner", "avatar_id": 2, "mode": "text",
-                    "text": "hello", "voice": "S_xaUB8OR62",
-                })
-        audio.assert_not_called()
-        generate.assert_not_called()
+             patch.object(video, "gen_audio", return_value={"file": "audio/a.mp3"}), \
+             patch.object(video, "generate_heygen_video", return_value={
+                 "video_id": "v", "provider": "heygen_mcp_subscription",
+                 "billing_mode": "subscription", "model": "heygen_mcp_subscription",
+             }) as generate, \
+             patch.object(video, "update_video_asset_phase"):
+            result = video.gen_video({
+                "_username": "owner", "avatar_id": 2, "mode": "text",
+                "text": "hello", "voice": "S_xaUB8OR62",
+            })
+        self.assertEqual(result["avatar_id"], 2)
+        # 空 asset id 不下传，由 generate_heygen_video_subscription 用本地文件重传
+        self.assertNotIn("image_asset_id", generate.call_args.kwargs)
+        self.assertEqual(result["provider"], "heygen_mcp_subscription")
 
     def test_legacy_subscription_avatar_is_rejected_before_job_charge(self):
         avatar = {
