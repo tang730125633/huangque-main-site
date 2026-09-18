@@ -657,7 +657,7 @@
         <div id="operationsDeveloper"></div>
       </section>
       <section class="card span12 module-card" data-module="managedChannels" hidden>
-        <div class="section-head"><div><h2>渠道管理</h2><p class="muted">按前端业务找模型，在模型内直接管理渠道、API Key、Base URL 与验证状态。</p></div><div class="actions"><button id="cmReload">刷新</button><button data-cm-view="health">运行检查</button><button class="primary" id="cmNew">新增渠道</button><details class="cm-admin-menu"><summary>更多管理</summary><div><button data-cm-view="catalog">底层渠道库</button><button data-cm-view="mapping">功能映射</button><button data-cm-view="audit">操作记录</button></div></details></div></div>
+        <div class="section-head"><div><h2>渠道管理</h2><p class="muted">按前端业务找模型，在模型内直接管理渠道、API Key、Base URL 与验证状态。</p></div><div class="actions"><button id="cmReload">刷新</button><button data-cm-view="health">运行检查</button><button class="primary" id="cmNew">新增渠道</button><details class="cm-admin-menu"><summary>更多管理</summary><div><button data-cm-view="catalog">底层渠道库</button><button data-cm-view="mapping">功能映射</button><button data-cm-view="audit">操作记录</button><button data-cm-view="providerConfig">线路 URL／Key</button></div></details></div></div>
         <div id="cmStatus" role="status"></div>
         <div id="cmReplacementResult" class="cm-replacement-result" hidden></div>
         <div data-cm-panel="matrix"><div id="cmMatrix"><p class="muted">正在读取前台模型与渠道…</p></div></div>
@@ -671,6 +671,7 @@
         <div data-cm-panel="health" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>运行检查</h3><p class="muted">检查渠道连接、鉴权、生成结果和通知状态。</p></div></div><p class="muted">证据有效期 24 小时；未验证、过期或缺少证据不会显示为通过。统计取最近 24 小时，定时任务使用北京时间。</p><div id="cmHealth"></div><h3>通知设置与发送状态</h3><div id="cmNotifications"></div><h3>最近测试与任务</h3><div id="cmRuns"></div></div>
         <div data-cm-panel="audit" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>配置操作记录</h3><p class="muted">查看渠道、密钥与映射配置的历史变更。</p></div></div><p class="muted">托管渠道版本与映射变更。号池密钥操作沿用现有管理员审计。</p><div id="cmAudit"></div></div>
         <div data-cm-panel="layout" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>调整前台展示</h3><p class="muted">设置图片页和视频页的入口顺序与默认项。</p></div></div><div id="cmLayout"></div></div>
+        <div data-cm-panel="providerConfig" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>线路 URL／Key</h3><p class="muted">直接修改现有线路的 API 地址与密钥（服务端环境变量型线路的后台覆盖）。发布后以运行服务的实际上报为准。</p></div></div><div id="cmProviderConfig"></div></div>
         <div id="cmDrawer" class="cm-drawer-layer" hidden><aside class="cm-drawer" role="dialog" aria-modal="true" aria-labelledby="cmDrawerTitle"><div class="cm-drawer-head"><h2 id="cmDrawerTitle">渠道详情</h2><button id="cmDrawerClose" aria-label="关闭渠道详情">关闭</button></div><div id="cmDetail"></div><div id="cmEditor" hidden></div><div id="cmMappingEditor" hidden></div></aside></div>
       </section>
       <section class="card span12 module-card" data-module="channels" hidden>
@@ -932,6 +933,7 @@
 <script src="/admin/channel-workspace.js?v=20260918-simple-a"></script>
 <script src="/admin/channel-request.js"></script>
 <script src="/admin/channel-manager.js?v=901769b1"></script>
+<script src="/admin/channel-provider-config.js"></script>
 <script>
 (function(){
   var token = '__cookie__';
@@ -2623,6 +2625,7 @@
   var loadManagedChannels=window.initChannelManager({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'},legacy:channelLegacyCatalog,detail:channelLegacyDetail,closeLegacy:closeChannelLegacy,
     task:function(id){el('reqSearch').value=id;state.reqPage=1;switchModule('logs')},
     journey:function(key){var ctx=findOperationContext(key);if(ctx){state.operationsPage=ctx.page.key;state.operationsMode=key;switchModule('operations')}}});
+  var loadProviderConfig=window.initChannelProviderConfig?window.initChannelProviderConfig({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'}}):null;
   function switchModule(name){
     if(name==='channels')name='managedChannels';
     if(name!=='managedChannels'&&window.closeChannelWorkspace)window.closeChannelWorkspace();
@@ -2634,7 +2637,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
     el('pageTitle').textContent=moduleMeta[name][0];el('pageSubtitle').textContent=moduleMeta[name][1];closeSidebar();
     clearInterval(state.serverTimer);state.serverTimer=null;
-    if(name==='managedChannels'){if(!state.data)load(false);loadManagedChannels()}
+    if(name==='managedChannels'){if(!state.data)load(false);loadManagedChannels();if(loadProviderConfig)loadProviderConfig()}
     if(name==='dashboard'){loadDashboard(false)}
     if(name==='servers'){loadServers(false)}
     if(name==='logs'){loadReqLogs()}
