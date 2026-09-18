@@ -3380,7 +3380,10 @@ def _tail_lines(path, max_bytes=2 * 1024 * 1024):
 
 
 def _collect_request_entries(limit, status="", q="", include_noise=False, since=None):
-    """采集 nginx /api/ 请求 → (按时间倒序的 [(排序键, item)], 错误提示)。已做用户/功能反查。"""
+    """采集 nginx /api/ 请求 → (按时间倒序的 [(排序键, item)], 错误提示)。已做用户/功能反查。
+
+    since 非空时只保留该时间戳之后的请求；日常调用不传（HTTP 行按日志尾部“最近一段”呈现）。
+    """
     entries, message = [], None
     existing = [p for p in NGINX_ACCESS_LOGS if p.exists()]
     if not existing:
@@ -3517,12 +3520,19 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     user = str(user or "").strip()
     kind_filter = {k.strip().lower() for k in str(kinds or "").split(",") if k.strip()}
     since = _activity_since(days)
+    try:
+        raw_days = int(days)
+    except (TypeError, ValueError):
+        raw_days = 7
+    # HTTP 行取自 nginx 日志尾部，天然只有最近一段；只有明确要求“今日”(days<=0) 时才
+    # 再按窗口裁剪。其余情况保持既有的 7/30 天口径不变（HTTP 行不受 days 约束）。
+    http_since = since if raw_days <= 0 else None
 
     if source in ("", "http") and category != "running" and not kind_filter:
         # 成功/失败下推到采集层，避免“失败行被截断挤掉”
         entries, message = _collect_request_entries(
             source_limit, status=category if category in ("ok", "fail") else "",
-            include_noise=include_noise, since=since,
+            include_noise=include_noise, since=http_since,
         )
         for key, it in entries:
             cat = "ok" if it["status"] < 400 else "fail"

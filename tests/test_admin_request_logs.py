@@ -1,6 +1,7 @@
 import json
 import pathlib
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1227,6 +1228,40 @@ class ActivityProbeTests(unittest.TestCase):
         # 探测坏了必须每次都变：前端对比「不等」→ 照常全量刷新，不漏数据
         self.assertNotEqual(first, second)
         self.assertTrue(first.startswith("probe-error-"))
+
+
+class ActivityWindowTests(unittest.TestCase):
+    """时间范围换算：days<=0 表示服务器本地当天零点（“今日”），否则向前滚动 N 天。"""
+
+    NOW = 1758100000.0  # 固定时刻，避免跨秒抖动
+
+    def test_zero_means_local_midnight(self):
+        since = admin_api._activity_since(0, self.NOW)
+        local = time.localtime(since)
+        self.assertEqual((local.tm_hour, local.tm_min, local.tm_sec), (0, 0, 0))
+        self.assertEqual(local.tm_mday, time.localtime(self.NOW).tm_mday)
+        self.assertLessEqual(since, int(self.NOW))
+
+    def test_negative_is_treated_as_today(self):
+        self.assertEqual(
+            admin_api._activity_since(-3, self.NOW),
+            admin_api._activity_since(0, self.NOW),
+        )
+
+    def test_positive_is_rolling_days(self):
+        self.assertEqual(admin_api._activity_since(7, self.NOW), int(self.NOW) - 7 * 86400)
+        self.assertEqual(admin_api._activity_window_days(7), 7)
+
+    def test_cap_and_invalid_input(self):
+        self.assertEqual(admin_api._activity_since(365, self.NOW), int(self.NOW) - 90 * 86400)
+        self.assertEqual(admin_api._activity_window_days(0), 1)   # 今日按 1 天展示
+        self.assertEqual(admin_api._activity_window_days("bad"), 7)
+
+    def test_today_window_is_not_a_rolling_24h(self):
+        # “今日”必须从本地零点起算，而不是 now-86400
+        since = admin_api._activity_since(0, self.NOW)
+        self.assertNotEqual(since, int(self.NOW) - 86400)
+        self.assertGreater(since, int(self.NOW) - 86400)
 
 
 if __name__ == "__main__":
