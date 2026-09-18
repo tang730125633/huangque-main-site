@@ -367,7 +367,7 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
-def _dispatch_gpt(provider, path, body, ct, base, key, proxy, streaming=False):
+def _dispatch_gpt(provider, path, body, ct, base, key, proxy, streaming=False, config_ref=None):
     """gpt 家族出图分发。openai(官方) 走出境优先级链 VPS→mihomo→heygen；泽龙系维持原样。"""
     if provider == "zelong2":
         return _post_zelong2(path, body, ct)
@@ -376,9 +376,16 @@ def _dispatch_gpt(provider, path, body, ct, base, key, proxy, streaming=False):
     # provider == "openai"：优先自建出境直连官方，超时/报错降级，最终兜底 heygen(=OPENAI_BASE)。
     # 未配 EGRESS_* 时 egress 链里只剩 heygen 一档，等于改动前的老行为。
     from content_domains import egress
+    from . import provider_config
+    config = provider_config.job_credentials("image.openai", config_ref, OPENAI_KEY, OPENAI_OFFICIAL_BASE)
+    official, fallback, secret = OPENAI_OFFICIAL_BASE, OPENAI_BASE, OPENAI_KEY
+    if config["wired"]:
+        official = config["url"]
+        fallback = config.get("fallback_url") or official
+        secret = config["credential"]
     transport = egress.post_image_json if streaming else egress.post_json
-    return transport(OPENAI_OFFICIAL_BASE, OPENAI_BASE, path, body,
-                     {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ct},
+    return transport(official, fallback, path, body,
+                     {"Authorization": "Bearer " + secret, "Content-Type": ct},
                      log=lambda m: print(m, flush=True))
 
 
@@ -703,7 +710,7 @@ def gen_image(payload):
         count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))
         seedream_refs = refs if len(refs) > 1 else (refs[0] if refs else None)
         result = _gen_image_seedream(prompt, ratio, q, count, seedream_refs, variant,
-                                     payload.get("_provider_config"))
+                                     **({"config_ref": payload["_provider_config"]} if payload.get("_provider_config") else {}))
         result["prompt"] = user_prompt
         return result
     size  = SIZES.get(ratio, "1024x1024")
@@ -729,11 +736,13 @@ def gen_image(payload):
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
         body, ct = _multipart({"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
-        d = _dispatch_gpt(provider, "/v1/images/edits", body, ct, base, key, proxy)
+        d = _dispatch_gpt(provider, "/v1/images/edits", body, ct, base, key, proxy,
+                          config_ref=payload.get("_provider_config"))
         mode = "inpaint" if mask else "img2img"
     else:
         body = json.dumps({"model": OPENAI_IMAGE_MODEL, "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
-        d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json", base, key, proxy, streaming=True)
+        d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json", base, key, proxy,
+                          streaming=True, config_ref=payload.get("_provider_config"))
         mode = "text2img"
     files_out, urls = [], []
     for i, item in enumerate(d.get("data") or []):

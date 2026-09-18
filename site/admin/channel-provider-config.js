@@ -22,9 +22,9 @@
         const key=it.key_present?('••••'+esc(it.key_last4||'')):'未配置';
         const src=it.source==='backend'?('后台配置 v'+esc(it.version)):'服务器环境变量';
         const warn=it.pool_shared?'<small style="display:block;color:#e6c77b">该环境变量同时被号池使用，影响范围见弹窗</small>':'';
-        const ops=it.editable
+        const ops=it.editable&&it.available!==false
           ?'<button type="button" data-pc-edit="'+esc(it.target_id)+'">修改 URL／Key</button>'
-          :'<button type="button" disabled title="'+esc(it.deprecated_reason||'不可修改')+'">不可修改</button>';
+          :'<span class="muted">不可修改：'+esc(it.reason||it.deprecated_reason||'线路不可用')+'</span>';
         return '<tr data-pc-target="'+esc(it.target_id)+'">'
           +'<td><b>'+esc((it.features||[]).join(' / ')||it.target_id)+'</b>'+warn+'</td>'
           +'<td>'+esc(it.provider||'')+'</td>'
@@ -52,8 +52,9 @@
 
     function find(target){return items.find(i=>i.target_id===target)||{}}
 
-    function open(target){
-      if(!find(target).editable){toast('这条线路当前不可修改');return}
+    async function open(target){
+      if(!items.length)await load();
+      if(!find(target).editable||find(target).available===false){toast(find(target).reason||'这条线路当前不可修改');return}
       close();
       openTarget=target;
       const it=find(target);
@@ -80,23 +81,28 @@
         +'</form>';
       document.body.appendChild(dlg);
       dlg.querySelector('[data-pc-cancel]').onclick=close;
-      dlg.addEventListener('cancel',()=>{if(busy)event.preventDefault()});
+      dlg.addEventListener('cancel',event=>{if(busy)event.preventDefault()});
       dlg.onclose=close;
       const form=dlg.querySelector('form');
       const err=dlg.querySelector('[role=alert]');
       // 验证后修改任一输入 → 旧验证立即失效
-      const invalidate=()=>{openTarget=target;form.dataset.seq='';form.dataset.ok='';
+      let revision=0;
+      const invalidate=()=>{revision++;openTarget=target;form.dataset.seq='';form.dataset.ok='';
         dlg.querySelector('[data-pc-publish]').disabled=true;
         dlg.querySelector('#pcResult').textContent='输入已修改，请重新验证。'};
       form.elements.url.oninput=invalidate;
       form.elements.secret.oninput=invalidate;
-      const setBusy=v=>{busy=v;[...form.querySelectorAll('button')].forEach(b=>{if(b.dataset.pcCancel===undefined)b.disabled=v})};
+      const setBusy=v=>{busy=v;[...form.querySelectorAll('button')].forEach(b=>{b.disabled=v});
+        form.elements.url.disabled=v;form.elements.secret.disabled=v;
+        dlg.querySelector('[data-pc-publish]').disabled=v||!form.dataset.ok||!form.dataset.seq;};
       dlg.querySelector('[data-pc-validate]').onclick=async()=>{
         if(busy)return;err.textContent='';setBusy(true);
+        const validatingRevision=revision;
         try{
           const draft=await post('draft',{target_id:target,url:String(form.elements.url.value||'').trim(),
             secret:String(form.elements.secret.value||'').trim()||undefined,reason:'后台修改 URL/Key'});
           const res=await post('validate',{target_id:target,version:draft.seq});
+          if(validatingRevision!==revision)return;
           form.dataset.seq=String(draft.seq);form.dataset.ok=res.ok?'1':'';
           const c=res.checks||{},names={connection:'连接',auth:'鉴权'},
             line=k=>names[k]+':'+((c[k]&&c[k].ok)?'通过':'未通过');
@@ -145,6 +151,6 @@
       const r=e.target.closest&&e.target.closest('[data-pc-reload]');
       if(r){load()}
     });
-    return {load,render,close};
+    return {load,render,close,open};
   };
 })();

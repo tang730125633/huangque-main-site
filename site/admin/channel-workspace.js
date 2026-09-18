@@ -274,6 +274,7 @@
       const replacementKey=pageKey+'.'+productKey+'.'+modelKey;
       const providerKey=String(serverEntry?.target?.key||'');
       const replacementAdapter={gemini:'gemini_image',openai:'openai_image'}[providerKey]||'';
+      const liveConfigTarget={gemini:'image.banana.nb2',openai:'image.openai',seedance:'image.seedream',runninghub:'video.tryon.classic',wavespeed:'video.tryon.fast'}[providerKey]||'';
       const replacementBase=(serverEntry?.item?.base_urls||[])[0]||(serverEntry?.item?.base_host?'https://'+serverEntry.item.base_host:'');
       if(serverEntry&&replacementAdapter&&data.adapters?.[replacementAdapter])serverReplacementTemplates[replacementKey]={
         name:(serverEntry.item.name||serverEntry.target.name||'官方渠道')+' · '+model.label,
@@ -284,9 +285,9 @@
         test_cost:1,daily_limit:1,daily_budget:1,
         _replacement:{page:pageKey,product:productKey,model:modelKey,operations:[...new Set((model.routes||[]).map(route=>route.operation_id).filter(Boolean))]}
       };else delete serverReplacementTemplates[replacementKey];
-      const replacementAction=serverEntry?(serverReplacementTemplates[replacementKey]?'<button type="button" class="primary" data-cm-server-replace="'+esc(replacementKey)+'">直接修改 Key / Base URL</button>':'<button type="button" disabled title="该供应商协议尚未接入托管渠道">暂不支持后台直改</button>'):'';
+      const replacementAction=serverEntry?(liveConfigTarget?'<button type="button" class="primary" data-pc-edit="'+esc(liveConfigTarget)+'">修改 URL／Key · 版本发布</button>':serverReplacementTemplates[replacementKey]?'<button type="button" class="primary" data-cm-server-replace="'+esc(replacementKey)+'">创建托管候选</button>':'<span class="muted">此线路尚未接通在线配置</span>'):'';
       const inline='<section class="cm-model-inline-config"><div class="cm-model-inline-head"><div><span>凭据与连接配置</span><h3>修改当前模型使用的线路</h3><p>新 Key 保存为候选后自动检测；验证失败不会切换生产线路。</p></div>'+managedActions+'</div>'
-        +(serverEntry?'<div class="cm-server-managed-note"><div><b>服务器托管 · 安全迁移</b><p>在这里输入新 Key 和 Base URL。系统会保留原环境变量线路，建立可回滚的托管候选并开始检测。</p></div>'+replacementAction+'</div>':'')
+        +(serverEntry?'<div class="cm-server-managed-note"><div><b>线路配置 · 验证后发布</b><p>修改 URL 和 Key，免费验证后确认启用。新任务使用新版本；在途任务保留原版本，可回滚。实际可编辑状态以后端为准。</p></div>'+replacementAction+'</div>':'')
         +(legacySwitch?'<nav class="cm-model-inline-tabs" aria-label="选择要配置的底层线路">'+legacySwitch+'</nav><div id="cmLegacyEditorHost"></div><div id="cmLegacyKeys"></div><details class="cm-model-inline-journeys"><summary>查看关联功能与测试入口</summary><div id="cmLegacyJourneys"></div></details>':'')
         +(!legacySwitch&&!managedActions?'<p class="muted">当前模型没有可在线管理的渠道配置。</p>':'')+'</section>';
       const currentRoutes=modelLegs(model,['primary']).map(([,item])=>routeOverview(item)).join('');

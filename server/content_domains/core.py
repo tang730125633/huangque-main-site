@@ -2854,7 +2854,7 @@ class H(BaseHTTPRequestHandler):
                     points_left = int(attempt["points_left"])
                     job_id = jobs_store.create_job_after_charge(
                         jdb, "image", user["username"], int(prepared["cost"]),
-                        prepared["payload"], SERVICE_OWNER,
+                        attempt["payload"], SERVICE_OWNER,
                         before_commit=lambda connection, linked_job_id:
                             _short_drama_domain().record_character_reference_job(
                                 connection, prepared, user["username"], linked_job_id

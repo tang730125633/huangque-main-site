@@ -2765,6 +2765,30 @@ class ShortDramaRouteTests(unittest.TestCase):
             ).fetchone())
         self.assertEqual(jobs_before, jobs_after)
 
+    def test_character_reference_freezes_provider_before_charge(self):
+        from unittest import mock
+        from content_domains import provider_config
+        project = self.applied_project()
+        body = {"project_id":project["id"],"revision":project["revision"],
+                "character_key":project["characters"][0]["character_key"]}
+        ref = {"target_id":"image.banana.nb2","version":17}
+        def freeze(kind,payload,actor):
+            self.assertEqual([],self.points.deduct_calls)
+            return dict(payload,_provider_config=ref)
+        with mock.patch.object(provider_config,"prepare_job_payload",side_effect=freeze) as pin:
+            status, accepted = self.request("POST","/api/gen/short-drama/generate-character-reference",
+                body=body,idempotency_key="frozen-character-1")
+            replay_status, replay = self.request("POST","/api/gen/short-drama/generate-character-reference",
+                body=body,idempotency_key="frozen-character-1")
+        self.assertEqual((status,replay_status),(200,200))
+        self.assertEqual(accepted["job_id"],replay["job_id"])
+        pin.assert_called_once()
+        with closing(core.jdb()) as db:
+            payload=db.execute("SELECT payload FROM jobs WHERE id=?",(accepted["job_id"],)).fetchone()[0]
+            attempt=db.execute("SELECT image_payload_json FROM short_drama_character_reference_attempts").fetchone()[0]
+        self.assertEqual(json.loads(payload)["_provider_config"],ref)
+        self.assertEqual(json.loads(attempt)["_provider_config"],ref)
+
     def test_character_reference_route_persists_project_link_and_recovers(self):
         project = self.applied_project()
         character_key = project["characters"][0]["character_key"]

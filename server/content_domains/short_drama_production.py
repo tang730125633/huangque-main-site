@@ -360,6 +360,8 @@ def accept_charge_attempt(db_factory, *, username, endpoint, idempotency_key, pr
         if existing:
             conn.rollback()
             return _attempt_dict(existing)
+        from . import provider_config
+        image_payload = provider_config.prepare_job_payload("image", prepared["image_payload"], username)
         project = conn.execute(
             "SELECT stage FROM short_drama_projects WHERE id=? AND deleted=0",
             (project_id,),
@@ -406,7 +408,7 @@ def accept_charge_attempt(db_factory, *, username, endpoint, idempotency_key, pr
             (charge_key, refund_key, username, endpoint, idempotency_key, request_hash,
              quote_contract["snapshot_id"], quote_contract["package_hash"],
              quote_contract["graph_revision"], project_id, shot_id, quote_token, cost,
-             json.dumps(prepared["image_payload"], ensure_ascii=False), now, now),
+             json.dumps(image_payload, ensure_ascii=False), now, now),
         )
         conn.commit()
         return get_charge_attempt(db_factory, username, idempotency_key)

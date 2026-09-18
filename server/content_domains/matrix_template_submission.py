@@ -164,7 +164,7 @@ def prepare(db_factory, username, endpoint, idem_key, body, cost, now=None,
         if not claim or claim["request_hash"] != digest:
             connection.rollback()
             raise AttemptConflict("submission idempotency claim is missing or changed")
-        if kind == "image":
+        if kind in {"image", "script_to_video", "tryon", "xiaole_video"}:
             existing = connection.execute(
                 "SELECT 1 FROM matrix_template_submission_attempts "
                 "WHERE username=? AND endpoint=? AND idem_key=?",

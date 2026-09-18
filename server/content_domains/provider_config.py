@@ -60,7 +60,7 @@ STATUS_REVOKED = "revoked"
 TARGETS = {
     "image.banana.nb2": {
         "provider": "gemini", "kind": "image",
-        "features": ["图片生成 → 纳米香蕉 2"],
+        "features": ["图片生成 → 纳米香蕉 2 / Pro"],
         "env_keys": ("GEMINI_API_KEY",),
         "url_env": ("GEMINI_OFFICIAL_BASE", "GEMINI_BASE"),
         "url_default": "https://generativelanguage.googleapis.com",
@@ -118,8 +118,8 @@ TARGETS = {
         "provider": "runninghub", "kind": "video",
         "features": ["视频模块 → 换装换背景 · 线路一"],
         "env_keys": ("RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"),
-        "url_env": (),
-        "url_default": "",
+        "url_env": ("RUNNINGHUB_BASE",),
+        "url_default": "https://www.runninghub.cn",
         "pool_provider": "",
         "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
     },
@@ -128,8 +128,8 @@ TARGETS = {
         "features": ["视频模块 → 换装换背景 · 线路二",
                       "视频模块 → Seedance AI 超清"],
         "env_keys": ("WAVESPEED_API_KEY",),
-        "url_env": (),
-        "url_default": "",
+        "url_env": ("WAVESPEED_BASE",),
+        "url_default": "https://api.wavespeed.ai/api/v3",
         "pool_provider": "",
         "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
     },
@@ -274,7 +274,11 @@ def validate_url(target_id: str, value) -> str:
     }
     if host not in allowed:
         raise ProviderConfigError("Base URL 域名未在服务器允许名单中")
-    return urllib.parse.urlunsplit(("https", parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    path = parsed.path.rstrip("/")
+    suffix = {"image.openai": "/v1", "image.banana.nb2": "/v1beta"}.get(target_id)
+    if suffix and path.endswith(suffix):
+        path = path[:-len(suffix)]
+    return urllib.parse.urlunsplit(("https", parsed.netloc, path, "", ""))
 
 
 def url_hint(target_id: str) -> str:
@@ -685,6 +689,24 @@ def credentials_for(target_id: str, legacy_key="", legacy_url="") -> dict:
     return out
 
 
+def job_credentials(target_id, ref, legacy_key="", legacy_url=""):
+    """Resolve an immutable job version, including after disabling admission."""
+    if ref:
+        if not isinstance(ref, dict) or ref.get("target_id") != target_id or not ref.get("version"):
+            raise ProviderConfigUnavailable("任务渠道版本不匹配")
+        out = dict(resolve_pinned(target_id, ref["version"]))
+        out["wired"] = True
+        try:
+            report_loaded(target_id, out.get("version"), out.get("source"))
+        except Exception:
+            pass
+        return out
+    # Pre-rollout jobs have no version. Never silently move those jobs to a
+    # subsequently published account; new admissions always pin before charge.
+    return {"target_id": target_id, "url": legacy_url, "credential": legacy_key,
+            "version": None, "source": SOURCE_ENV, "wired": False}
+
+
 def reveal(target_id: str, seq: int, actor="", now=None) -> dict:
     """管理员查看指定版本的明文（调用方必须写审计）。"""
     target(target_id)
@@ -855,7 +877,11 @@ def resolve_pinned(target_id: str, version, legacy_key="", legacy_url="") -> dic
     if (row.get("source") or "backend") == "env":
         # 基线版本存的是**快照**：优先用它，环境变量后来变了也不影响老任务恢复。
         if row["key_present"] and row["ciphertext"] is not None:
+            evidence = row.get("evidence") or {}
+            if isinstance(evidence, str):
+                evidence = json.loads(evidence)
             return {"target_id": target_id, "url": row["url"] or legacy_url,
+                    "fallback_url": evidence.get("fallback_url") or row["url"] or legacy_url,
                     "credential": _open(target_id, row["ciphertext"], row["nonce"]),
                     "version": int(row["seq"]), "source": SOURCE_ENV}
         return {"target_id": target_id, "url": legacy_url, "credential": legacy_key,
@@ -885,12 +911,21 @@ def _publish_env_version(target_id, expected_seq, op_id, actor, now=None):
     if not actor:
         raise ProviderConfigError("缺少操作人")
     ts = _now(now)
-    evidence = json.dumps(
+    evidence_data = (
         {"ok": True, "checks": {"source": "env"}, "free_verification": True,
-         "note": "环境变量基线快照（不可变，供任务恢复固定版本）"},
-        ensure_ascii=False, sort_keys=True)
+         "note": "环境变量基线快照（不可变，供任务恢复固定版本）"})
     env_secret = _env_value(target(target_id)["env_keys"])
     env_url = _env_url(target_id)
+    prefix = {"image.banana.nb2": "GEMINI", "image.openai": "OPENAI"}.get(target_id)
+    if prefix:
+        default = target(target_id)["url_default"]
+        env_url = os.environ.get(prefix + "_OFFICIAL_BASE", default).rstrip("/")
+        fallback = os.environ.get(prefix + "_BASE", default).rstrip("/")
+        parsed = urllib.parse.urlsplit(fallback)
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ProviderConfigUnavailable("环境变量备用地址含敏感参数，无法建立线路快照")
+        evidence_data["fallback_url"] = fallback
+    evidence = json.dumps(evidence_data, ensure_ascii=False, sort_keys=True)
     snap_cipher = snap_nonce = None
     snap_present, snap_last4 = 0, ""
     if env_secret:
@@ -945,19 +980,29 @@ def prepare_job_payload(kind: str, payload: dict, actor: str = "system") -> dict
     """Server-owned snapshot at the shared, pre-charge admission boundary.
 
     Never reuse a caller's version. Managed routes own their own immutable
-    binding; only the legacy Seedream image route uses this pilot. The switch
+    binding. Legacy image/tryon and composite material routes pin here. The switch
     controls admission of NEW jobs, not resolution of already pinned jobs.
     """
     clean = sanitize_payload(dict(payload))
-    if (kind != "image" or clean.get("_channel_binding")
-            or str(clean.get("provider") or "").strip().lower() != "seedream"
-            or not wiring_enabled("image.seedream")):
+    provider = str(clean.get("provider") or "openai").strip().lower()
+    target_id = ({"seedream": "image.seedream", "banana": "image.banana.nb2",
+                  "openai": "image.openai"}.get(provider) if kind == "image" else None)
+    if kind == "tryon":
+        from .video import _tryon_line
+        target_id = "video.tryon.fast" if _tryon_line(clean) == "2" else "video.tryon.classic"
+    elif kind == "xiaole_video" and clean.get("channel") == "micro" and clean.get("upscale") is True:
+        target_id = "video.tryon.fast"
+    elif kind == "script_to_video" and any(
+            isinstance(item, dict) and item.get("source") == "generate"
+            for item in clean.get("material_plan") or []):
+        target_id = "image.openai"
+    if not target_id or clean.get("_channel_binding") or not wiring_enabled(target_id):
         return clean
-    pin_payload("image.seedream", clean, actor)
+    pin_payload(target_id, clean, actor)
     ref = clean["_provider_config"]
     if not ref.get("version"):
         raise ProviderConfigUnavailable("无法固定图片渠道配置版本，未扣点")
-    credentials = resolve_pinned("image.seedream", ref["version"])
+    credentials = resolve_pinned(target_id, ref["version"])
     if not credentials.get("credential") or not credentials.get("url"):
         raise ProviderConfigUnavailable("图片渠道配置不完整，未扣点")
     return clean
@@ -1013,6 +1058,53 @@ def _http_probe(url, key, timeout=8):
     return out
 
 
+def _provider_probe(target_id, url, key, timeout=8):
+    """Read-only provider-specific authentication; HTTP 200 HTML is not success."""
+    if target_id == "image.seedream":
+        return _http_probe(url, key, timeout)
+    import urllib.error
+    import urllib.request
+
+    paths = {"image.openai": "/v1/models", "image.banana.nb2": "/v1beta/models",
+             "video.tryon.fast": "/balance", "video.tryon.classic": "/uc/openapi/accountStatus"}
+    if target_id not in paths:
+        raise ProviderConfigError("该线路尚未支持免费验证")
+    headers = {"Authorization": "Bearer " + key}
+    body = None
+    if target_id == "image.banana.nb2":
+        headers = {"x-goog-api-key": key}
+    elif target_id == "video.tryon.classic":
+        headers["Content-Type"] = "application/json"
+        body = json.dumps({"apikey": key}).encode()
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    out = {"connection": {"ok": False}, "auth": {"ok": False}}
+    req = urllib.request.Request(url.rstrip("/") + paths[target_id], data=body,
+                                 headers=headers, method="POST" if body else "GET")
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
+            status = int(response.status)
+            out["connection"] = {"ok": True, "status": status}
+            data = json.loads(response.read(1048576))
+            valid = isinstance(data, dict)
+            if target_id == "image.openai":
+                valid = valid and isinstance(data.get("data"), list)
+            elif target_id == "image.banana.nb2":
+                valid = valid and isinstance(data.get("models"), list)
+            elif target_id == "video.tryon.fast":
+                valid = valid and data.get("code") == 200 and isinstance(data.get("data"), dict) and "balance" in data["data"]
+            else:
+                valid = valid and data.get("code") == 0 and isinstance(data.get("data"), dict) and "remainCoins" in data["data"]
+            out["auth"] = {"ok": bool(valid and 200 <= status < 300), "status": status}
+    except urllib.error.HTTPError as exc:
+        out = {"connection": {"ok": True, "status": exc.code},
+               "auth": {"ok": False, "status": exc.code}}
+    except Exception:
+        out["auth"] = {"ok": False, "error": "鉴权未验证：连接失败或响应格式不正确"}
+    return out
+
+
 def validate_draft(target_id: str, seq: int, actor="", probe=None, now=None) -> dict:
     """用候选版本的 URL/Key 做验证，把证据绑定到**该版本**。
 
@@ -1028,8 +1120,7 @@ def validate_draft(target_id: str, seq: int, actor="", probe=None, now=None) -> 
     if not row["key_present"] or row["ciphertext"] is None:
         raise ProviderConfigError("草稿缺少凭据，无法验证")
     key = _open(target_id, row["ciphertext"], row["nonce"])
-    runner = probe or _http_probe
-    checks = runner(row["url"], key)
+    checks = probe(row["url"], key) if probe else _provider_probe(target_id, row["url"], key)
     connection = checks.get("connection") or {}
     auth = checks.get("auth") or {}
     ok = bool(connection.get("ok")) and bool(auth.get("ok"))

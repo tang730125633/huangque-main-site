@@ -55,6 +55,44 @@ const ITEMS=[
    effective:{state:'env',label:'使用环境变量'}}
 ];
 
+test('模型详情入口可先加载再打开；接口不可用时绝不开放编辑',async()=>{
+  const h=harness(ITEMS);
+  await h.mod.open('image.seedream');
+  assert.ok(h.document._dlg&&h.document._dlg.open);
+  const blocked=harness([{...ITEMS[0],available:false,reason:'数据库不可用'}]);
+  await blocked.mod.open('image.seedream');
+  assert.equal(blocked.document._dlg,null);
+  assert.doesNotMatch(blocked.el('cmProviderConfig').innerHTML,/data-pc-edit/);
+  assert.match(blocked.el('cmProviderConfig').innerHTML,/数据库不可用/);
+});
+
+test('页面初始化调用模块的 load 方法，不把控制器当函数',()=>{
+  const html=fs.readFileSync(path.join(__dirname,'..','site','admin','index.html'),'utf8');
+  assert.match(html,/if\(loadProviderConfig\)loadProviderConfig\.load\(\)/);
+  assert.doesNotMatch(html,/if\(loadProviderConfig\)loadProviderConfig\(\)/);
+});
+
+test('异步验证期间输入锁定，过期验证响应不得恢复发布按钮',async()=>{
+  let resolveValidation;
+  const validation=new Promise(resolve=>{resolveValidation=resolve});
+  const h=harness(ITEMS,async(p,opt)=>{
+    if(p==='/api/admin/provider-config')return {items:ITEMS};
+    if(p.endsWith('/draft'))return {seq:8};
+    if(p.endsWith('/validate'))return validation;
+    throw Error('不应发布');
+  });
+  await h.mod.open('image.seedream');
+  const dlg=h.document._dlg,form=dlg.querySelector('form');
+  const pending=dlg.querySelector('[data-pc-validate]').onclick();
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(form.elements.url.disabled,true);
+  form.elements.url.value='https://changed.invalid';form.elements.url.oninput();
+  resolveValidation({ok:true,checks:{}});await pending;
+  assert.equal(form.dataset.ok,'');
+  assert.equal(dlg.querySelector('[data-pc-publish]').disabled,true);
+  assert.equal(form.elements.url.disabled,false);
+});
+
 test('列表：显示来源/版本/生效状态，pool_shared 提示，已下架线路不可修改',async()=>{
   const h=harness(ITEMS);
   await h.mod.load();

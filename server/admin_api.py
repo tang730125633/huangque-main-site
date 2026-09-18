@@ -3250,11 +3250,13 @@ def provider_config_admin_snapshot():
             st = provider_config.status(target_id)
             eff = provider_config.effective_status(target_id)
         except provider_config.ProviderConfigUnavailable as exc:
-            items.append({**spec, "available": False, "reason": str(exc)})
+            items.append({**spec, "available": False, "editable": False, "reason": str(exc)})
             continue
         items.append({
             **spec,
             "available": True,
+            "editable": spec["editable"] and provider_config.wiring_enabled(target_id),
+            "reason": spec.get("deprecated_reason") or ("" if provider_config.wiring_enabled(target_id) else "此服务尚未启用该线路的在线配置"),
             "source": st["source"],
             "version": st["version"],
             "url": st["url"],
