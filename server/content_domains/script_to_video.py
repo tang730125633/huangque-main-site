@@ -478,7 +478,7 @@ def dispatch_http(handler, method, verify_token, must_change_password):
     return True
 
 
-def _material_images(plan):
+def _material_images(plan, config_ref=None):
     from . import image as image_domain
 
     materials = []
@@ -490,6 +490,7 @@ def _material_images(plan):
                 image_payload = {
                     "prompt": item["prompt"], "ratio": "9:16", "quality": "standard",
                     "provider": "openai", "count": 1,
+                    "_provider_config": config_ref,
                 }
                 try:
                     generated = image_domain.gen_image(image_payload)
@@ -643,7 +644,7 @@ def _gen_talking(username, scenes, payload):
         "motion_prompt": payload.get("motion_prompt") or "",
         "subtitle": False if material_plan else want_subtitle,
     })
-    materials = _material_images(material_plan)
+    materials = _material_images(material_plan, payload.get("_provider_config"))
     try:
         if materials:
             composed = _compose_materials(result.get("video_file"), scenes, materials)

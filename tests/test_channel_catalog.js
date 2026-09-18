@@ -254,8 +254,9 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmDetail.innerHTML,/id="cmLegacyKeys"/);
   assert.match(elements.cmDetail.innerHTML,/data-cm-managed-edit="shadow-channel"/);
   assert.match(elements.cmDetail.innerHTML,/data-cm-inline-route="legacy:gemini" data-cm-inline-kind="provider_pool"/);
-  assert.match(elements.cmDetail.innerHTML,/服务器托管 · 安全迁移/);
-  assert.match(elements.cmDetail.innerHTML,/data-cm-server-replace/);
+  assert.match(elements.cmDetail.innerHTML,/线路配置 · 验证后发布/);
+  assert.match(elements.cmDetail.innerHTML,/data-pc-edit="image.banana.nb2"/);
+  assert.doesNotMatch(elements.cmDetail.innerHTML,/data-cm-server-replace/);
   assert.deepEqual(detailCalls,[['gemini','server_env']]);
   root.listeners.click({target:{closest:()=>({dataset:{cmServerReplace:'image.banana.nb2'}})}});
   assert.equal(newCalls.length,1);

@@ -6512,16 +6512,19 @@ def _ensure_tryon_audio(person_fp):
     return with_audio
 
 
-def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
+def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None, config_ref=None):
     """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
     try:
         from runninghub_sdk import RunningHubClient  # 服务器 pip 装；本地/CI 不触发 import
     except ImportError:
         raise RuntimeError("服务器未安装 runninghub_sdk")
     API_KEY = os.environ.get("RUNNINGHUB_API_KEY", "")
+    from . import provider_config
+    config = provider_config.job_credentials("video.tryon.classic", config_ref, API_KEY, "https://www.runninghub.cn")
+    API_KEY = config["credential"]
     if not API_KEY:
         raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
-    client = RunningHubClient(API_KEY, base_url="https://www.runninghub.cn", timeout=120)
+    client = RunningHubClient(API_KEY, base_url=config["url"], timeout=120)
 
     person_fp = _resolve_out_file(person_video_file)
     if not person_fp:
@@ -6630,7 +6633,7 @@ def gen_tryon(payload):
     if _tline == "2":
         # 线路二 WaveSpeed：人物图 + 衣服图 → 换装展示视频（区别于线路一"给人物视频换装保留原动作"）
         from . import wavespeed
-        if not wavespeed.available():
+        if not wavespeed.available(payload.get("_provider_config")):
             raise ValueError("线路二(WaveSpeed)未配置，请用线路一或联系管理员")
         person_image_file = _save_data_file(payload.get("person_image_data") or payload.get("image_data"),
                                             "tryon_person_img", [".jpg", ".jpeg", ".png", ".webp"])
@@ -6641,7 +6644,8 @@ def gen_tryon(payload):
             raise ValueError("请上传衣服图")
         update_video_asset_phase(job_id, "queued", mode="tryon", text="换装",
                                  image_file=person_image_file, tryon_mode="clothes_only")
-        wres = wavespeed.generate_tryon(person_image_file, clothes2, seconds, job_id=job_id)
+        wres = wavespeed.generate_tryon(person_image_file, clothes2, seconds, job_id=job_id,
+                                       config_ref=payload.get("_provider_config"))
         return {
             "type": "video", "status": "done", "mode": "tryon", "tryon_mode": "clothes_only",
             "person_image_file": person_image_file, "clothes_file": clothes2,
@@ -6670,7 +6674,7 @@ def gen_tryon(payload):
                              reference_video_file=person_video_file, image_file=cover_file,
                              background_file=background_file, tryon_mode=tryon_mode)
     video_result = generate_tryon_video(person_video_file, clothes_file, background_file, seconds,
-                                        job_id=job_id, username=username)
+                                        job_id=job_id, username=username, config_ref=payload.get("_provider_config"))
     return {
         "type": "video", "status": "done", "mode": "tryon",
         "tryon_mode": tryon_mode,
@@ -7669,6 +7673,7 @@ def gen_xiaole_video(payload):
                 job_id=job_id,
                 on_submitted=persist_upscale_id,
                 heartbeat=upscale_heartbeat,
+                config_ref=payload.get("_provider_config"),
             )
             upscale_id = upscaled["prediction_id"]
             upscale_source_url = upscaled["source_video_url"]

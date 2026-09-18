@@ -930,10 +930,10 @@
 <script src="/admin/channel-parameters.js?v=a2c62bdb"></script>
 <script src="/admin/channel-catalog.js?v=ee10b62c"></script>
 <link rel="stylesheet" href="/admin/channel-simple.css?v=20260918a">
-<script src="/admin/channel-workspace.js?v=91ef64f1"></script>
+<script src="/admin/channel-workspace.js?v=28780f72"></script>
 <script src="/admin/channel-request.js"></script>
 <script src="/admin/channel-manager.js?v=c9ed460a"></script>
-<script src="/admin/channel-provider-config.js"></script>
+<script src="/admin/channel-provider-config.js?v=6f4e89e1"></script>
 <script>
 (function(){
   var token = '__cookie__';
@@ -2637,7 +2637,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
     el('pageTitle').textContent=moduleMeta[name][0];el('pageSubtitle').textContent=moduleMeta[name][1];closeSidebar();
     clearInterval(state.serverTimer);state.serverTimer=null;
-    if(name==='managedChannels'){if(!state.data)load(false);loadManagedChannels();if(loadProviderConfig)loadProviderConfig()}
+    if(name==='managedChannels'){if(!state.data)load(false);loadManagedChannels();if(loadProviderConfig)loadProviderConfig.load()}
     if(name==='dashboard'){loadDashboard(false)}
     if(name==='servers'){loadServers(false)}
     if(name==='logs'){loadReqLogs()}
