@@ -612,7 +612,7 @@
           <div><h2>IP12 对话使用统计</h2><div class="hint">按 IP12 落盘会话统计活跃用户、会话数与消息量。只读，不影响任何业务数据。</div></div>
           <div class="actions"><span class="muted" id="ip12UpdatedAt">尚未读取</span><button id="ip12Refresh">刷新</button></div>
         </div>
-        <div class="hint" style="margin:-6px 0 10px">数据每 5 秒在后台自动刷新；无变化时不会重绘（不闪动、不打断滚动与勾选）。</div>
+        <div class="hint" style="margin:-6px 0 10px">数据每 5 秒在后台自动刷新；无变化时不会重绘（不闪动、不打断滚动与勾选）。 导出格式为 JSONL（一行一条记录）。</div>
         <div class="toolbar">
           <select id="ip12Days" aria-label="时间范围">
             <option value="7">近 7 天</option>
@@ -2670,33 +2670,37 @@
     });
     return ss;
   }
-  function ip12Csv(rows){
-    return rows.map(function(r){return r.map(function(cell){var s=String(cell==null?'':cell);
-      return /[",\n\r]/.test(s)?('"'+s.replace(/"/g,'""')+'"'):s}).join(',')}).join('\r\n');
-  }
-  function ip12Download(name,csv){
-    var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  // 导出统一走 JSONL：一行一条记录，末尾换行。不加 BOM —— BOM 会让严格解析器报错。
+  function ip12Download(name, text, type){
+    var blob=new Blob([text],{type:type||'text/plain;charset=utf-8'});
     var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
     document.body.appendChild(a);a.click();document.body.removeChild(a);
     setTimeout(function(){URL.revokeObjectURL(a.href)},3000);
   }
-  function ip12RoleName(role){return ({user:'用户',assistant:'Agent',system:'系统',tool:'工具'})[role]||role}
-  function ip12ExportCsv(){
-    var u=state.ip12DrawerUser||'',ss=ip12SortedSessions();
-    ip12Download('IP12对话列表-'+(u||'user')+'-'+(state.ip12Days||'all')+'天.csv',ip12Csv(
-      [['会话','首次','最后','用户消息','助理回复','总消息']].concat(ss.map(function(x){
-        return [x.sid, ip12Fmt(x.first_ts), ip12Fmt(x.last_ts),
-                Number(x.user_msgs||0), Number(x.assistant_msgs||0), Number(x.total_msgs||0)];
-      }))));
-    toast('已导出 '+ss.length+' 条会话列表');
+  function ip12DownloadJsonl(name,lines){
+    ip12Download(name,(lines||[]).join('\n')+'\n','application/x-ndjson;charset=utf-8');
   }
+  // 时间统一 epoch 毫秒（机器可读）；角色保留原始值 user/assistant/system/tool
+  function ip12Ts(ts){return ts==null||ts===''?null:Number(ts)}
+  // 会话列表 → 一行一个会话的元数据
+  function ip12ExportCsv(){
+    var u=state.ip12DrawerUser||'',ss=ip12SortedSessions(),days=Number(state.ip12Days||0);
+    var lines=ss.map(function(x){return JSON.stringify({
+      sid:String(x.sid), username:u, days:days,
+      first_at:ip12Ts(x.first_ts), last_at:ip12Ts(x.last_ts),
+      user_msgs:Number(x.user_msgs||0), assistant_msgs:Number(x.assistant_msgs||0),
+      total_msgs:Number(x.total_msgs||0)})});
+    ip12DownloadJsonl('IP12会话列表-'+(u||'user')+'-'+(days||'all')+'天.jsonl',lines);
+    toast('已导出 '+ss.length+' 个会话的列表（JSONL）');
+  }
+
   // 勾选会话 → 导出该会话的对话内容（role/content/时间）
   function ip12PickedSids(){
     return Object.keys(state.ip12Picked||{}).filter(function(k){return state.ip12Picked[k]});
   }
   function ip12SyncPick(){
     var n=ip12PickedSids().length,btn=el('ip12ExportChat'),all=el('ip12CheckAll');
-    if(btn){btn.disabled=!n;btn.textContent=n?('导出所选对话内容 ('+n+')'):'导出所选对话内容'}
+    if(btn){btn.disabled=!n;btn.textContent=n?('导出所选对话内容 (JSONL) ('+n+')'):'导出所选对话内容 (JSONL)'}
     var boxes=document.querySelectorAll('.ip12-chat-pick');
     if(all)all.checked=!!boxes.length&&n===boxes.length;
   }
@@ -2705,26 +2709,39 @@
     if(!sids.length){toast('先勾选要导出的会话');return}
     var btn=el('ip12ExportChat'),label=btn.textContent;
     btn.disabled=true;
-    var rows=[['会话','序号','角色','时间','内容']],done=0,failed=0;
+    var bySid={};(state.ip12Sessions||[]).forEach(function(x){bySid[x.sid]=x});
+    var lines=[],done=0,failed=0,days=Number(state.ip12Days||0);
+    var exportedAt=new Date().toISOString();
     var chain=Promise.resolve();
     sids.forEach(function(sid){
       chain=chain.then(function(){
         btn.textContent='导出中… ('+done+'/'+sids.length+')';
         return api('/api/admin/conversation-session?sid='+encodeURIComponent(sid)).then(function(d){
-          (d.messages||[]).forEach(function(m){
-            rows.push([sid,m.seq,ip12RoleName(m.role),ip12Fmt(m.created_at),m.content]);
-          });
-        }).catch(function(e){failed++;rows.push([sid,'','','','【读取失败】'+e.message])}).then(function(){
-          done++;btn.textContent='导出中… ('+done+'/'+sids.length+')';
-        });
+          var row=bySid[sid]||{};
+          lines.push(JSON.stringify({
+            sid:String(sid),
+            username:String(d.username||state.ip12DrawerUser||row.username||''),
+            exported_at:exportedAt, days:days,
+            first_at:ip12Ts(row.first_ts), last_at:ip12Ts(row.last_ts),
+            total_messages:Number(d.total_messages||0),
+            returned_messages:Number(d.returned_messages||0),
+            truncated:!!d.truncated,
+            messages:(d.messages||[]).map(function(m){return {
+              seq:Number(m.seq||0), role:String(m.role||''),
+              created_at:ip12Ts(m.created_at), content:String(m.content==null?'':m.content)}})}));
+        }).catch(function(e){
+          failed++;
+          lines.push(JSON.stringify({sid:String(sid),error:String((e&&e.message)||e)}));
+        }).then(function(){done++;btn.textContent='导出中… ('+done+'/'+sids.length+')'});
       });
     });
     chain.then(function(){
-      ip12Download('IP12对话内容-'+(state.ip12DrawerUser||'user')+'-'+sids.length+'个会话.csv',ip12Csv(rows));
+      ip12DownloadJsonl('IP12对话内容-'+(state.ip12DrawerUser||'user')+'-'+sids.length+'个会话.jsonl',lines);
       btn.textContent=label;btn.disabled=false;
-      toast('已导出 '+sids.length+' 个会话的对话内容'+(failed?('，'+failed+' 个失败'):''));
+      toast('已导出 '+sids.length+' 个会话的对话内容（JSONL）'+(failed?('，'+failed+' 个失败'):''));
     });
   }
+
   // 输入的账号可能是大小写不一致或只是前缀：先在已取到的用户集里换回真实写法
   function ip12ResolveUser(input){
     var v=String(input||'').trim();
@@ -2775,10 +2792,10 @@
       +[['会话数',ss.length],['用户消息',um],['助理回复',am],['总消息',tot]]
         .map(function(p){return '<div class="ledger-stat"><span>'+p[0]+'</span><b>'+Number(p[1]||0).toLocaleString()+'</b></div>'}).join('')
       +'</div>'
-      +'<div class="row" style="margin:0 0 10px"><div class="muted" style="font-size:12px">点表头可排序；勾选会话后可导出该会话的对话内容</div><div class="actions">'
+      +'<div class="row" style="margin:0 0 10px"><div class="muted" style="font-size:12px">点表头可排序；勾选会话后可导出这些会话的完整对话内容（JSONL，一行一个会话）</div><div class="actions">'
         +'<a class="mini" href="/workbench/ip12/" target="_blank" rel="noopener">打开 IP12 工作台</a>'
-        +'<button class="mini" id="ip12Export" type="button">导出会话列表</button>'
-        +'<button class="mini primary" id="ip12ExportChat" type="button" disabled>导出所选对话内容</button></div></div>'
+        +'<button class="mini" id="ip12Export" type="button">导出会话列表 (JSONL)</button>'
+        +'<button class="mini primary" id="ip12ExportChat" type="button" disabled>导出所选对话内容 (JSONL)</button></div></div>'
       +'<div class="table-wrap"><table><thead><tr>'
         +'<th style="width:36px"><input type="checkbox" id="ip12CheckAll" title="全选本用户的会话"></th>'
         +ip12Th('sid','会话')+ip12Th('first_ts','首次')+ip12Th('last_ts','最后')
