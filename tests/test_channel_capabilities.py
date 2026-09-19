@@ -90,6 +90,32 @@ class ChannelCapabilityTests(unittest.TestCase):
                 self.assertFalse(op['channel_eligible'])
                 self.assertIn(keyword, op['channel_reason'])
 
+    def test_kindless_operations_have_per_item_reasons(self):
+        """没有 task_match 的功能不能共用一句「不适用」——每项都要按调用链说清。"""
+        expected = {
+            'video.one_click.compose': 'Whisper',
+            'assets.audio.clone_vip': 'CosyVoice',
+            'short_drama.live_action.character_reference': '生图',
+            'short_drama.live_action.shot_video': '视频',
+        }
+        for operation_id, keyword in expected.items():
+            with self.subTest(operation_id=operation_id):
+                op = registry.operation(operation_id)
+                self.assertIsNotNone(op, operation_id)
+                self.assertFalse(op['channel_eligible'])
+                self.assertNotIn('不适用渠道切换', op['channel_reason'],
+                                 '%s 仍在用兵底文案，没有逐项说明' % operation_id)
+                self.assertIn(keyword, op['channel_reason'])
+
+    def test_short_drama_steps_are_composite_not_not_applicable(self):
+        """短剧各步骤是组合流程：要说明「需拆步骤」，不能写成「不适用」。"""
+        for operation_id in ('short_drama.live_action.script_planning',
+                             'short_drama.live_action.preview',
+                             'short_drama.live_action.delivery'):
+            with self.subTest(operation_id=operation_id):
+                op = registry.operation(operation_id)
+                self.assertIn('拆步骤', op['channel_reason'])
+
     def test_sora_is_switchable_by_reusing_the_official_client(self):
         """Sora 已接通：适配器复用原厂 video_openai（它已支持注入 api_key / api_base）。"""
         self.assertIn('sora_video', caps.switchable_kinds())

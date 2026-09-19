@@ -156,11 +156,32 @@ CAPABILITIES = {
     },
 }
 
-# 没有 task_match / 不属于「付费生成任务」的项目：明确不适用渠道切换
+# 没有 task_match / 不属于「付费生成任务」的项目：默认不适用渠道切换。
 NO_TASK_KIND_REASON = (
     "这一步是本地处理或组合流程的一部分，没有独立的供应商线路，"
     "不适用渠道切换。"
 )
+
+# 逐项原因：这些功能没有 task_match，不能共用一句「不适用」搪塞。
+# 每一项都是按实际调用链查出来的（见 PR 说明）。
+OPERATION_REASONS = {
+    'video.one_click.compose':
+        "一键成片是组合流水线：转写走 OpenAI Whisper（OPENAI_TRANSCRIBE_BASE / OPENAI_KEY，"
+        "可替换），拼接与混流是本地 ffmpeg。有供应商的是转写步骤，需拆步骤后再接入适配器。",
+    'assets.audio.clone_vip':
+        "VIP 声音复刻走 CosyVoice（cosyvoice.create_voice / synth），有供应商可替换，"
+        "需先新增 TTS 适配器。",
+    'short_drama.live_action.script_planning':
+        "短剧流水线的剧本步骤，经子域间接调用文本模型；需拆步骤后再接入。",
+    'short_drama.live_action.character_reference':
+        "短剧流水线的角色形象步骤，实际调用生图供应商；需拆步骤后再接入。",
+    'short_drama.live_action.shot_video':
+        "短剧流水线的分镜视频步骤，实际调用视频供应商；需拆步骤后再接入。",
+    'short_drama.live_action.preview':
+        "短剧预览是本地渲染合成，但它上游的分镜/配音步骤有供应商；需拆步骤后再接入。",
+    'short_drama.live_action.delivery':
+        "短剧交付是本地封装，上游生成步骤有供应商；需拆步骤后再接入。",
+}
 
 
 def capability(kind):
@@ -169,6 +190,14 @@ def capability(kind):
     if item:
         return dict(item)
     return {"switchable": False, "adapters": (), "reason": NO_TASK_KIND_REASON}
+
+
+def operation_reason(operation_id, kind=""):
+    """某个功能的不可切换原因：先看逐项表，再看类型表，最后才用兵底文案。"""
+    specific = OPERATION_REASONS.get(str(operation_id or ""))
+    if specific:
+        return specific
+    return reason_for(kind)
 
 
 def is_switchable(kind):

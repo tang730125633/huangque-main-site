@@ -1651,7 +1651,7 @@ def operation(operation_id):
                         "channel_kind": channel_kind,
                         "channel_eligible": switchable,
                         # 不能切换时后台直接展示这个原因，而不是只给一个拖不动的手柄。
-                        "channel_reason": "" if switchable else capability["reason"],
+                        "channel_reason": "" if switchable else channel_capability_domain.operation_reason(operation_id, kind),
                         "channel_adapters": list(capability["adapters"]),
                         "agent_capabilities": (
                             ["image-generate"] if channel_kind == "image" and page["key"] == "banana"
