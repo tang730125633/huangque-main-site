@@ -211,6 +211,7 @@ test('frontend function center uses a model list and keeps technical details in 
   workspaceData.operation_mappings=[workspaceData.operations[0].mapping];
   workspaceData.runs=[{id:81,job_id:501,operation_id:'image.banana.nb2.text',mapping_revision:4,channel:'managed-backup',state:'passed',execution_snapshot:{route_attempt:2,attempts:[{attempt:1,channel:'managed-primary',version:1,state:'failed',detail:'供应商明确拒绝提交'}]}}];
   bananaModel.routes[0].operation_id='image.banana.nb2.text';
+  bananaModel.routes[0].primary.model='gemini-3.1-flash-image';
   workspace.render(workspaceData);
   const modelButton={dataset:{cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
   // 简洁视图会默认选中首个可见模型（否则右侧面板是空的），而这个选择与高级视图
