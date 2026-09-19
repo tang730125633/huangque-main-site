@@ -30,3 +30,6 @@
 
 /* 方案 B：跨模型候选不静默接管 —— 在行内标出「与原厂线路不同模型」。 */
 .cm-priority-diff{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;border:1px solid rgba(217,155,53,.45);background:rgba(217,155,53,.12);color:var(--warn);font-size:10px;white-space:nowrap}
+
+.cm-fulltest{display:inline-flex;align-items:center;gap:8px}
+.cm-fulltest small{color:var(--muted);font-size:10px;max-width:190px;overflow-wrap:anywhere}
