@@ -148,14 +148,16 @@
       status.textContent='正在读取渠道与实际映射…';
       try{
         const next=request?await request.get('/api/admin/channel-manager'):await api('/api/admin/channel-manager');
-        if(loadGuard&&!loadGuard.isLatest(seq))return; // 旧响应，已被更新的请求取代
+        if(loadGuard&&!loadGuard.isLatest(seq))return false; // 旧响应不能作为发布读回凭证
         if(!next||next.ok===false||!Array.isArray(next.items)||!Array.isArray(next.runs))throw Error('渠道响应不完整，不能作为正常状态');
         data=next;render();lastLoadedAt=Date.now();section.classList.remove('cm-data-stale');status.removeAttribute('role');
         status.textContent='更新于 '+new Date(lastLoadedAt).toLocaleTimeString()+' · 配置、验证、生产映射分别核对；启用不等于验证通过，验证通过不等于生产已切换';
+        return true;
       }catch(e){
-        if(loadGuard&&!loadGuard.isLatest(seq))return;
+        if(loadGuard&&!loadGuard.isLatest(seq))return false;
         section.classList.add('cm-data-stale');status.setAttribute('role','alert');
         status.textContent='读取失败：'+e.message+' · '+(lastLoadedAt?'显示 '+new Date(lastLoadedAt).toLocaleTimeString()+' 的旧数据（已过期，不代表当前状态）':'尚无有效数据');
+        return false;
       }
     }
     function edit(c={}){

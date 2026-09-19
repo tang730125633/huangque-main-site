@@ -7,6 +7,8 @@ import re
 import sqlite3
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
 from contextlib import closing, contextmanager
@@ -528,6 +530,35 @@ class PostgresModeTest(_ChannelFixture):
             expected_revision=revision))
         self.assertEqual(rolled["revision"], revision + 1)
         self.assertEqual(revision, self.revision_max + 1)
+
+    def test_priority_rejects_cross_model_postgres(self):
+        channel_manager.save('m3c-test', self.body)
+        other = 'm3c-other-' + uuid.uuid4().hex[:8]
+        channel_manager.save('m3c-test', dict(self.body, id=other, model='different-model'))
+        with self.assertRaisesRegex(ValueError, '同一模型'):
+            channel_manager.save_operation_mapping('m3c-test', {
+                'operation_id': 'image.xiaole.text', 'state': 'shadow',
+                'channels': [self.cid, other], 'expected_revision': 0,
+            })
+
+    def test_acceptance_holds_mapping_lock_until_job_commit(self):
+        started = threading.Event()
+        def publish():
+            started.set()
+            return channel_manager.save_operation_mapping('m3c-test', {
+                'operation_id': self.operation_id, 'state': 'paused',
+                'expected_revision': int((self.operation_before or {}).get('revision') or 0),
+            })
+        payload = {'_channel_binding': {'operation_id': self.operation_id}}
+        # Isolate acceptance's lock lifetime; actual publisher uses another PG connection.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.object(channel_store, '_confirm_acceptance', return_value=True):
+                with channel_store.acceptance_guard([payload]):
+                    future = executor.submit(publish)
+                    self.assertTrue(started.wait(2))
+                    with self.assertRaises(TimeoutError):
+                        future.result(timeout=.2)
+                self.assertEqual('paused', future.result(timeout=5)['state'])
 
     def test_notification_settings_roundtrip(self):
         settings = channel_manager.notification_settings()

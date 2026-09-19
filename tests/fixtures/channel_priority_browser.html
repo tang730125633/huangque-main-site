@@ -1,0 +1,40 @@
+<!doctype html><meta charset="utf-8"><title>渠道排序隔离验收（无生产请求）</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'">
+<link rel="stylesheet" href="../../site/admin/channel-simple.css">
+<style>body{margin:24px;background:#111915;color:#eee;font-family:system-ui}#fixtureBanner{padding:12px;background:#36311a;margin-bottom:20px}#fixtureLog{white-space:pre-wrap} [hidden]{display:none!important}</style>
+<div id="fixtureBanner">隔离验收：真实前端代码 + 模拟配置接口，不调用生产、不计费。
+<select id="fixtureFailure"><option value="ok">正常</option><option value="write">发布失败</option><option value="offline">发布及刷新失败</option></select></div>
+<div data-module="managedChannels"><div id="cmMatrix" data-cm-panel="matrix"></div>
+<div hidden id="fixtureUnused"></div>
+<div id="cmDrawer" class="cm-drawer-layer" hidden><div class="cm-drawer"><div class="cm-drawer-head"><h2 id="cmDrawerTitle"></h2><button id="cmDrawerClose">关闭</button></div><div id="cmDetail"></div><div id="cmEditor" hidden></div><div id="cmMappingEditor" hidden></div></div></div></div>
+<pre id="fixtureLog" aria-live="polite"></pre>
+<script src="../../site/admin/channel-catalog.js"></script>
+<script src="../../site/admin/channel-priority-drag.js"></script>
+<script src="../../site/admin/channel-workspace.js"></script>
+<script>
+(async()=>{
+  const html=await(await fetch('../../site/admin/index.html')).text();
+  const page=new DOMParser().parseFromString(html,'text/html');
+  page.querySelectorAll('style').forEach(style=>document.head.prepend(style.cloneNode(true)));
+  const el=id=>document.getElementById(id);
+  for(const id of ['cmSearch','cmSupplier','cmTransport','cmState','cmHistory','cmCount','cmCategories','cmList','cmHealth']){
+    const node=document.createElement('div');node.id=id;el('fixtureUnused').appendChild(node);
+  }
+  const op='image.openai.text';
+  const items=['a','b','c'].map((id,i)=>({id,name:'供应商 '+id.toUpperCase(),supplier:'隔离示例 '+(i+1),adapter:'openai_image',model:'gpt-image-2',base_url:'https://supplier-'+id+'.example/v1',enabled:true,version:1,configured:true}));
+  const stored=JSON.parse(localStorage.getItem('priority-fixture')||'null');
+  const mapping=stored||{operation_id:op,state:'managed',revision:4,channels:['a','b','c']};
+  const routes=[{operation_id:op,capability:'文生图',control_state:'managed',primary:{id:'a',name:'供应商 A',model:'gpt-image-2',management:{kind:'managed_channel',uid:'managed:a'}}}];
+  const data={items,runs:[],mappings:[],operation_mappings:[mapping],adapters:{openai_image:{kind:'image'}},operations:[{operation_id:op,channel_kind:'image',task_match:{kind:'image',source_page:'banana',provider:'openai',reference_count:0}}],frontend_matrix:{page:'image',label:'生图',products:[{key:'openai',label:'黄雀引擎 2',visible:true,models:[{key:'default',label:'GPT Image 2',actual_model:'gpt-image-2',routes}]}]}};
+  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const log=text=>{el('fixtureLog').textContent=text};let workspace;
+  workspace=initChannelWorkspace({el,esc,toast:log,legacy:()=>[],closeLegacy:()=>true,detail(){},editChannel:id=>log('真实入口：编辑供应商 '+id),
+    api:async(url,options)=>{
+      if(el('fixtureFailure').value!=='ok')throw Error('隔离模拟：发布连接中断');
+      const b=JSON.parse(options.body);if(b.expected_revision!==mapping.revision)throw Error('版本冲突');
+      Object.assign(mapping,b,{revision:mapping.revision+1});localStorage.setItem('priority-fixture',JSON.stringify(mapping));return{ok:true};
+    },refresh:async()=>{if(el('fixtureFailure').value==='offline')return false;workspace.render(data);return true}
+  });
+  workspace.render(data);
+})();
+</script>

@@ -169,6 +169,25 @@ class ChannelTests(unittest.TestCase):
             item['revision'] for item in cm.overview()['operation_mappings'][0]['history']
         ])
 
+    def test_priority_rejects_different_model_and_preserves_revision(self):
+        other = cm.save('admin', dict(self.body, name='other', model='another-model'))
+        with self.assertRaisesRegex(ValueError, '同一模型'):
+            cm.save_operation_mapping('admin', {
+                'operation_id': 'image.xiaole.text', 'state': 'shadow',
+                'channels': [self.ch['id'], other['id']], 'expected_revision': 0,
+            })
+        self.assertIsNone(cm.operation_mapping('image.xiaole.text'))
+
+    def test_priority_legacy_cross_model_candidate_is_not_used(self):
+        other = cm.save('admin', dict(self.body, name='other', model='another-model'))
+        for ch in (self.ch, other):
+            cm.finish(cm.reserve(ch['id'], 'full'), 'passed', 'fixture checked')
+        from server.content_domains.function_registry import operation
+        _, candidates, skipped = cm._managed_image_route(
+            {'channels': [self.ch['id'], other['id']]}, operation('image.xiaole.text'))
+        self.assertEqual([self.ch['id']], [c['id'] for c in candidates])
+        self.assertIn('模型', skipped[0]['reason'])
+
     def test_operation_mapping_preserves_ordered_channel_priorities_and_rollback(self):
         second = cm.save('admin', dict(self.body, name='备用图片渠道', secret='second-secret'))
         third = cm.save('admin', dict(self.body, name='候选图片渠道', secret='third-secret'))
