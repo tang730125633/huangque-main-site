@@ -223,7 +223,7 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.equal(elements.cmDrawer.hidden,true);
   assert.match(elements.cmMatrix.innerHTML,/cm-priority-editor/);
   assert.match(elements.cmMatrix.innerHTML,/渠道优先级/);
-  assert.match(elements.cmMatrix.innerHTML,/draggable="true"/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/draggable="true"|cm-priority-drag|data-cm-priority-move/);
   assert.match(elements.cmMatrix.innerHTML,/托管主渠道/);
   assert.match(elements.cmMatrix.innerHTML,/托管备用渠道/);
   assert.match(elements.cmMatrix.innerHTML,/data-cm-managed-edit="managed-primary"/);
@@ -233,13 +233,10 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/生成成功/);
   assert.match(elements.cmMatrix.innerHTML,/结果未知或已受理后失败均不会切换/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
-  assert.match(elements.cmMatrix.innerHTML,/拖至首位自动申请应用/);
+  assert.match(elements.cmMatrix.innerHTML,/不同模型不会自动切换/);
   const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
   await root.listeners.click({target:{closest:selector=>selector==='button'?moveButton:null}});
-  // Reordering itself submits; there is no separate save control.
-  const publish=JSON.parse(requests.find(([path])=>path.endsWith('/operation-mapping'))[1].body);
-  assert.deepEqual(Array.from(publish.channels),['managed-backup','managed-primary']);
-  assert.equal(publish.expected_revision,4);
+  assert.equal(requests.some(([path])=>path.endsWith('/operation-mapping')),false);
   const configButton={dataset:{cmModelConfig:'',cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
   await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-config]'?configButton:null}});
   assert.equal(elements.cmDrawer.hidden,false);

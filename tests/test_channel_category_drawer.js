@@ -29,6 +29,21 @@ test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
   assert.doesNotMatch(live,/draggable|data-cm-priority-channel/);
 });
 
+test('纳米香蕉显示官方主线路和两条历史候选，列表不可拖动',()=>{
+  const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
+  route.control_state='shadow';
+  route.primary={id:'legacy:gemini',name:'Google Gemini API',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
+  data.items.push({id:'xlw-image-2',name:'GPT Image 2 生图（乐创）',supplier:'乐创',adapter:'openai_image',model:'gpt-image-2',enabled:true});
+  data.items.push({id:'xlw-image-25',name:'GPT Image 2.5 生图（乐创）',supplier:'乐创',adapter:'openai_image',model:'gpt-image-2.5-flare',enabled:true});
+  data.operation_mappings[0]={operation_id:'image.banana.text',state:'shadow',revision:1,channels:['xlw-image-2','xlw-image-25']};
+  const html=build({},data).elements.cmMatrix.innerHTML;
+  const names=['Google Gemini API','GPT Image 2 生图（乐创）','GPT Image 2.5 生图（乐创）'];
+  const positions=names.map(name=>html.indexOf(name));
+  assert.ok(positions.every(pos=>pos>=0)&&positions[0]<positions[1]&&positions[1]<positions[2]);
+  assert.doesNotMatch(html,/draggable="true"|class="cm-priority-drag"|data-cm-priority-move/);
+  assert.match(html,/检测延迟/);
+});
+
 test('无托管操作的文本音频等仍显示原生产线路，暂停时不假装接单',()=>{
   const data=workspaceData(),model=data.frontend_matrix.pages[0].products[0].models[0];
   data.operations=[];model.routes[0].primary.name='原线路';
