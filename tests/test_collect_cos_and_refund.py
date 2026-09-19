@@ -285,6 +285,75 @@ class DownloadOnceTests(unittest.TestCase):
                 self.lg._collect_bilibili_play_url,
             ) = originals
 
+    def test_channels_image_collection_stores_every_image_to_cos(self):
+        """视频号图文：play_url 恒空、图片逐张转存 COS、封面=第一张、文案/评论照常。"""
+        originals = (
+            self.lg.tikhub.parse_link,
+            self.lg.tikhub.detail,
+            self.lg.tikhub.comments,
+            self.lg.public_url_from_remote,
+        )
+        try:
+            self.lg.tikhub.parse_link = lambda _url: {
+                "platform": "channels",
+                "id": "https://weixin.qq.com/sph/Abc123", "note_type": "video"}
+            self.lg.tikhub.detail = lambda *_args, **_kwargs: {
+                "platform": "channels", "id": "oid123",
+                "title": "图文文案", "desc": "图文文案",
+                "images": ["https://wxapp.tc.qq.com/1&token=a", "https://wxapp.tc.qq.com/2&token=b"],
+                "author": {"name": "作者"}, "cover": "https://wxapp.tc.qq.com/1&token=a",
+                "note_type": "image"}
+            self.lg.tikhub.comments = lambda *_args, **_kwargs: {
+                "items": [], "has_more": False}
+            self.lg.public_url_from_remote = lambda url, key, ct=None: "https://cos/%s" % key
+
+            result = self.lg.gen_collect({
+                "url": "https://weixin.qq.com/sph/Abc123",
+                "want": ["copy", "comments"],
+            })
+
+            self.assertEqual(result["images"], [
+                "https://cos/collect/channels/oid123_img0.jpg",
+                "https://cos/collect/channels/oid123_img1.jpg",
+            ])
+            self.assertEqual(result["video"]["cover"], result["images"][0])
+            self.assertIsNone(result["video"]["play_url"], "图文没有可播视频")
+            self.assertEqual(result["copy"]["title"], "图文文案")
+        finally:
+            (
+                self.lg.tikhub.parse_link,
+                self.lg.tikhub.detail,
+                self.lg.tikhub.comments,
+                self.lg.public_url_from_remote,
+            ) = originals
+
+    def test_channels_image_transcript_request_fails_with_clear_message(self):
+        """图文动态没有口播文案：直接报错退点，提示改用内容/图片采集。"""
+        originals = (self.lg.tikhub.parse_link, self.lg.tikhub.detail)
+        try:
+            self.lg.tikhub.parse_link = lambda _url: {
+                "platform": "channels",
+                "id": "https://weixin.qq.com/sph/Abc123", "note_type": "video"}
+            self.lg.tikhub.detail = lambda *_args, **_kwargs: {
+                "platform": "channels", "id": "oid123",
+                "title": "图文文案", "desc": "图文文案",
+                "images": ["https://wxapp.tc.qq.com/1&token=a"],
+                "author": {"name": "作者"}, "cover": "https://wxapp.tc.qq.com/1&token=a",
+                "note_type": "image"}
+
+            with self.assertRaises(self.lg.tikhub.TikHubError) as ctx:
+                self.lg.gen_collect({
+                    "url": "https://weixin.qq.com/sph/Abc123",
+                    "want": ["transcript"],
+                })
+
+            self.assertIn("图文动态没有口播文案", str(ctx.exception))
+        finally:
+            (
+                self.lg.tikhub.parse_link,
+                self.lg.tikhub.detail,
+            ) = originals
+
 
 class TranscriptReuseTests(unittest.TestCase):
     def setUp(self):

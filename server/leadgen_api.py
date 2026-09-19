@@ -372,7 +372,22 @@ def gen_collect(payload):
         raise ValueError("内容获取失败（可能是上游限流或内容私密/已删），请重试")
     au = det.get("author") or {}
     video_path = None
-    if platform == "channels":   # 视频号是加密流：先解密再存 COS，否则存下来是打不开的乱码
+    is_image = det.get("note_type") == "image"
+    images = det.get("images") or []
+    if platform == "channels" and is_image:
+        # 视频号图文：每张图是带时效 token(~1h) 的 wxapp 直链，逐张转存 COS 保永久（同视频封面逻辑），
+        # 否则资源库里放超过 token 时效再看就裂图。
+        cid = re.sub(r"[^A-Za-z0-9_.-]", "", str(det.get("id") or ident)) or "c"
+        stored = []
+        for idx, img in enumerate(images):
+            cos_img = public_url_from_remote(img, "collect/channels/%s_img%d.jpg" % (cid, idx), "image/jpeg")
+            if cos_img:
+                stored.append(cos_img)
+        if not stored:
+            raise tikhub.TikHubError("图文图片转存失败（上游图片链接可能已失效），请重试")
+        images = stored
+        play_url = None
+    elif platform == "channels":   # 视频号是加密流：先解密再存 COS，否则存下来是打不开的乱码
         play_url = _collect_channels_play_url(det.get("id") or ident, det.get("play_url"), det.get("decode_key"))
     elif platform == "bilibili":
         play_url, video_path = _collect_bilibili_play_url(
@@ -389,7 +404,10 @@ def gen_collect(payload):
     cover = det.get("cover")
     # 视频号封面是 wxapp 带时效 token(~1h) 的 JPEG(普通图片、不加密)，转存 COS 保永久，
     # 否则资源库里放超过 token 时效再看就裂图。tikhub.ch_detail 已给 coverUrl+coverUrlToken。
-    if platform == "channels" and cover:
+    # 图文动态的 cover 就是第一张图，上面已随 images 一并转存 COS，这里直接用转存后的第一张。
+    if platform == "channels" and is_image:
+        cover = images[0] if images else cover
+    elif platform == "channels" and cover:
         cid = re.sub(r"[^A-Za-z0-9_.-]", "", str(det.get("id") or ident)) or "c"
         cover = public_url_from_remote(cover, "collect/channels/cover_%s.jpg" % cid, "image/jpeg")
     try:
@@ -401,7 +419,7 @@ def gen_collect(payload):
                       "duration": det.get("duration"), "publish_time": det.get("publish_time"),
                       "stats": det.get("stats")},
             "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
-            "images": det.get("images") or [],
+            "images": images,
             "transcript": None, "comments": [], "comments_more": False,
             "url": cover, "prompt": det.get("title"),   # 给通用 history 用
         }
@@ -409,6 +427,8 @@ def gen_collect(payload):
             cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
             out["comments"] = cm["items"]; out["comments_more"] = bool(cm.get("has_more"))
         if "transcript" in want:
+            if is_image:
+                raise tikhub.TikHubError("图文动态没有口播文案，请改用内容/图片采集")
             # video_path 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载。
             # 请求了口播文案却没有文本就必须让任务失败并走统一退款，不能假完成后扣点。
             transcript = tikhub.transcript(det, video_path=video_path)

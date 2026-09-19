@@ -579,7 +579,8 @@ def ch_id_to_username(channel_id):
 def ch_user_videos(username, last_buffer=""):
     d = _p(CH + "/fetch_user_videos", username=username, raw=True, last_buffer=last_buffer)  # raw=False 裁掉 objectDesc.media(无播放地址/decodeKey)，视频号下载必须 raw=True
     items = []
-    for v in (d.get("videos") or []):
+    # raw=True 的作品列表在 object 键（原始 proto）；TikHub 偶发返回 raw=False 结构（videos 键），两种都要吃。
+    for v in (d.get("videos") or d.get("object") or []):
         # 视频号列表项的视频信息藏在 objectDesc.media[0]（与 detail 同构）；个别字段在顶层。
         od = v.get("objectDesc") or {}
         m = (od.get("media") or [{}])[0] if od.get("media") else (v.get("media") or {})
@@ -594,7 +595,8 @@ def ch_user_videos(username, last_buffer=""):
             # 视频号下载：url + urlToken 拼接才是带签名 token 的可下载直链(单 url 缺 token 会 400)。
             "play_url": _ch_play_url(m),
             "decode_key": str(m.get("decodeKey") or ""),  # 视频号流加密的 Isaac64 解密密钥，下载代理需用它解密才能播放
-            "duration": m.get("videoPlayLen") or m.get("duration"), "note_type": "video",
+            "duration": m.get("videoPlayLen") or m.get("duration"),
+            "note_type": "image" if od.get("mediaType") == 2 else "video",
         })
     return {"items": items, "nickname": d.get("nickname"), "username": d.get("username"),
             "last_buffer": d.get("last_buffer"), "has_more": d.get("up_continue")}
@@ -749,6 +751,24 @@ def ch_detail(object_id):
     obj = d.get("objectDesc") or {}
     media = (obj.get("media") or [{}])[0] or {}  # 视频号真实字段都在 objectDesc.media[0]
     title = obj.get("description") or obj.get("shortTitle") or ""
+    if obj.get("mediaType") == 2:
+        # 图文动态：media 是多张图(mediaType 各自=2)，每张同样是 url + urlToken 两段式拼接；
+        # raw=False 的解析版只回第一张图，必须从 raw 的完整 media 列表逐张取。
+        images = [u for u in (_ch_play_url(m) for m in (obj.get("media") or [])) if u]
+        return {
+            "platform": "channels", "id": d.get("id") or object_id, "url": None,
+            "title": title, "desc": title, "tags": _tags_from_text(title),
+            "author": {"name": d.get("nickname"), "id": d.get("username"),
+                       "fans": None, "ip": None, "signature": None},
+            "stats": {"like": d.get("likeCount"), "comment": d.get("commentCount"),
+                      "share": d.get("forwardCount"), "collect": d.get("favCount")},
+            "cover": images[0] if images else None,
+            "play_url": None, "images": images,  # 图文无视频：play_url 置空，图片画廊在 images
+            "subtitle_url": None, "decode_key": None,
+            "duration": None,
+            "publish_time": d.get("createtime"),
+            "note_type": "image",
+        }
     play = _ch_play_url(media)
     # ponytail: TikHub 偶发返回缺播放地址或解密密钥的不完整 media，重取一次即可。
     if not play or not media.get("decodeKey"):

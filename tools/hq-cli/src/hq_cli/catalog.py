@@ -1050,12 +1050,12 @@ AUDIO_FIELDS = {
 COLLECT_MEDIA_URL = {
     "type": "string", "minLength": 8, "maxLength": 2048,
     "pattern": "^(?:https?://(?:[^/?#@]+\\.)?(?:douyin\\.com|iesdouyin\\.com|xiaohongshu\\.com|xhslink\\.com|xhslink\\.cn|bilibili\\.com|b23\\.tv)(?::(?:80|443))?(?:[/?#].*)?|https://weixin\\.qq\\.com(?::443)?/sph/[A-Za-z0-9]+(?:[?#].*)?)$",
-    "description": "抖音、小红书、视频号或 B 站的公开内容链接；视频号须使用 weixin.qq.com/sph/ 分享链接",
+    "description": "抖音、小红书、视频号或 B 站的公开内容链接；视频号须使用 weixin.qq.com/sph/ 分享链接（视频动态采集原视频，图文动态采集全部图片）",
 }
 COLLECT_CONTENT_URL = {
     "type": "string", "minLength": 8, "maxLength": 2048,
     "pattern": "^(?:https?://(?:[^/?#@]+\\.)?(?:douyin\\.com|iesdouyin\\.com|xiaohongshu\\.com|xhslink\\.com|xhslink\\.cn|bilibili\\.com|b23\\.tv|x\\.com|twitter\\.com)(?::(?:80|443))?(?:[/?#].*)?|https://weixin\\.qq\\.com(?::443)?/sph/[A-Za-z0-9]+(?:[?#].*)?)$",
-    "description": "抖音、小红书、视频号、B 站或 X 单帖公开链接；视频号须使用 weixin.qq.com/sph/ 分享链接",
+    "description": "抖音、小红书、视频号、B 站或 X 单帖公开链接；视频号须使用 weixin.qq.com/sph/ 分享链接（支持视频与图文动态，图文一并返回文案与图片）",
 }
 LEADS_FIELDS = {
     "keyword": {"type": "string", "minLength": 1, "maxLength": 120},

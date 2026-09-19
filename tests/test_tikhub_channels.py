@@ -35,6 +35,40 @@ class ChannelsDetailTest(unittest.TestCase):
         self.assertEqual(result["play_url"], "https://wxapp.tc.qq.com/second&token=fresh")
         self.assertEqual(result["decode_key"], "secret")
 
+    def test_image_note_returns_image_gallery_without_video_retry(self):
+        raw = {
+            "id": "img-obj",
+            "nickname": "作者", "username": "u@finder",
+            "likeCount": 3, "commentCount": 4, "forwardCount": 5, "favCount": 6,
+            "createtime": 1789293602,
+            "objectDesc": {
+                "mediaType": 2,
+                "description": "图文文案",
+                "media": [
+                    {"url": "https://wxapp.tc.qq.com/a", "urlToken": "&token=t1"},
+                    {"url": "https://wxapp.tc.qq.com/b", "urlToken": "&token=t2"},
+                ],
+            },
+        }
+
+        with patch.object(tikhub, "_p", side_effect=[raw]) as request:
+            result = tikhub.ch_detail("https://weixin.qq.com/sph/Abc123")
+
+        self.assertEqual(request.call_count, 1, "图文没有 decode_key，不该触发视频重取")
+        self.assertEqual(result["note_type"], "image")
+        self.assertEqual(result["title"], "图文文案")
+        self.assertEqual(result["images"], [
+            "https://wxapp.tc.qq.com/a&token=t1",
+            "https://wxapp.tc.qq.com/b&token=t2",
+        ])
+        self.assertEqual(result["cover"], "https://wxapp.tc.qq.com/a&token=t1")
+        self.assertIsNone(result["play_url"])
+        self.assertIsNone(result["decode_key"])
+        self.assertIsNone(result["duration"])
+        self.assertEqual(result["id"], "img-obj")
+        self.assertEqual(result["author"]["name"], "作者")
+        self.assertEqual(result["stats"]["like"], 3)
+
 
 class ChannelsTranscriptRecoveryTest(unittest.TestCase):
     def setUp(self):
