@@ -5,6 +5,8 @@
     let data={},rows=[],tab='matrix',matrixPage='image',matrixShowHidden=false,selected=null,returnFocus=null,matrixExpanded=null,draggedPriorityChannel='';
     const matrixGroupSelection={};
     const priorityDrafts={};
+    const latencyResults={},latencyChoices={},latencyBusy=new Set(),priorityErrors={};
+    let latencyEpoch=0;
     let priorityBusy=false,priorityUncertain=false;
     const serverReplacementTemplates={};
     let layoutLoading=false;
@@ -160,6 +162,10 @@
       if(!priorityDrafts[operationId]){
         const mapping=mappingForOperation(operationId);
         priorityDrafts[operationId]={operation_id:operationId,state:mapping?.state||'shadow',revision:Number(mapping?.revision||0),channels:mappingChannels(mapping)};
+        const kind=(data.operations||[]).find(o=>o.operation_id===operationId)?.channel_kind;
+        for(const item of data.items||[]){
+          if(route.primary?.model&&item.model===route.primary.model&&data.adapters?.[item.adapter]?.kind===kind&&!item._lifecycle?.deleted&&!priorityDrafts[operationId].channels.includes(item.id))priorityDrafts[operationId].channels.push(item.id);
+        }
       }
       return priorityDrafts[operationId];
     }
@@ -188,10 +194,17 @@
     async function publishPriority(operationId,automatic=false){
       const draft=priorityDrafts[operationId];if(!draft||priorityBusy||priorityUncertain)return;
       const mapping=mappingForOperation(operationId);
-      if(automatic&&(mapping?.state!=='managed'||draft.state!=='managed'||JSON.stringify([...draft.channels].sort())!==JSON.stringify(mappingChannels(mapping).sort()))){
-        refreshPriority();toast('顺序已调整为草稿；首次接管请保存并发布。');return;
+      if(automatic){
+        const route=matrixPages().flatMap(p=>p.products||[]).flatMap(p=>p.models||[]).flatMap(m=>m.routes||[]).find(r=>r.operation_id===operationId);
+        const model=route?.primary?.model;
+        const candidates=draft.channels.map(id=>(data.items||[]).find(c=>c.id===id));
+        if(!model||!candidates.length||candidates.some(c=>!c||!c.enabled||c._lifecycle?.deleted||c.model!==model)){
+          delete priorityDrafts[operationId];refreshPriority();toast('未应用：只能切换同一实际模型且已启用的渠道，原生产顺序不变。');return;
+        }
+        draft.state='managed';
       }
       priorityBusy=true;
+      delete priorityErrors[operationId];
       const editor=root.querySelector('[data-cm-priority-editor="'+operationId+'"]');
       if(editor)editor.inert=true;
       const status=root.querySelector('[data-cm-priority-status="'+operationId+'"]');
@@ -203,9 +216,10 @@
         delete priorityDrafts[operationId];
         if(await env.refresh()===false)throw Error('服务端顺序读取失败');
         const saved=mappingForOperation(operationId);
-        if(Number(saved?.revision)<=draft.revision||JSON.stringify(mappingChannels(saved))!==JSON.stringify(draft.channels))throw Error('发布结果待核对，请刷新后确认；不要重复提交。');
+        if(saved?.state!==draft.state||Number(saved?.revision)<=draft.revision||JSON.stringify(mappingChannels(saved))!==JSON.stringify(draft.channels))throw Error('发布结果待核对，请刷新后确认；不要重复提交。');
         toast(saved.state==='managed'?'顺序已生效：新任务按此优先级接单。':'顺序已保存，当前未接管生产。');
       }catch(error){
+        priorityErrors[operationId]={message:'未应用或结果待核对：'+error.message,channel:draft.channels[0]};
         // A network failure may happen after commit. Read back; never claim rollback.
         delete priorityDrafts[operationId];
         toast('未确认生效：'+error.message+' 请刷新核对服务端顺序。');
@@ -239,6 +253,28 @@
       if(current)steps.push('<li class="current"><b>'+esc(current.name)+'</b><span>'+esc(run.state==='passed'?'生成成功':'当前尝试 · '+(run.state||'处理中'))+'</span></li>');
       return '<aside class="cm-priority-evidence"><div><strong>最近安全切换</strong><small>任务 #'+esc(run.job_id||run.id||'—')+' · 映射 r'+esc(run.mapping_revision||snapshot.mapping_revision||'—')+'</small></div><ol>'+steps.join('')+'</ol></aside>';
     }
+    function latencyControls(uid){
+      if(!uid)return '';
+      const result=latencyResults[uid];
+      const choices=(latencyChoices[uid]||[]).map(source=>'<button type="button" data-cm-latency="'+esc(uid)+'" data-cm-latency-source="'+esc(source)+'">'+esc(({env:'环境配置',pool:'号池',image_primary:'生图主线路',image_fallback:'生图备用',video:'视频线路'})[source]||source)+'</button>').join('');
+      return '<span class="cm-latency"><button type="button" data-cm-latency="'+esc(uid)+'" '+(latencyBusy.has(uid)?'disabled':'')+'>'+(latencyBusy.has(uid)?'检测中…':'检测延迟')+'</button><small role="status">'+esc(result||'')+'</small>'+choices+'</span>';
+    }
+    async function detectLatency(uid,source){
+      if(latencyBusy.has(uid))return;
+      const epoch=latencyEpoch;
+      latencyBusy.add(uid);latencyResults[uid]='';refreshPriority();
+      try{
+        const result=await api('/api/admin/channel-manager/latency',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(source?{uid,source}:{uid})});
+        if(epoch!==latencyEpoch)return;
+        if(uid.startsWith('managed:')&&Number(result.version)!==Number((data.items||[]).find(c=>c.id===uid.slice(8))?.version))return;
+        if(result?.ok===false)throw Error('检测未完成');
+        latencyChoices[uid]=Array.isArray(result.sources)?result.sources:[];
+        const ms=Number.isFinite(result?.latency_ms)?Math.round(result.latency_ms)+' ms':'';
+        const labels={reachable:'网络可达',http_error:'HTTP '+result.http_status,redirect_blocked:'重定向未跟随',timeout:'超时',network_error:'连接失败',unavailable:'当前线路暂不支持检测'};
+        latencyResults[uid]=latencyChoices[uid].length?'请选择要检测的地址来源':[ms,source,labels[result.state]||'结果未知'].filter(Boolean).join(' · ');
+      }catch(_){if(epoch===latencyEpoch)latencyResults[uid]='检测失败，请重试'}
+      finally{latencyBusy.delete(uid);refreshPriority()}
+    }
     function livePrimaryRow(route,model,product){
       if(route.control_state==='paused')return '<p class="cm-live-status" role="status">当前功能已暂停，不展示接单主渠道。</p>';
       const item=route.primary;
@@ -248,7 +284,7 @@
       const action=management.kind==='managed_channel'
         ?'<button type="button" data-cm-managed-edit="'+esc((management.uid||'').replace(/^managed:/,''))+'">编辑</button>'
         :management.uid?'<button type="button" data-cm-live-detail="'+esc(management.uid)+'">查看配置</button>':'';
-      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(ready?'当前生产主渠道':'已配置主线路 · 功能未开放或就绪状态待核对')+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+action+'</div></div>';
+      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'" data-cm-priority-anchor="'+esc(route.operation_id||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(ready?'当前生产主渠道':'已配置主线路 · 功能未开放或就绪状态待核对')+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+latencyControls(management.uid)+action+'</div></div>';
     }
     function priorityEditor(product,model){
       const routes=(model.routes||[]).filter(route=>(data.operations||[]).some(item=>item.operation_id===route.operation_id));
@@ -270,7 +306,7 @@
         const tone={ok:'ok',failed:'bad',unknown:'warn',running:'neutral',queued:'neutral',blocked:'warn',expired:'warn',missing:'neutral',unattributed:'warn','stale-version':'neutral',attention:'warn',neutral:'neutral',off:'muted'};
         const healthTone=channel.enabled?tone[proof.state]||'neutral':'off';
         const healthLabel=channel.enabled?proof.label:'已停用';
-        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions"><button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" class="mini" data-cm-priority-remove="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">移除</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
+        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
       }).join('');
       const available=candidates.filter(item=>!draft.channels.includes(item.id));
       const routeTabs=routes.length>1?'<nav class="cm-priority-route-tabs" aria-label="模型能力">'+routes.map(route=>'<button type="button" data-cm-priority-route="'+esc(route.operation_id)+'" class="'+(route.operation_id===active.operation_id?'active':'')+'" aria-pressed="'+String(route.operation_id===active.operation_id)+'">'+esc(route.capability||route.operation_id)+'</button>').join('')+'</nav>':'';
@@ -285,15 +321,12 @@
       if(rule.reference_count==='>0')sample.reference_images=['<已上传的参考图地址>'];
       if(rule.mask_present)sample.mask='<已上传的蒙版地址>';
       const example=operation?.channel_kind==='image'?'<details class="cm-priority-example"><summary>主站调用示例（执行会产生费用）</summary><p>使用已登录账号，由服务端按此功能的渠道顺序路由；不要在前端放供应商 Key。</p><pre>'+esc("fetch('/api/gen/image', {\n  method: 'POST', credentials: 'include',\n  headers: {'Content-Type': 'application/json'},\n  body: JSON.stringify("+JSON.stringify(sample,null,2)+")\n})")+'</pre></details>':'';
-      const publishedLine=(()=>{const pub=mapping;const stateTxt={legacy:'旧线路',shadow:'影子',managed:'托管',paused:'暂停'}[pub?.state]||pub?.state||'未发布';const pubTxt=pub&&pub.revision?('已发布 r'+pub.revision+' · '+stateTxt):'未发布稳定映射';const changed=JSON.stringify(draft.channels)!==JSON.stringify(mappingChannels(pub))||draft.state!==(pub?.state||'shadow');return '<div class="cm-priority-published"><span>服务端已发布：</span><strong>'+esc(pubTxt)+'</strong>'+(changed?'<em>草稿未发布（修改后需保存并发布）</em>':'<em class="muted">草稿与已发布一致</em>')+'</div>'})();
+      const publishedLine=(()=>{const pub=mapping;const stateTxt={legacy:'旧线路',shadow:'影子',managed:'托管',paused:'暂停'}[pub?.state]||pub?.state||'未发布';const pubTxt=pub&&pub.revision?('已发布 r'+pub.revision+' · '+stateTxt):'未发布稳定映射';const changed=JSON.stringify(draft.channels)!==JSON.stringify(mappingChannels(pub))||draft.state!==(pub?.state||'shadow');return '<div class="cm-priority-published"><span>服务端已发布：</span><strong>'+esc(pubTxt)+'</strong>'+(changed?'<em>待应用：将候选拖至首位</em>':'<em class="muted">草稿与已发布一致</em>')+'</div>'})();
       return '<section class="cm-priority-editor" data-cm-priority-editor="'+esc(active.operation_id)+'"><div class="cm-priority-head"><div><span>渠道优先级</span><h4>'+esc(product.label+' · '+model.label)+'</h4><p>'+esc(active.capability||'生成')+' · <code>'+esc(active.operation_id)+'</code></p></div><button type="button" class="mini" data-cm-priority-close>收起</button></div>'+routeTabs
         +publishedLine+'<div class="cm-priority-list">'+prefix+(ordered||'<p class="cm-priority-empty">尚未添加托管候选。</p>')+'</div>'
-        +'<p role="status" data-cm-priority-status="'+esc(active.operation_id)+'">'+(priorityUncertain?'结果未知，请刷新核对后再操作。':'')+'</p>'
-        +(simpleView?'<details class="cm-priority-tools"><summary>配置、检测与回滚</summary>':'')
-        +'<div class="cm-priority-notice">只有已发布且启用的托管顺序才决定接单；原线路置首展示不等于已迁入托管，影子候选与草稿均不接管生产。生图仅在提交前失败或供应商明确拒绝受理时自动切换；超时、限流、服务器错误、结果未知或已受理后失败均不会切换，避免重复生成与重复计费。视频暂不自动切换。</div>'+failoverEvidence
-        +'<div class="cm-priority-state">控制状态<select data-cm-priority-state="'+esc(active.operation_id)+'"><option value="shadow" '+(draft.state==='shadow'?'selected':'')+'>影子验证（不接管生产）</option><option value="managed" '+(draft.state==='managed'?'selected':'')+'>统一托管（第 1 项接单）</option><option value="legacy" '+(draft.state==='legacy'?'selected':'')+'>保留内置线路</option><option value="paused" '+(draft.state==='paused'?'selected':'')+'>暂停接单</option></select></div>'
-        +'<div class="cm-priority-add"><select data-cm-priority-add-choice="'+esc(active.operation_id)+'"><option value="">选择兼容渠道</option>'+addOptions+'</select><button type="button" data-cm-priority-add="'+esc(active.operation_id)+'" '+(available.length?'':'disabled')+'>添加渠道</button></div>'
-        +'<div class="cm-priority-footer"><div class="actions"><button type="button" data-cm-priority-test="'+esc(active.operation_id)+'" '+(draft.channels.length?'':'disabled')+'>测试全部连接</button><button type="button" class="primary" data-cm-priority-save="'+esc(active.operation_id)+'">保存并发布</button></div></div>'+example+history+(simpleView?'</details>':'')+'</section>';
+        +'<p role="status" data-cm-priority-status="'+esc(active.operation_id)+'">'+esc(priorityUncertain?'结果未知，请刷新核对后再操作。':priorityErrors[active.operation_id]?.message||'拖至首位自动申请应用，仅影响新任务；原线路仅作只读展示。')+'</p>'
+        +(priorityErrors[active.operation_id]?.channel?'<button type="button" data-cm-live-detail="managed:'+esc(priorityErrors[active.operation_id].channel)+'">查看渠道验证与未应用原因</button>':'')
+        +(simpleView?'':'<p class="cm-priority-notice">结果未知或已受理后失败均不会切换，避免重复生成与重复计费。</p>')+failoverEvidence+'</section>';
     }
     function manageAction(item){
       const management=item?.management;if(!management?.uid)return '';
@@ -517,6 +550,7 @@
       }));
     }
     function render(next){
+      latencyEpoch++;Object.keys(latencyResults).forEach(uid=>delete latencyResults[uid]);Object.keys(latencyChoices).forEach(uid=>delete latencyChoices[uid]);
       priorityUncertain=false;
       data=next;rows=C.catalog(data,env.legacy());
       const suppliers=[...new Set(rows.map(c=>c.supplier))].sort();
@@ -564,6 +598,7 @@
     root.addEventListener('click',async e=>{const simpleToggle=e.target.closest?e.target.closest('[data-cm-simple-toggle]'):null;if(simpleToggle&&simpleToggle.dataset&&'cmSimpleToggle' in simpleToggle.dataset){simpleView=!simpleView;renderMatrix();return}const addTarget=e.target.closest('[data-cm-model-add]');if(addTarget?.dataset?.cmModelKey){newModelChannel(addTarget.dataset.cmModelPage,addTarget.dataset.cmModelProduct,addTarget.dataset.cmModelKey);return}const configTarget=e.target.closest('[data-cm-model-config]');if(configTarget?.dataset?.cmModelKey){openMatrixModel(configTarget.dataset.cmModelPage,configTarget.dataset.cmModelProduct,configTarget.dataset.cmModelKey);return}const modelTarget=e.target.closest('[data-cm-model-key]');if(modelTarget?.dataset?.cmModelKey){const same=matrixExpanded&&matrixExpanded.page===modelTarget.dataset.cmModelPage&&matrixExpanded.product===modelTarget.dataset.cmModelProduct&&matrixExpanded.model===modelTarget.dataset.cmModelKey;matrixExpanded=same?null:{page:modelTarget.dataset.cmModelPage,product:modelTarget.dataset.cmModelProduct,model:modelTarget.dataset.cmModelKey,operationId:''};renderMatrix();return}const b=e.target.closest('button');if(!b)return;
       if(b.dataset.cmCategoryClose!=null){b.closest('details').open=false;return}
       if(b.dataset.cmLiveDetail){open(b.dataset.cmLiveDetail);return}
+      if(b.dataset.cmLatency){await detectLatency(b.dataset.cmLatency,b.dataset.cmLatencySource);return}
       if(b.dataset.cmPriorityClose!=null){if(el('cmModelPriority'))el('cmModelPriority').innerHTML='';matrixExpanded=null;renderMatrix();return}
       if((priorityBusy||priorityUncertain)&&Object.keys(b.dataset).some(key=>key.startsWith('cmPriority')))return;
       if(b.dataset.cmPriorityRoute){matrixExpanded.operationId=b.dataset.cmPriorityRoute;refreshPriority();return}

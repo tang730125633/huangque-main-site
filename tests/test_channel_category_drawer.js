@@ -322,17 +322,15 @@ test('分类抽屉可以关闭',async()=>{
   assert.equal(open,false);
 });
 
-test('简洁视图保留了编辑 / 发布 / 错误反馈 / 回滚 / 测试 / 移除入口',()=>{
+test('简洁视图保留每行编辑检测和发布状态，不隐藏错误反馈',()=>{
   // 这些元素必须真的渲染出来（否则后面「CSS 没隐藏」就没有意义）
-  for(const token of ['cm-priority-example','cm-priority-notice','cm-priority-published','cm-priority-history',
-    'data-cm-managed-edit','data-cm-priority-save','data-cm-priority-test','data-cm-priority-remove','data-cm-priority-rollback'])
+  for(const token of ['cm-priority-published','data-cm-managed-edit','data-cm-latency','data-cm-priority-status'])
     assert.ok(source.includes(token),'JS 未渲染 '+token);
 
   // 简洁视图只收起说明性文字与历史块，不得把上面这些操作入口 display:none 掉
   const hiddenRules=[...css.matchAll(/([^{}]+)\{display:none!important\}/g)].map(m=>m[1]).join(',');
   assert.ok(hiddenRules.length,'没有找到 display:none 规则，断言失效');
-  for(const token of ['cm-priority-example','cm-priority-notice','cm-priority-published','cm-priority-history',
-    'data-cm-managed-edit','data-cm-priority-save','data-cm-priority-test','data-cm-priority-remove','data-cm-priority-rollback'])
+  for(const token of ['cm-priority-published','data-cm-managed-edit','data-cm-latency','data-cm-priority-status'])
     assert.ok(!hiddenRules.includes(token),'简洁视图把 '+token+' 隐藏了，排障与恢复入口会不可达');
 
   // 高级视图按钮必须保留，作为回到完整矩阵的出口
@@ -346,15 +344,13 @@ test('模型横排不会把模型名截断（CSS 契约）',()=>{
   assert.ok(!/text-overflow:\s*ellipsis/.test(rule[1]),'模型名不应使用省略号截断');
 });
 
-test('默认界面折叠辅助操作但保留渠道列表和发布状态',()=>{
+test('渠道页移除底部配置检测回滚，保留列表与真实发布状态',()=>{
   const {elements}=build();
   const html=elements.cmMatrix.innerHTML;
   assert.match(html,/<details class="cm-view-tools"><summary>更多<\/summary>/);
-  assert.match(html,/<details class="cm-priority-tools"><summary>配置、检测与回滚<\/summary>/);
-  assert.ok(html.indexOf('cm-priority-list')<html.indexOf('cm-priority-tools'));
-  assert.ok(html.indexOf('cm-priority-published')<html.indexOf('cm-priority-tools'));
-  assert.ok(html.indexOf('data-cm-priority-save')>html.indexOf('cm-priority-tools'));
-  assert.doesNotMatch(html,/<details class="cm-priority-tools" open/);
+  assert.match(html,/cm-priority-list/);
+  assert.match(html,/cm-priority-published/);
+  assert.doesNotMatch(html,/cm-priority-tools|配置、检测与回滚|data-cm-priority-save|data-cm-priority-rollback|data-cm-priority-test/);
 });
 
 test('渠道样式版本随内容变化而更新',()=>{

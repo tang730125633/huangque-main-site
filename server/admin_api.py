@@ -57,6 +57,7 @@ channel_parameters = import_module(_DOMAIN_PACKAGE + ".channel_parameters")
 frontend_channel_matrix = import_module(_DOMAIN_PACKAGE + ".frontend_channel_matrix")
 task_termination = import_module(_DOMAIN_PACKAGE + ".task_termination")
 channel_runtime = import_module(_DOMAIN_PACKAGE + ".channel_runtime")
+channel_latency = import_module(_DOMAIN_PACKAGE + ".channel_latency")
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 function_registry = import_module(_DOMAIN_PACKAGE + ".function_registry")
@@ -9751,7 +9752,8 @@ class H(BaseHTTPRequestHandler):
                        'parameter-state':lambda actor,body:channel_parameters.admin_state(str(body.get('id') or ''),body.get('profile')),
                        'layout-state':lambda actor,body:channel_parameters.admin_layout_state(),
                        'layout-save':channel_parameters.layout_save,
-                       'secret-reveal':reveal_channel_secret}
+                       'secret-reveal':reveal_channel_secret,
+                       'latency':lambda actor,body:channel_latency.measure(actor,body,key_status)}
             action = actions.get(path.rsplit('/',1)[-1])
             if not action:
                 return self._send(404, {'detail':'未知渠道操作'})

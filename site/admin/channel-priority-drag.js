@@ -3,21 +3,22 @@
   // One sortable list is one operation. Never drag engines across model groups.
   window.ChannelPriorityDrag=function(root,commit,busy){
     let drag=null;
-    const selector='[data-cm-priority-channel]';
+    const selector='[data-cm-priority-channel]',anchor='[data-cm-priority-anchor]';
+    const key=row=>row.dataset.cmPriorityChannel||'@original';
     function finish(cancel){
       const d=drag;if(!d)return;drag=null;
       d.ghost.remove();
       d.rows.forEach(row=>{row.style.transform='';row.classList.remove('cm-sort-moving','cm-sort-placeholder')});
       if(d.handle.hasPointerCapture?.(d.pointerId))d.handle.releasePointerCapture(d.pointerId);
-      if(!cancel&&d.order.some((id,i)=>id!==d.original[i]))commit(d.operation,d.order);
+      if(!cancel&&d.order.some((id,i)=>id!==d.original[i])&&d.order[0]!=='@original')commit(d.operation,d.order.filter(id=>id!=='@original'));
     }
     root.addEventListener('pointerdown',event=>{
       const handle=event.target.closest('.cm-priority-drag');
       if(!handle||event.button!==0||busy()||drag)return;
       const row=handle.closest(selector),list=row?.parentElement;if(!list)return;
-      const rows=Array.from(list.querySelectorAll(selector));if(rows.length<2)return;
+      const rows=Array.from(list.querySelectorAll(selector+','+anchor));if(rows.length<2)return;
       const rects=rows.map(item=>item.getBoundingClientRect());
-      const from=rows.indexOf(row),rect=rects[from],original=rows.map(item=>item.dataset.cmPriorityChannel);
+      const from=rows.indexOf(row),rect=rects[from],original=rows.map(key);
       const ghost=row.cloneNode(true);ghost.removeAttribute('id');ghost.inert=true;ghost.setAttribute('aria-hidden','true');
       ghost.classList.add('cm-sort-ghost');
       Object.assign(ghost.style,{left:rect.left+'px',top:rect.top+'px',width:rect.width+'px',height:rect.height+'px'});

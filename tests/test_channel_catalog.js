@@ -231,7 +231,8 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/未受理，已安全切换/);
   assert.match(elements.cmMatrix.innerHTML,/生成成功/);
   assert.match(elements.cmMatrix.innerHTML,/结果未知或已受理后失败均不会切换/);
-  assert.match(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
+  assert.match(elements.cmMatrix.innerHTML,/拖至首位自动申请应用/);
   const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
   await root.listeners.click({target:{closest:selector=>selector==='button'?moveButton:null}});
   const priorityHtml=elements.cmMatrix.innerHTML.match(/<div class="cm-priority-list">[\s\S]*?<div class="cm-priority-add">/)[0];
