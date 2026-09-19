@@ -15,10 +15,12 @@
 保证黄雀看到的能力目录与线上完全一致。
 """
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -38,6 +40,8 @@ NODE_TOKEN = os.environ.get("RELAY_NODE_TOKEN", "").strip()
 RELAY_TOKEN = os.environ.get("RELAY_API_TOKEN", "").strip()
 COS_BUCKET = os.environ.get("RELAY_COS_BUCKET", "").strip()
 CLAIM_TIMEOUT = int(os.environ.get("RELAY_CLAIM_TIMEOUT", "2400"))   # 超过则以节点失联处理
+REQUIRE_GPU = os.environ.get("RELAY_REQUIRE_GPU", "0").strip() == "1"
+MAX_GPU_PENDING = max(1, int(os.environ.get("RELAY_GPU_QUEUE_MAX", "500")))
 # /v1/files/ 流式转发的块大小：太大等于整包进内存，太小 syscall 太多
 _STREAM_CHUNK = max(64 * 1024, int(os.environ.get("RELAY_STREAM_CHUNK", str(256 * 1024))))
 # 超过这个秒数的请求打一行耗时日志（默认 5 秒；设 0 可关掉）
@@ -54,6 +58,7 @@ PRIORITY_WINDOW = max(1, int(os.environ.get("RELAY_PRIORITY_WINDOW", "20")))
 _LAST_CLAIM = {}          # node -> 最近一次来领活的时间（内存态，重启后重新学习）
 _LAST_HEARTBEAT = {}      # node -> 最近一次独立遥测心跳，不参与“是否有空位”判断
 _NODE_GPU = {}            # node -> 最近一次 GPU 遥测
+_NODE_RENDER = {}         # node -> verified renderer contract plus server receipt time
 # 节点心跳：轮询器空闲时每 POLL_IDLE(默认 5) 秒来问一次，所以「90 秒没来过」= 掉线。
 # 以前中转器只能靠 PRIORITY_WINDOW(20 秒) 猜「它还有没有空位」，**看不出节点死活** ——
 # 节点挂了，任务就静静躺在队列里，没有任何信号。现在 /health 直接报每台节点的
@@ -110,7 +115,53 @@ def _clean_gpu(value):
         return None
 
 
-def _should_yield_to_idler(node, now):
+def _clean_render_contract(value):
+    if not isinstance(value, dict) or value.get("ready") is not True:
+        return None
+    evidence = _clean_render_evidence(value)
+    templates = value.get("templates")
+    if (evidence is None or not isinstance(templates, list) or not 1 <= len(templates) <= 64
+            or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", t) for t in templates)):
+        return None
+    return {**evidence, "ready": True, "templates": sorted(set(templates))}
+
+
+def _clean_render_evidence(value):
+    if not isinstance(value, dict):
+        return None
+    adapter = value.get("adapter")
+    sha = value.get("runtime_sha256")
+    if (type(value.get("contract_version")) is not int or value.get("contract_version") != 1 or value.get("compositor") != "webgpu-native"
+            or value.get("encoder") not in {"hevc_nvenc", "h264_nvenc"}
+            or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)
+            or not isinstance(adapter, dict) or adapter.get("isFallbackAdapter") is not False
+            or adapter.get("vendor") != "nvidia"):
+        return None
+    return {"contract_version": 1, "compositor": "webgpu-native", "encoder": value["encoder"],
+            "runtime_sha256": sha, "adapter": {k: adapter.get(k) for k in
+                ("vendor", "device", "architecture", "isFallbackAdapter")}}
+
+
+def _record_render_contract(node, value, now):
+    contract = _clean_render_contract(value)
+    if contract is None:
+        _NODE_RENDER.pop(node, None)
+    else:
+        _NODE_RENDER[node] = (now, contract)
+
+
+def _gpu_capable(node, template, now):
+    recorded = _NODE_RENDER.get(node)
+    return bool(recorded and 0 <= now - recorded[0] <= NODE_ONLINE_SECONDS
+                and not _node_blocked(node, now)
+                and (template is None or template in recorded[1]["templates"]))
+
+
+def _gpu_available(template, now):
+    return any(_gpu_capable(node, template, now) for node in list(_NODE_RENDER))
+
+
+def _should_yield_to_idler(node, now, template=None, gpu_only=False):
     """负载均衡：本节点在跑的活比别的**在线**节点多，就让给更空的那台。
 
     「谁空谁先拿」—— 最少的那台永远不让（否则会互相让到没人干活）。
@@ -128,6 +179,7 @@ def _should_yield_to_idler(node, now):
         online = [
             name for name, ts in list(_LAST_CLAIM.items())
             if now - ts <= NODE_ONLINE_SECONDS and not _node_blocked(name, now)
+            and (not (REQUIRE_GPU or gpu_only) or _gpu_capable(name, template, now))
         ]
         if len(online) < 2:
             return False          # 只有自己在线，没什么可让的
@@ -136,14 +188,14 @@ def _should_yield_to_idler(node, now):
         return False
 
 
-def _priority_has_room(now):
+def _priority_has_room(now, template=None, gpu_only=False):
     """高优先级线路是否还有空位（最近 PRIORITY_WINDOW 秒内来过）。"""
     if not PRIORITY_NODES:
         return False
     return any(
         now - ts <= PRIORITY_WINDOW and not _node_blocked(name, now)
         for name, ts in list(_LAST_CLAIM.items())
-        if name in PRIORITY_NODES
+        if name in PRIORITY_NODES and (not (REQUIRE_GPU or gpu_only) or _gpu_capable(name, template, now))
     )
 MAX_BODY = 256 * 1024 * 1024
 OUT_DIR = os.environ.get("RELAY_OUT_DIR", "/home/ubuntu/render-relay/out")
@@ -169,11 +221,16 @@ cos.upload(sys.argv[1], sys.argv[2], "video/mp4")
 """
 
 
+@contextlib.contextmanager
 def _db():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -190,6 +247,8 @@ def init_db():
             updated_at INTEGER NOT NULL
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at)")
+        if "gpu_contract" not in {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}:
+            conn.execute("ALTER TABLE jobs ADD COLUMN gpu_contract TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -202,7 +261,7 @@ _NODE_RESULT_METADATA_FIELDS = {
     "font_selection", "font_files", "private_font_bundle_sha256",
     "material_selection_contract_version", "material_clip_contract_version",
     "material_manifest", "editing_plan", "bgm_mode", "nine_grid_visuals",
-    "fixed_duration_seconds", "fixed_skill_template", "color_profile",
+    "fixed_duration_seconds", "fixed_skill_template", "color_profile", "gpu_render",
 }
 
 
@@ -400,9 +459,13 @@ class Handler(BaseHTTPRequestHandler):
                     "online": age is not None and age <= NODE_ONLINE_SECONDS,
                     "last_seen_seconds": age,
                     "running": per_node.get(name, 0),
+                    "gpu_ready": _gpu_capable(name, None, now),
                 }
+            gpu_nodes = sum(1 for value in nodes.values() if value["gpu_ready"])
+            ok = ok and (not REQUIRE_GPU or gpu_nodes > 0)
             body = {
                 "ok": ok, "templates": templates,
+                "gpu_required": REQUIRE_GPU, "gpu_nodes_ready": gpu_nodes,
                 "nodes": nodes,
                 "nodes_online": sum(1 for v in nodes.values() if v["online"]),
                 "nodes_total": len(nodes),
@@ -538,6 +601,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 body = self._body()
                 code, raw = _upstream("POST", "/v1/preflight", body, timeout=20)
+                if REQUIRE_GPU and 200 <= code < 300:
+                    checked = json.loads(raw)
+                    template = (checked.get("payload") or {}).get("template_id")
+                    if not template or not _gpu_available(template, _now()):
+                        return self._send(503, {"error": "gpu_unavailable", "detail": "该模板暂时没有可用的 GPU 渲染节点"})
+                    with _db() as conn:
+                        if conn.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0] >= MAX_GPU_PENDING:
+                            return self._send(429, {"error": "gpu_queue_full", "detail": "GPU 渲染队列已满，请稍后重试"})
             except urllib.error.HTTPError as exc:
                 # 上游明确回的 4xx/5xx：**原样透传状态码和响应体**。
                 # 绝不能兜成 503 —— 那会把「参数不对（400）」掩盖成「服务不可用」，
@@ -573,10 +644,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "invalid_request"})
             jid = uuid.uuid4().hex
             now = _now()
+            if REQUIRE_GPU and not isinstance(body.get("template_id"), str):
+                return self._send(400, {"error": "invalid_template"})
+            if REQUIRE_GPU and not _gpu_available(body.get("template_id"), now):
+                return self._send(503, {"error": "gpu_unavailable", "detail": "GPU 渲染节点暂不可用"})
             with _db() as conn:
+                if REQUIRE_GPU:
+                    conn.execute("BEGIN IMMEDIATE")
+                    if conn.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0] >= MAX_GPU_PENDING:
+                        return self._send(429, {"error": "gpu_queue_full", "detail": "GPU 渲染队列已满，请稍后重试"})
                 conn.execute(
-                    "INSERT INTO jobs(id,payload,status,created_at,updated_at) VALUES(?,?,?,?,?)",
-                    (jid, json.dumps(body, ensure_ascii=False), "pending", now, now))
+                    "INSERT INTO jobs(id,payload,status,created_at,updated_at,gpu_contract) VALUES(?,?,?,?,?,?)",
+                    (jid, json.dumps(body, ensure_ascii=False), "pending", now, now, "required" if REQUIRE_GPU else ""))
                 conn.commit()
             return self._send(202, {"job_id": jid, "status": "pending",
                                     "created_at": now, "updated_at": now})
@@ -623,6 +702,7 @@ class Handler(BaseHTTPRequestHandler):
             gpu = _clean_gpu(body.get("gpu"))
             if gpu is not None:
                 _NODE_GPU[node] = gpu
+            _record_render_contract(node, body.get("gpu_render"), _now())
             return self._send(200, {"ok": True})
 
         if p == "/v1/claim":
@@ -631,37 +711,42 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body() or {}
             node = str(body.get("node") or "").strip()[:64] or "unknown"
             now = _now()
+            _record_render_contract(node, body.get("gpu_render"), now)
+            if REQUIRE_GPU and not _gpu_capable(node, None, now):
+                return self._send(200, {"job": None, "deferred": "gpu_unverified"})
             if _node_blocked(node, now):
                 # 熔断中：不派活，也不记「还在轮询」——否则优先线路判空会误判成它还有空位
                 return self._send(200, {"job": None, "deferred": "node_cooldown"})
             # 先记时间戳（被拒也要记，否则高优先级节点的「还在轮询」永远学不到）
             _LAST_CLAIM[node] = now
             _LAST_HEARTBEAT[node] = now
-            if node not in PRIORITY_NODES and _priority_has_room(now):
-                # 高优先级线路还有空位：本节点这次不领，让给它。
-                # 返回 200 + job=None（与「暂时没活」同形），轮询器会照常隔几秒再来问。
-                return self._send(200, {"job": None, "deferred": "priority"})
-            if _should_yield_to_idler(node, now):
-                # 负载均衡：本节点手上在跑的活比别的在线节点多，这次就让给更空的那台。
-                # 起因（2026-09-12）：三台 GPU 同时接活时，一台连着吃下 3 条，其中一条渲染
-                # 被挤到 333 秒，而另一台全程闲着 —— 谁空谁先拿，尾延迟才不会被拉长。
-                return self._send(200, {"job": None, "deferred": "load"})
             with _db() as conn:
                 # 回收失联节点的任务
                 conn.execute(
-                    "UPDATE jobs SET status='pending', node=NULL, updated_at=?"
+                    "UPDATE jobs SET status='pending', node=NULL, updated_at=?,"
+                    " gpu_contract=CASE WHEN gpu_contract!='' THEN 'required' ELSE '' END"
                     " WHERE status='running' AND claimed_at < ?",
                     (now, now - CLAIM_TIMEOUT))
-                row = conn.execute(
-                    "SELECT id,payload FROM jobs WHERE status='pending'"
-                    " ORDER BY created_at LIMIT 1").fetchone()
+                rows = conn.execute(
+                    "SELECT id,payload,gpu_contract FROM jobs WHERE status='pending'"
+                    " ORDER BY created_at LIMIT ?", (MAX_GPU_PENDING,)).fetchall()
+                row = next((r for r in rows if not (REQUIRE_GPU or r["gpu_contract"])
+                            or _gpu_capable(node, json.loads(r["payload"]).get("template_id"), now)), None)
                 if not row:
                     conn.commit()
                     return self._send(200, {"job": None})
+                template = json.loads(row["payload"]).get("template_id")
+                needs_gpu = REQUIRE_GPU or bool(row["gpu_contract"])
+                # Honor the selected job's contract even after admission enforcement is disabled.
+                if node not in PRIORITY_NODES and _priority_has_room(now, template, needs_gpu):
+                    return self._send(200, {"job": None, "deferred": "priority"})
+                if _should_yield_to_idler(node, now, template, needs_gpu):
+                    return self._send(200, {"job": None, "deferred": "load"})
+                contract = json.dumps(_NODE_RENDER[node][1]) if needs_gpu else ""
                 cur = conn.execute(
-                    "UPDATE jobs SET status='running', node=?, claimed_at=?, updated_at=?"
+                    "UPDATE jobs SET status='running', node=?, claimed_at=?, updated_at=?,gpu_contract=?"
                     " WHERE id=? AND status='pending'",
-                    (node, now, now, row["id"]))
+                    (node, now, now, contract, row["id"]))
                 conn.commit()
                 if cur.rowcount != 1:
                     return self._send(200, {"job": None})
@@ -675,9 +760,23 @@ class Handler(BaseHTTPRequestHandler):
             jid = p[len("/v1/result/"):].strip()
             with _db() as conn:
                 row = conn.execute(
-                    "SELECT status, node FROM jobs WHERE id=?", (jid,)).fetchone()
+                    "SELECT status, node, gpu_contract FROM jobs WHERE id=?", (jid,)).fetchone()
             if not row:
                 return self._send(404, {"error": "not_found"})
+            gpu_evidence = None
+            if row["gpu_contract"]:
+                try:
+                    encoded = self.headers.get("X-HQ-GPU-Render", "")
+                    if len(encoded) > 8192:
+                        raise ValueError("GPU header too long")
+                    gpu_evidence = _clean_render_evidence(json.loads(base64.b64decode(encoded, validate=True)))
+                    expected = json.loads(row["gpu_contract"])
+                    if (gpu_evidence is None or gpu_evidence["runtime_sha256"] != expected["runtime_sha256"]
+                            or self.headers.get("X-HQ-Node") != row["node"]
+                            or row["status"] not in {"running", "completed"}):
+                        raise ValueError("GPU evidence does not match claim")
+                except (ValueError, TypeError, KeyError):
+                    return self._send(409, {"error": "gpu_evidence_required"})
             _node_record(row["node"] or "", True, _now())
             n = int(self.headers.get("Content-Length") or "0")
             if n <= 0 or n > MAX_BODY:
@@ -708,6 +807,8 @@ class Handler(BaseHTTPRequestHandler):
                 "file_size": len(data),
                 "cos_key": cos_key if uploaded else "",
             }
+            if gpu_evidence:
+                result["gpu_render"] = gpu_evidence
             now = _now()
             with _db() as conn:
                 conn.execute("UPDATE jobs SET status='completed', result=?, updated_at=?"
@@ -724,7 +825,21 @@ class Handler(BaseHTTPRequestHandler):
             now = _now()
             with _db() as conn:
                 _row = conn.execute(
-                    "SELECT node,status,result FROM jobs WHERE id=?", (jid,)).fetchone()
+                    "SELECT node,status,result,gpu_contract FROM jobs WHERE id=?", (jid,)).fetchone()
+                if _row and _row["gpu_contract"]:
+                    if body.get("node") != _row["node"]:
+                        return self._send(409, {"error": "node_mismatch"})
+                    if ok:
+                        if _row["status"] != "completed":
+                            return self._send(409, {"error": "gpu_output_not_verified"})
+                        existing = json.loads(_row["result"] or "{}")
+                        incoming = body.get("result") if isinstance(body.get("result"), dict) else {}
+                        evidence = _clean_render_evidence(incoming.get("gpu_render") or existing.get("gpu_render"))
+                        expected = json.loads(_row["gpu_contract"])
+                        if (_row["status"] != "completed" or evidence is None
+                                or evidence["runtime_sha256"] != expected["runtime_sha256"]):
+                            return self._send(409, {"error": "gpu_output_not_verified"})
+                        body["result"] = {**incoming, "gpu_render": evidence}
                 _node_record(_row["node"] if _row else "", ok, now,
                              body.get("error") or "")
                 if ok:
