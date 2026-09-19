@@ -219,3 +219,24 @@ test('渠道样式版本随内容变化而更新',()=>{
   const hash=crypto.createHash('md5').update(css.replace(/\r\n/g,'\n')).digest('hex').slice(0,8);
   assert.ok(index.includes('/admin/channel-simple.css?v='+hash));
 });
+
+test('精简编辑只更改供应商 URL Key，保留其他生产参数',()=>{
+  const manager=fs.readFileSync(path.join(__dirname,'../site/admin/channel-manager.js'),'utf8');
+  const ctx={window:{}};vm.createContext(ctx);
+  vm.runInContext(manager.slice(manager.indexOf('    function compactPayload('),manager.indexOf('    function edit(c=')),ctx);
+  const old={id:'a',version:7,name:'渠道 A',adapter:'openai_image',model:'gpt-image-2',enabled:false,monitor:true,daily_test:true,proxy:'https://proxy.example',timeout:77,concurrency:3,queue_limit:0,rpm:21,poll_seconds:999,daily_hour:0,daily_limit:2,test_cost:1,daily_budget:3,fixture:{prompt:'原提示词',ratio:'9:16',custom:'保留'},secret:'NEVER_COPY',history:[{}]};
+  const result=ctx.compactPayload(old,{supplier:'新供应商',base_url:'https://new.example/v1',secret:'',model:'恶意改变',enabled:true});
+  for(const key of Object.keys(old).filter(key=>!['secret','history'].includes(key)))assert.deepEqual(result[key],old[key],key);
+  assert.equal(result.secret,'');assert.equal(result.supplier,'新供应商');assert.equal(result.base_url,'https://new.example/v1');assert.equal(result.history,undefined);
+  const example=ctx.invocationExample({...old,base_url:'https://old.example/v1'});
+  assert.match(example,/YOUR_API_KEY/);assert.doesNotMatch(example,/NEVER_COPY/);assert.match(example,/images\/generations/);
+  assert.match(ctx.invocationExample({...old,adapter:'minimax_h3',model:'MiniMax-H3'}),/v2\/video_generation/);
+  const compactForm=manager.slice(manager.indexOf('      if(c.id){'),manager.indexOf("      el('cmEditor').innerHTML='<form id=\"cmForm\" class=\"cm-form\"><h3>"));
+  assert.match(compactForm,/供应商名称/);assert.match(compactForm,/Base URL/);assert.match(compactForm,/secretField/);assert.match(compactForm,/调用示例/);
+  assert.doesNotMatch(compactForm,/field\('实际模型|data-edit-pane/);
+  assert.match(source,/data-cm-channel-history/);
+  assert.match(source,/env\.channelHistory\?\./);
+  assert.match(manager,/channelHistory:showChannelHistory/);
+  const history=manager.slice(manager.indexOf('    function showChannelHistory('),manager.indexOf('    function edit(c='));
+  assert.match(history,/data-rollback/);
+});

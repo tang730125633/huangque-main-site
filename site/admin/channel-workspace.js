@@ -253,7 +253,7 @@
         const tone={ok:'ok',failed:'bad',unknown:'warn',running:'neutral',queued:'neutral',blocked:'warn',expired:'warn',missing:'neutral',unattributed:'warn','stale-version':'neutral',attention:'warn',neutral:'neutral',off:'muted'};
         const healthTone=channel.enabled?tone[proof.state]||'neutral':'off';
         const healthLabel=channel.enabled?proof.label:'已停用';
-        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+1)+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small><code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions"><button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" class="mini" data-cm-priority-remove="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">移除</button></details></div></div>';
+        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+1)+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small><code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions"><button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" class="mini" data-cm-priority-remove="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">移除</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
       }).join('');
       const available=candidates.filter(item=>!draft.channels.includes(item.id));
       const routeTabs=routes.length>1?'<nav class="cm-priority-route-tabs" aria-label="模型能力">'+routes.map(route=>'<button type="button" data-cm-priority-route="'+esc(route.operation_id)+'" class="'+(route.operation_id===active.operation_id?'active':'')+'" aria-pressed="'+String(route.operation_id===active.operation_id)+'">'+esc(route.capability||route.operation_id)+'</button>').join('')+'</nav>':'';
@@ -319,6 +319,16 @@
       const product=(page?.products||[]).find(item=>item.key===productKey);
       const model=(product?.models||[]).find(item=>item.key===modelKey);
       if(!page||!product||!model)return;
+      if(simpleView){
+        const primary=modelLegs(model,['primary']).map(([,item])=>item);
+        if(primary.length===1&&primary[0].management?.kind==='managed_channel'){
+          if(!closeLegacy())return;
+          env.editChannel?.(primary[0].management.uid.replace(/^managed:/,''));return;
+        }
+        const entry=primary.length===1?rows.find(row=>row.uid===primary[0].management?.uid):null;
+        const target={gemini:'image.banana.nb2',openai:'image.openai',seedance:'image.seedream',runninghub:'video.tryon.classic',wavespeed:'video.tryon.fast'}[entry?.key];
+        if(target&&env.openProviderConfig){if(!closeLegacy())return;env.openProviderConfig(target,{model:model.actual_model});return}
+      }
       matrixExpanded={page:pageKey,product:productKey,model:modelKey,operationId:matrixExpanded?.model===modelKey?matrixExpanded.operationId:''};
       if(!closeLegacy())return;closeGuard=null;selected=null;shell(product.label+' · '+model.label);
       const status=modelStatus(product,model);
@@ -534,6 +544,7 @@
       if(b.dataset.cmMatrixPage){matrixPage=b.dataset.cmMatrixPage;renderMatrix();return}
       if(b.dataset.cmMatrixHidden!=null){matrixShowHidden=!matrixShowHidden;renderMatrix();return}
       if(b.dataset.cmManagedEdit){if(!closeLegacy())return;env.editChannel?.(b.dataset.cmManagedEdit);return}
+      if(b.dataset.cmChannelHistory){if(!closeLegacy())return;env.channelHistory?.(b.dataset.cmChannelHistory);return}
       if(b.dataset.cmServerReplace){const template=serverReplacementTemplates[b.dataset.cmServerReplace];if(!template){toast('该线路暂不支持后台直接修改');return}if(!closeLegacy())return;env.newChannel?.({...template,_replacement:{...template._replacement,operations:[...template._replacement.operations]}});return}
       if(b.dataset.cmNewChannel!=null){if(!closeLegacy())return;env.newChannel?.();return}
       if(b.dataset.cmInlineRoute){const target=rows.find(c=>c.uid===b.dataset.cmInlineRoute);if(!target){toast('没有找到对应的渠道配置');return}if(!closeLegacy())return;el('cmDetail').querySelectorAll('[data-cm-inline-route]').forEach(item=>{const active=item.dataset.cmInlineRoute===b.dataset.cmInlineRoute&&item.dataset.cmInlineKind===b.dataset.cmInlineKind;item.classList.toggle('active',active);item.setAttribute('aria-pressed',String(active))});env.detail(target,{managementKind:b.dataset.cmInlineKind||''});return}

@@ -52,7 +52,7 @@
 
     function find(target){return items.find(i=>i.target_id===target)||{}}
 
-    async function open(target){
+    async function open(target,context={}){
       if(!items.length)await load();
       if(!find(target).editable||find(target).available===false){toast(find(target).reason||'这条线路当前不可修改');return}
       close();
@@ -61,16 +61,15 @@
       const dlg=document.createElement('dialog');
       dlg.id=dialogId;dlg.className='cm-lifecycle-dialog';
       const poolWarn=it.pool_shared
-        ?'<p class="cm-operation-error" role="alert" style="color:#e6c77b">注意：该环境变量同时是号池的运行兜底/快照来源。修改后受影响的功能：'
+        ?'<p class="cm-operation-error" role="alert" style="color:#e6c77b">注意：该环境变量同时是号池的运行兜底/快照来源。影响范围：'
           +esc((it.features||[]).join('、'))+'；视频侧号池已有快照不会随之变化，需单独核对。</p>'
         :'';
       dlg.innerHTML='<form>'
         +'<h3>修改 API URL／Key · '+esc((it.features||[]).join(' / ')||target)+'</h3>'
-        +'<p class="muted">供应商：'+esc(it.provider||'')+' · 当前来源：'+(it.source==='backend'?'后台配置 v'+esc(it.version):'服务器环境变量')+'</p>'
-        +'<label>API URL<input class="field" name="url" value="'+esc(it.url||'')+'" spellcheck="false"></label>'
-        +'<p class="muted" style="font-size:11px">默认地址：'+esc(it.url_default||'（无）')+'；必须 HTTPS，且域名在服务器允许名单内。</p>'
+        +'<label>供应商名称（内置线路，只读）<input class="field" value="'+esc(it.provider||'')+'" readonly></label>'
+        +'<label>Base URL<input class="field" name="url" value="'+esc(it.url||'')+'" spellcheck="false"></label>'
         +'<label>API Key（留空表示保留当前值，不回显旧密钥）<input class="field" name="secret" type="password" autocomplete="new-password" placeholder="不填则保留已保存密钥"></label>'
-        +'<p><b>影响范围</b>：'+esc((it.features||[]).join('、')||'未知')+'</p>'
+        +'<section class="cm-call-example"><h4>调用示例</h4><p class="muted">仅展示，不会执行。密钥为占位符，运行可能产生费用。</p><pre id="pcExample"></pre></section>'
         +poolWarn
         +'<p id="pcResult" class="muted" role="status">尚未验证。</p>'
         +'<p class="cm-operation-error" role="alert"></p>'
@@ -84,13 +83,21 @@
       dlg.addEventListener('cancel',event=>{if(busy)event.preventDefault()});
       dlg.onclose=close;
       const form=dlg.querySelector('form');
+      const updateExample=()=>{
+        const adapter={'image.seedream':'openai_image','image.openai':'openai_image','image.banana.nb2':'gemini_image'}[target];
+        if(!adapter||!window.ChannelConnectionExample){dlg.querySelector('#pcExample').textContent='该线路需要专用工作流参数，请按对应供应商的工作流接口调用；不提供不兼容的通用生图请求。';return}
+        let base=String(form.elements.url.value||it.url||'').replace(/\/$/,'');
+        if(target==='image.openai'&&!base.endsWith('/v1'))base+='/v1';
+        dlg.querySelector('#pcExample').textContent=window.ChannelConnectionExample({adapter,base_url:base,model:context.model||'YOUR_MODEL_ID'});
+      };
+      updateExample();
       const err=dlg.querySelector('[role=alert]');
       // 验证后修改任一输入 → 旧验证立即失效
       let revision=0;
       const invalidate=()=>{revision++;openTarget=target;form.dataset.seq='';form.dataset.ok='';
         dlg.querySelector('[data-pc-publish]').disabled=true;
         dlg.querySelector('#pcResult').textContent='输入已修改，请重新验证。'};
-      form.elements.url.oninput=invalidate;
+      form.elements.url.oninput=()=>{invalidate();updateExample()};
       form.elements.secret.oninput=invalidate;
       const setBusy=v=>{busy=v;[...form.querySelectorAll('button')].forEach(b=>{b.disabled=v});
         form.elements.url.disabled=v;form.elements.secret.disabled=v;
