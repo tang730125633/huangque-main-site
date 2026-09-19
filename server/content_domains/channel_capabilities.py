@@ -58,11 +58,11 @@ CAPABILITIES = {
     },
 
     # ── 有供应商，但执行器还没接进渠道框架：需要新增适配器 ──────────────────
+    # ── 已接入：Sora（适配器复用原厂 video_openai，它已支持注入 api_key / api_base）──
     "sora_video": {
-        "switchable": False,
-        "adapters": (),
-        "reason": "Sora 走 video.py 的专用提交流程，channel_runtime 还没有 Sora 适配器；"
-                  "需要先接入 /videos 提交与状态查询，才能交给渠道切换。",
+        "switchable": True,
+        "adapters": ("sora_video",),
+        "reason": "",
     },
     "video": {
         "switchable": False,

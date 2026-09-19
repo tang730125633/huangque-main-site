@@ -31,6 +31,9 @@ ADAPTERS = {
     # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
     'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True},
     'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True},
+    # Sora：复用原厂 video_openai 客户端（已支持注入 api_key / api_base），
+    # kind 用任务类型 sora_video，与 function_registry 的 task_match.kind 一致。
+    'sora_video': {'name': 'OpenAI Sora 协议', 'kind': 'sora_video', 'references': True},
 }
 
 

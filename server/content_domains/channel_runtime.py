@@ -86,6 +86,18 @@ def validate_payload(cfg, payload):
             raise ValueError('Gemini 官方生图参考图总大小超过 48MB')
         if str(payload.get('ratio') or '1:1') not in RATIOS:
             raise ValueError('Gemini 官方生图不支持该画面比例')
+    if cfg['adapter'] == 'sora_video':
+        from . import video as video_domain
+        if len(refs) > 1:
+            raise ValueError('Sora 适配器只支持 1 张首帧参考图')
+        if payload.get('operation') not in {None, '', 'generate'}:
+            raise ValueError('Sora 适配器不支持视频编辑操作')
+        ratio = str(payload.get('ratio') or '9:16')
+        if ratio not in video_domain.SORA_RATIOS:
+            raise ValueError('Sora 适配器支持'+'、'.join(sorted(video_domain.SORA_RATIOS))+'比例')
+        duration = int(payload.get('duration') or payload.get('seconds') or 4)
+        if duration not in video_domain.SORA_SECONDS:
+            raise ValueError('Sora 时长只能是'+'、'.join(str(x) for x in sorted(video_domain.SORA_SECONDS))+'秒')
     if cfg['adapter'] == 'minimax_h3':
         from .video_minimax_h3 import build_request
         build_request(payload['prompt'], refs, payload.get('ratio') or '9:16', payload.get('duration') or 5, payload.get('resolution') or '2K')
@@ -332,10 +344,93 @@ def build_generation_request(cfg, payload, preview=False):
         if refs:
             video_input['reference_images'] = _lechuang_refs(refs)
         return '/generations', {'model': cfg['model'], 'input': video_input}, None
+    if adapter == 'sora_video':
+        # 预览/日志用：真实请求由 _generate_sora → video_openai 构造（与原厂一致）。
+        size = payload.get('size') or _sora_size(cfg, payload)
+        body = {'model': cfg['model'], 'prompt': payload['prompt'],
+                'seconds': int(payload.get('duration') or payload.get('seconds') or 4),
+                'size': size}
+        if refs:
+            body['input_reference'] = '<上传的首帧图片>'
+        return '/videos', body, None
     body = {'model':cfg['model'],'prompt':payload['prompt'],'duration':int(payload.get('duration') or 5),'aspect_ratio':payload.get('ratio') or '9:16','resolution':str(payload.get('resolution') or '720p')}
     if refs:
         body['image'] = {'url':refs[0]}
     return '/videos/generations', body, None
+
+
+def _sora_size(cfg, payload):
+    """按原厂同一张 SORA_SIZE_MAP 推导尺寸，保证与原线路行为一致。"""
+    from . import video as video_domain
+    model = str(payload.get('model') or cfg['model'])
+    ratio = str(payload.get('ratio') or '9:16')
+    resolution = str(payload.get('resolution') or '720p')
+    return str(payload.get('size') or video_domain.SORA_SIZE_MAP.get((model, resolution, ratio)) or '')
+
+
+def _generate_sora(cfg, payload, rid, job_id, metadata, refs):
+    """托管 Sora 任务：复用原厂 video_openai 客户端，不重写提交/轮询/下载。
+
+    video_openai.generate / download_content / resume 都已接受注入的 api_key 与 api_base，
+    因此渠道自己的凭据与线路直接生效；非幂等 POST 仍只发一次。
+    """
+    from . import video as video_domain, video_openai, core
+    model = str(payload.get('model') or cfg['model'])
+    seconds = int(payload.get('duration') or payload.get('seconds') or 4)
+    size = _sora_size(cfg, payload)
+    if not size:
+        raise PreSubmissionFailure('Sora 无法根据模型/分辨率/比例确定尺寸')
+    input_reference = None
+    if refs:
+        try:
+            input_reference = video_domain._prepare_sora_input_reference(refs[0], size)
+        except ValueError as exc:
+            raise PreSubmissionFailure(str(exc)[:200]) from None
+    store.finish(rid, 'running', '提交 Sora')
+    rendered = trace.call(
+        job_id, 'provider_submit',
+        lambda: video_openai.generate(
+            model, str(payload.get('provider_prompt') or payload['prompt']), seconds, size,
+            job_id=job_id, api_key=cfg['secret'], api_base=cfg['base_url'],
+            input_reference=input_reference),
+        **metadata)
+    provider_id = str((rendered or {}).get('video_id') or '').strip()
+    if not provider_id:
+        raise ProviderError('Sora 已完成但缺少 video_id')
+    store.finish(rid, 'running', '下载生成视频', provider_id)
+    filename = 'channel_' + uuid.uuid4().hex + '.mp4'
+    target = core.OUT_DIR / filename
+    trace.call(job_id, 'download',
+               lambda: video_openai.download_content(
+                   provider_id, target, api_key=cfg['secret'], api_base=cfg['base_url']),
+               provider_task_id=provider_id, **metadata)
+    try:
+        import subprocess
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-count_frames',
+             '-show_entries', 'stream=codec_type,width,height,nb_read_frames',
+             '-of', 'json', str(target)],
+            capture_output=True, timeout=120, check=True)
+        streams = json.loads(probe.stdout).get('streams', [])
+        ok = any(s.get('codec_type') == 'video' and int(s.get('width') or 0) > 0
+                 and int(s.get('height') or 0) > 0
+                 and str(s.get('nb_read_frames') or '').isdigit()
+                 and int(s['nb_read_frames']) > 0 for s in streams)
+        if probe.stderr or not ok:
+            raise ValueError('成品帧解码未通过，不能判定视频有效')
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    trace.record(job_id, 'artifact', 'passed', provider_task_id=provider_id, **metadata)
+    url = core.public_url(filename, 'video/mp4')
+    binding = payload.get('_channel_binding') or {}
+    return {'type': 'video', 'file': filename, 'url': url, 'files': [filename],
+            'urls': [url], 'count': 1, 'mode': 'generate',
+            'provider': cfg['name'], 'model': cfg['model'], 'request_id': provider_id,
+            'channel_id': cfg['id'], 'channel_version': cfg['version'],
+            'operation_id': binding.get('operation_id'),
+            'mapping_revision': binding.get('mapping_revision'),
+            'invocation_source': binding.get('invocation_source')}
 
 
 def generate(cfg, payload, rid, job_id):
@@ -353,6 +448,9 @@ def generate(cfg, payload, rid, job_id):
         raise PreSubmissionFailure(str(exc)[:200]) from None
     trace.record(job_id,'route','recorded',**metadata)
     store.finish(rid,'running','提交供应商')
+    # Sora 走原厂 video_openai（已支持注入 Key/base）；其余适配器走通用 HTTP 路径。
+    if cfg['adapter'] == 'sora_video':
+        return _generate_sora(cfg, payload, rid, job_id, metadata, refs)
     # 乐创付费创建请求要求 8-128 字符幂等键；run id 为 32 位 hex，天然幂等。
     extra_headers = {'Idempotency-Key': str(rid)} if is_lechuang else None
     result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body,extra_headers=extra_headers,files=files),**metadata)

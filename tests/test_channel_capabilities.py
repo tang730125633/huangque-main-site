@@ -78,9 +78,8 @@ class ChannelCapabilityTests(unittest.TestCase):
         self.assertTrue(registry.operation('video.grok.text')['channel_eligible'])
 
     def test_known_supplier_functions_are_blocked_with_specific_reasons(self):
-        """有供应商但执行器未接入的，必须明确说明缺什么，而不是含糊的「不支持」。"""
+        """还没接通执行器的，必须明确说明缺什么，而不是含糊的「不支持」。"""
         for operation_id, keyword in (
-            ('video.sora.text', 'Sora'),
             ('video.digital_ip.text.single', 'HeyGen'),
             ('video.tryon.fast', 'WaveSpeed'),
             ('audio.tts.public', 'TTS'),
@@ -90,6 +89,29 @@ class ChannelCapabilityTests(unittest.TestCase):
                 self.assertIsNotNone(op, operation_id)
                 self.assertFalse(op['channel_eligible'])
                 self.assertIn(keyword, op['channel_reason'])
+
+    def test_sora_is_switchable_by_reusing_the_official_client(self):
+        """Sora 已接通：适配器复用原厂 video_openai（它已支持注入 api_key / api_base）。"""
+        self.assertIn('sora_video', caps.switchable_kinds())
+        self.assertEqual(('sora_video',), caps.adapters_for('sora_video'))
+        op = registry.operation('video.sora.text')
+        self.assertTrue(op['channel_eligible'])
+        self.assertEqual('sora_video', op['channel_kind'])
+        self.assertEqual('', op['channel_reason'])
+
+    def test_sora_adapter_reuses_injectable_official_client(self):
+        """Sora 适配器的执行必须落到可注入凭据的原厂客户端上，不能自建一套。"""
+        import inspect
+        from content_domains import video_openai
+        from content_domains import channel_runtime
+        signature = inspect.signature(video_openai.generate)
+        self.assertIn('api_key', signature.parameters)
+        self.assertIn('api_base', signature.parameters)
+        self.assertIn('download_content', dir(video_openai))
+        source = inspect.getsource(channel_runtime._generate_sora)
+        self.assertIn('video_openai.generate', source)
+        self.assertIn("cfg['secret']", source)
+        self.assertIn("cfg['base_url']", source)
 
 
 if __name__ == '__main__':

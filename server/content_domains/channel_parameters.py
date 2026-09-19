@@ -210,6 +210,17 @@ def capabilities(cfg,profile=None):
         return dict(profile='xai_video',profiles=['xai_video'],fields={'ratio':['9:16','16:9','1:1'],
                     'resolution':resolutions,'duration':list(range(1,16))},
                     reference_min=1 if cfg['model']=='grok-imagine-video-1.5' else 0,reference_max=1,count=1)
+    if adapter=='sora_video':
+        # 复用原厂 Sora 的模型 / 时长 / 比例 / 尺寸事实，不另写一份白名单。
+        from . import video as video_domain
+        if cfg['model'] not in video_domain.SORA_MODELS:
+            raise ValueError('Sora 适配器仅支持模型：'+'、'.join(sorted(video_domain.SORA_MODELS)))
+        ratios = sorted(video_domain.SORA_RATIOS)
+        resolutions = sorted({key[1] for key in video_domain.SORA_SIZE_MAP if key[0] == cfg['model']}) or ['720p']
+        return dict(profile='sora_video',profiles=['sora_video'],
+                    fields={'ratio':ratios,'resolution':resolutions,
+                            'duration':sorted(video_domain.SORA_SECONDS)},
+                    reference_min=0,reference_max=1,count=1)
     if adapter=='lechuang_image':
         # 乐创统一生图（gpt-image-2 等）：文生图 + 图生图修图（1..9 参考图），部分线路支持透明底。
         return dict(profile='lechuang_image',profiles=['lechuang_image'],
