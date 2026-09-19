@@ -314,6 +314,36 @@
       return '<article class="cm-current-route"><div class="cm-current-route-head"><div><span>当前主渠道</span><h3>'+esc(item.name||'未命名渠道')+'</h3></div><span class="cm-transport '+esc(item.connection_type||'unknown')+'">'+esc(transportName(item.connection_type))+'</span></div>'
         +'<dl><div><dt>供应商</dt><dd>'+esc(item.supplier||'未标注')+'</dd></div><div><dt>Base URL</dt><dd><code>'+esc(base)+'</code></dd></div><div><dt>凭据来源</dt><dd>'+esc(item.credential_source||'尚未登记')+'</dd></div><div><dt>密钥</dt><dd>'+esc(keyLabel)+'</dd></div><div><dt>鉴权</dt><dd>'+esc(proof)+(item.auth?.checked_at?' <span class="muted">'+esc(date(item.auth.checked_at))+(item.auth.version!=null?' · v'+esc(item.auth.version):'')+'</span>':'')+'</dd></div><div><dt>完整生成</dt><dd>'+esc(full)+(item.full?.checked_at?' <span class="muted">'+esc(date(item.full.checked_at))+(item.full.version!=null?' · v'+esc(item.full.version):'')+'</span>':'')+'</dd></div><div><dt>生产角色</dt><dd>'+esc(item.production?.summary||'按路由状态另核')+'</dd></div></dl>'+manageAction(item)+'</article>';
     }
+    function newModelChannel(pageKey,productKey,modelKey){
+      const page=matrixPages().find(p=>p.page===pageKey);
+      const product=page?.products?.find(p=>p.key===productKey);
+      const model=product?.models?.find(m=>m.key===modelKey);
+      const routes=(model?.routes||[]).filter(r=>(data.operations||[]).some(op=>op.operation_id===r.operation_id));
+      const route=routes.find(r=>r.operation_id===matrixExpanded?.operationId)||routes[0];
+      const operation=(data.operations||[]).find(op=>op.operation_id===route?.operation_id);
+      if(!model?.actual_model||!operation){toast('当前模型尚未接通新增托管渠道');return}
+      // Only copy protocol metadata from an exact-model primary, never shadow candidates or credentials.
+      const primary=route.primary;
+      const managed=(data.items||[]).find(c=>primary?.management?.kind==='managed_channel'&&c.id===primary.management.uid?.replace(/^managed:/,'')&&c.model===model.actual_model);
+      const legacy=rows.find(c=>c.uid===primary?.management?.uid);
+      const adapter=managed?.adapter||(primary?.management?.kind==='server_env'?{gemini:'gemini_image',openai:'openai_image'}[legacy?.key]:'');
+      if(!adapter||data.adapters?.[adapter]?.kind!==operation.channel_kind){toast('当前模型暂不支持新增兼容供应商；不会套用其他模型的协议');return}
+      if(!closeLegacy())return;
+      env.newChannel?.({
+        _modelCreate:{page:pageKey,product:productKey,model:modelKey,operationId:operation.operation_id},
+        name:model.label,model:model.actual_model,adapter,supplier:'',base_url:'',
+        connection_type:'unknown',enabled:true,monitor:false,daily_test:false,
+        test_cost:0,daily_budget:0,daily_limit:0,
+        fixture:{prompt:'一张简洁的产品展示图',ratio:'1:1',duration:5}
+      });
+    }
+    function addCreatedChannel(channel,context){
+      if(!(data.items||[]).some(c=>c.id===channel.id)){toast('渠道已保存，但列表读回未确认；请刷新核对，不要重复新增');return}
+      const draft=priorityDraft({operation_id:context.operationId});
+      if(!draft.channels.includes(channel.id))draft.channels.push(channel.id);
+      renderMatrix();
+      toast('新渠道已保存并加入当前列表草稿；原渠道未改。检测并发布后才参与生产。');
+    }
     function openMatrixModel(pageKey,productKey,modelKey){
       const page=matrixPages().find(item=>item.page===pageKey);
       const product=(page?.products||[]).find(item=>item.key===productKey);
@@ -379,7 +409,7 @@
       const name=({product,model})=>model.label===product.label?product.label:product.label+' · '+model.label;
       const modelButton=item=>'<button type="button" data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(item.product.key)+'" data-cm-model-key="'+esc(item.model.key)+'" aria-pressed="'+String(item===active)+'"><strong>'+esc(name(item))+'</strong><small>'+esc(item.model.actual_model||'模型按功能配置')+'</small></button>';
       const hidden=models.filter(item=>item.hidden);
-      host.innerHTML='<div class="cm-simple"><div class="cm-category-toolbar"><details class="cm-category-picker"><summary>☰ <span>'+esc(page.label||'选择功能')+'</span> <small>切换功能 ▾</small></summary><div class="cm-category-sheet"><header><strong>选择业务功能</strong><button type="button" data-cm-category-close aria-label="关闭功能选择">×</button></header><nav aria-label="业务功能">'+pages.map(p=>'<button type="button" data-cm-matrix-page="'+esc(p.page)+'" aria-pressed="'+String(p.page===page.page)+'">'+esc(p.label)+'</button>').join('')+'</nav></div></details><details class="cm-view-tools"><summary>更多</summary><button type="button" data-cm-simple-toggle>高级视图</button></details></div><nav class="cm-model-strip" aria-label="模型选择">'+(models.filter(item=>!item.hidden).map(modelButton).join('')||'<p>当前分类没有可显示的模型。</p>')+'</nav>'+(hidden.length?'<details class="cm-simple-history"><summary>历史 / 隐藏模型（'+hidden.length+'）</summary><nav class="cm-model-strip">'+hidden.map(modelButton).join('')+'</nav></details>':'')+(active?'<section class="cm-selected-model"><div class="cm-simple-heading"><div><h3>'+esc(name(active))+'</h3><p>'+esc(active.model.actual_model||'模型按功能配置')+'</p></div><button type="button" data-cm-model-config data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(active.product.key)+'" data-cm-model-key="'+esc(active.model.key)+'">编辑</button></div><p class="cm-inline-hint">下方仅排列当前模型的兼容渠道，第一位为优先线路。托管排序发布成功后才生效。</p><div id="cmModelPriority">'+priorityEditor(active.product,active.model)+'</div></section>':'')+'</div>';
+      host.innerHTML='<div class="cm-simple"><div class="cm-category-toolbar"><details class="cm-category-picker"><summary>☰ <span>'+esc(page.label||'选择功能')+'</span> <small>切换功能 ▾</small></summary><div class="cm-category-sheet"><header><strong>选择业务功能</strong><button type="button" data-cm-category-close aria-label="关闭功能选择">×</button></header><nav aria-label="业务功能">'+pages.map(p=>'<button type="button" data-cm-matrix-page="'+esc(p.page)+'" aria-pressed="'+String(p.page===page.page)+'">'+esc(p.label)+'</button>').join('')+'</nav></div></details><details class="cm-view-tools"><summary>更多</summary><button type="button" data-cm-simple-toggle>高级视图</button></details></div><nav class="cm-model-strip" aria-label="模型选择">'+(models.filter(item=>!item.hidden).map(modelButton).join('')||'<p>当前分类没有可显示的模型。</p>')+'</nav>'+(hidden.length?'<details class="cm-simple-history"><summary>历史 / 隐藏模型（'+hidden.length+'）</summary><nav class="cm-model-strip">'+hidden.map(modelButton).join('')+'</nav></details>':'')+(active?'<section class="cm-selected-model"><div class="cm-simple-heading"><div><h3>'+esc(name(active))+'</h3><p>'+esc(active.model.actual_model||'模型按功能配置')+'</p></div><button type="button" data-cm-model-add data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(active.product.key)+'" data-cm-model-key="'+esc(active.model.key)+'">＋新增渠道</button></div><p class="cm-inline-hint">下方仅排列当前模型的兼容渠道，第一位为优先线路。托管排序发布成功后才生效。</p><div id="cmModelPriority">'+priorityEditor(active.product,active.model)+'</div></section>':'')+'</div>';
     }
     function renderAdvancedMatrix(){
       const host=el('cmMatrix');if(!host)return;
@@ -514,7 +544,7 @@
     }
     function editor(title){closeGuard=null;el('cmEditor').oninput=null;el('cmEditor').onchange=null;el('cmEditor').onclick=null;if(el('cmDrawer').hidden)shell(title);el('cmDrawerTitle').textContent=title;el('cmDetail').hidden=true}
     const root=document.querySelector('[data-module="managedChannels"]');
-    root.addEventListener('click',async e=>{const simpleToggle=e.target.closest?e.target.closest('[data-cm-simple-toggle]'):null;if(simpleToggle&&simpleToggle.dataset&&'cmSimpleToggle' in simpleToggle.dataset){simpleView=!simpleView;renderMatrix();return}const configTarget=e.target.closest('[data-cm-model-config]');if(configTarget?.dataset?.cmModelKey){openMatrixModel(configTarget.dataset.cmModelPage,configTarget.dataset.cmModelProduct,configTarget.dataset.cmModelKey);return}const modelTarget=e.target.closest('[data-cm-model-key]');if(modelTarget?.dataset?.cmModelKey){const same=matrixExpanded&&matrixExpanded.page===modelTarget.dataset.cmModelPage&&matrixExpanded.product===modelTarget.dataset.cmModelProduct&&matrixExpanded.model===modelTarget.dataset.cmModelKey;matrixExpanded=same?null:{page:modelTarget.dataset.cmModelPage,product:modelTarget.dataset.cmModelProduct,model:modelTarget.dataset.cmModelKey,operationId:''};renderMatrix();return}const b=e.target.closest('button');if(!b)return;
+    root.addEventListener('click',async e=>{const simpleToggle=e.target.closest?e.target.closest('[data-cm-simple-toggle]'):null;if(simpleToggle&&simpleToggle.dataset&&'cmSimpleToggle' in simpleToggle.dataset){simpleView=!simpleView;renderMatrix();return}const addTarget=e.target.closest('[data-cm-model-add]');if(addTarget?.dataset?.cmModelKey){newModelChannel(addTarget.dataset.cmModelPage,addTarget.dataset.cmModelProduct,addTarget.dataset.cmModelKey);return}const configTarget=e.target.closest('[data-cm-model-config]');if(configTarget?.dataset?.cmModelKey){openMatrixModel(configTarget.dataset.cmModelPage,configTarget.dataset.cmModelProduct,configTarget.dataset.cmModelKey);return}const modelTarget=e.target.closest('[data-cm-model-key]');if(modelTarget?.dataset?.cmModelKey){const same=matrixExpanded&&matrixExpanded.page===modelTarget.dataset.cmModelPage&&matrixExpanded.product===modelTarget.dataset.cmModelProduct&&matrixExpanded.model===modelTarget.dataset.cmModelKey;matrixExpanded=same?null:{page:modelTarget.dataset.cmModelPage,product:modelTarget.dataset.cmModelProduct,model:modelTarget.dataset.cmModelKey,operationId:''};renderMatrix();return}const b=e.target.closest('button');if(!b)return;
       if(b.dataset.cmCategoryClose!=null){b.closest('details').open=false;return}
       if(b.dataset.cmPriorityClose!=null){if(el('cmModelPriority'))el('cmModelPriority').innerHTML='';matrixExpanded=null;renderMatrix();return}
       if((priorityBusy||priorityUncertain)&&Object.keys(b.dataset).some(key=>key.startsWith('cmPriority')))return;
@@ -576,6 +606,6 @@
     },()=>priorityBusy||priorityUncertain);
     [['cmSearch','q','input'],['cmSupplier','supplier','change'],['cmTransport','transport','change'],['cmState','status','change'],['cmHistory','history','change']].forEach(([id,key,event])=>el(id).addEventListener(event,()=>{filters[key]=key==='history'?el(id).checked:el(id).value;list()}));
     el('cmDrawer').addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();close()}if(e.key==='Tab'){const nodes=Array.from(el('cmDrawer').querySelectorAll('button,input,select,textarea,a[href]')).filter(n=>!n.disabled&&n.getClientRects().length);if(!nodes.length)return;const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
-    return {render,open,close,editor,showTab,setCloseGuard:guard=>{closeGuard=guard}};
+    return {render,open,close,editor,showTab,addCreatedChannel,setCloseGuard:guard=>{closeGuard=guard}};
   };
 })();

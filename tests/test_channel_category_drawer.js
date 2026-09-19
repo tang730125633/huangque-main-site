@@ -6,6 +6,109 @@
 */
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const ROOT=path.join(__dirname,'..');
+function submitHarness(post){
+  const manager=fs.readFileSync(path.join(ROOT,'site/admin/channel-manager.js'),'utf8');
+  let handler;const button={disabled:false},form={id:'cmForm',dataset:{compact:'true'},querySelector:()=>button};
+  const calls={closed:0,added:[],messages:[]};
+  const ctx={document:{querySelector:()=>({addEventListener:(_,fn)=>handler=fn})},
+    editing:{id:undefined,model:'gpt-image-2',_modelCreate:{operationId:'A'}},
+    createUncertain:false,createPending:false,values:()=>({supplier:'mock',base_url:'https://example.com',secret:'mock-only'}),
+    compactPayload:(channel,v)=>({...v,model:channel.model}),routeMappings:()=>[],
+    mappingChannels:()=>[],confirm:()=>true,post,load:async()=>true,
+    el:id=>id==='cmForm'?ctx.currentForm:null,currentForm:form,
+    workspace:{close:()=>calls.closed++,addCreatedChannel:(saved,creation)=>calls.added.push({saved,creation})},
+    toast:m=>calls.messages.push(m)};
+  vm.createContext(ctx);
+  const start=manager.indexOf("    document.querySelector('[data-module=\"managedChannels\"]').addEventListener('submit'");
+  vm.runInContext(manager.slice(start,manager.indexOf('    setInterval(',start)),ctx);
+  return {ctx,form,button,calls,submit:()=>handler({target:form,preventDefault(){}})};
+}
+
+test('延迟保存使用提交时模型，不关闭后来打开的编辑器',async()=>{
+  let finish,started;
+  const ready=new Promise(r=>started=r);
+  const h=submitHarness(()=>{started();return new Promise(r=>finish=r)});
+  const pending=h.submit();await ready;
+  h.ctx.editing={id:'other',model:'another-model',_modelCreate:{operationId:'B'}};
+  h.ctx.currentForm={id:'different-form'};
+  finish({id:'new-A'});await pending;
+  assert.equal(h.calls.closed,0);
+  assert.equal(h.calls.added[0].creation.operationId,'A');
+  assert.equal(h.calls.added[0].saved.id,'new-A');
+});
+
+test('新增响应丢失或非 JSON 时锁定重试，不重复创建',async()=>{
+  for(const error of [new TypeError('Failed to fetch'),Object.assign(new Error('NonJSON'),{nonJson:true}),Object.assign(new Error('timeout'),{timedOut:true})]){
+    let count=0;const h=submitHarness(async()=>{count++;throw error});
+    await h.submit();await h.submit();
+    assert.equal(count,1);assert.equal(h.button.disabled,true);
+    assert.equal(h.ctx.createUncertain,true);assert.equal(h.calls.added.length,0);
+    assert.ok(h.calls.messages.some(m=>m.includes('结果待核对')));
+  }
+});
+
+test('跨表单新增在前一请求执行期间也被阻止',async()=>{
+  const h=submitHarness(async()=>{throw Error('不应请求')});
+  h.ctx.createPending=true;
+  await h.submit();
+  assert.equal(h.ctx.createPending,true);
+  assert.equal(h.calls.added.length,0);
+  assert.ok(h.calls.messages.some(m=>m.includes('尚未确认')));
+});
+
+test('Gemini 环境变量线路的 NB2 与 Pro 按各自实际模型新增，不复制凭据',async()=>{
+  for(const modelName of ['gemini-3.1-flash-image-preview','gemini-3-pro-image-preview']){
+    const data=workspaceData(),model=data.frontend_matrix.pages[0].products[0].models[0];
+    model.actual_model=modelName;
+    model.routes[0].primary.management={kind:'server_env',uid:'legacy:gemini'};
+    data.adapters.gemini_image={kind:'image',name:'Gemini'};
+    let template;
+    const {root}=build({legacy:()=>[{key:'gemini',name:'Google Gemini',category:'生图',configured:true,base_url:'https://secret.example',secret:'NEVER_COPY'}],newChannel:t=>template=t},data);
+    await click(root,'[data-cm-model-add]',modelBtn('image','banana','nb2'));
+    assert.equal(template.adapter,'gemini_image');
+    assert.equal(template.model,modelName);
+    assert.equal(template.id,undefined);assert.equal(template.secret,undefined);
+    assert.equal(template.base_url,'');
+  }
+});
+test('新增入口绑定当前模型，不继承现有 ID 或密钥，不提交生产映射',async()=>{
+  let template;const data=workspaceData();let writes=0;
+  const {elements,root,workspace}=build({newChannel:t=>template=t,api:async()=>{writes++;return{}}},data);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-model-add[^>]+>＋新增渠道/);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-managed-edit/);
+  await click(root,'[data-cm-model-key]',modelBtn('image','banana','engine2'));
+  await click(root,'[data-cm-model-add]',modelBtn('image','banana','engine2'));
+  assert.equal(template.model,'gpt-image-2');assert.equal(template.adapter,'openai_image');
+  assert.equal(template.id,undefined);assert.equal(template.secret,undefined);
+  assert.equal(template.base_url,'');assert.equal(template.daily_test,false);
+  assert.equal(template._modelCreate.operationId,'image.engine2.text');
+  data.items.push({id:'new',...template});
+  workspace.render(data);workspace.addCreatedChannel({id:'new'},template._modelCreate);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-managed-edit="new"/);
+  assert.equal(writes,0);
+  assert.deepEqual(data.operation_mappings[1].channels,['ch-engine2']);
+});
+
+test('无法确认同模型协议时明确拒绝，不借用候选或其他模型',async()=>{
+  let called=0,message='';const data=workspaceData();
+  const {root}=build({newChannel:()=>called++,toast:m=>message=m},data);
+  await click(root,'[data-cm-model-add]',modelBtn('image','banana','nb2'));
+  assert.equal(called,0);assert.match(message,/不支持新增兼容供应商/);
+});
+
+test('新增必填 Key，编辑仍可留空；新建载荷不携带旧 ID',()=>{
+  const manager=fs.readFileSync(path.join(ROOT,'site/admin/channel-manager.js'),'utf8');
+  const ctx={window:{}};vm.createContext(ctx);
+  vm.runInContext(manager.slice(manager.indexOf('    function compactPayload('),manager.indexOf('    function edit(c=')),ctx);
+  const template={_modelCreate:{},id:'old',version:9,adapter:'openai_image',model:'gpt-image-2',enabled:true,monitor:false,daily_test:false};
+  assert.throws(()=>ctx.compactPayload(template,{supplier:'测试',base_url:'https://example.com',secret:''}),/必须填写/);
+  const payload=ctx.compactPayload(template,{supplier:'测试',base_url:'https://example.com',secret:'dummy-test-key'});
+  assert.equal(payload.id,undefined);assert.equal(payload.version,undefined);
+  assert.equal(payload.model,'gpt-image-2');assert.equal(payload.name,'测试 · gpt-image-2');
+  assert.equal(payload.daily_test,false);assert.equal(payload._modelCreate,undefined);
+  assert.match(manager,/f.dataset.saveUnknown='true'/);
+  assert.match(manager,/workspace.addCreatedChannel\(saved,creation\)/);
+});
 const source=fs.readFileSync(path.join(ROOT,'site/admin/channel-workspace.js'),'utf8');
 const css=fs.readFileSync(path.join(ROOT,'site/admin/channel-simple.css'),'utf8');
 const catalogue={};vm.createContext(catalogue);vm.runInContext(fs.readFileSync(path.join(ROOT,'site/admin/channel-catalog.js'),'utf8'),catalogue);
@@ -60,7 +163,7 @@ function workspaceData(){
   };
 }
 
-function build(){
+function build(overrides={},data=workspaceData()){
   const ids=['cmMatrix','cmSearch','cmSupplier','cmTransport','cmState','cmHistory','cmDrawer','cmDrawerTitle','cmDrawerClose','cmDetail','cmEditor','cmMappingEditor','cmCount','cmCategories','cmList','cmHealth','cmLayout','cmLayoutStatus','cmModelPriority'];
   const elements=Object.fromEntries(ids.map(id=>[id,element(id)]));
   elements.cmDrawer.hidden=true;
@@ -75,9 +178,9 @@ function build(){
   const workspace=context.initChannelWorkspace({
     el:id=>elements[id],esc:String,toast(){},api:async()=>({}),legacy:()=>[],
     closeLegacy(){return true},editChannel(){},newChannel(){},lifecycle(){},
-    detail(){},mapping(){},refresh(){},task(){},journey(){}
+    detail(){},mapping(){},refresh(){},task(){},journey(){},...overrides
   });
-  workspace.render(workspaceData());
+  workspace.render(data);
   return {elements,root,workspace};
 }
 
@@ -231,7 +334,7 @@ test('精简编辑只更改供应商 URL Key，保留其他生产参数',()=>{
   const example=ctx.invocationExample({...old,base_url:'https://old.example/v1'});
   assert.match(example,/YOUR_API_KEY/);assert.doesNotMatch(example,/NEVER_COPY/);assert.match(example,/images\/generations/);
   assert.match(ctx.invocationExample({...old,adapter:'minimax_h3',model:'MiniMax-H3'}),/v2\/video_generation/);
-  const compactForm=manager.slice(manager.indexOf('      if(c.id){'),manager.indexOf("      el('cmEditor').innerHTML='<form id=\"cmForm\" class=\"cm-form\"><h3>"));
+  const compactForm=manager.slice(manager.indexOf('      if(c.id||c._modelCreate){'),manager.indexOf("      el('cmEditor').innerHTML='<form id=\"cmForm\" class=\"cm-form\"><h3>"));
   assert.match(compactForm,/供应商名称/);assert.match(compactForm,/Base URL/);assert.match(compactForm,/secretField/);assert.match(compactForm,/调用示例/);
   assert.doesNotMatch(compactForm,/field\('实际模型|data-edit-pane/);
   assert.match(source,/data-cm-channel-history/);
