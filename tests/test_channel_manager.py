@@ -143,9 +143,10 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual('agent', binding['invocation_source'])
         self.assertEqual('test-model', binding['model'])
 
+        # 取消 24 小时完整测试门槛：换过模型、从未测试或证据过期的渠道不再阻止新任务接单
         cm.save('admin', dict(self.body, **self.ch, model='new-untested-model'))
-        with self.assertRaisesRegex(ValueError, '完整生成测试'):
-            cm.capture('image', payload)
+        after_switch = cm.capture('image', payload)
+        self.assertEqual('new-untested-model', after_switch['_channel_binding']['model'])
 
         paused = cm.save_operation_mapping('admin', {
             'operation_id':'image.xiaole.text', 'state':'paused',
@@ -169,14 +170,27 @@ class ChannelTests(unittest.TestCase):
             item['revision'] for item in cm.overview()['operation_mappings'][0]['history']
         ])
 
-    def test_priority_rejects_different_model_and_preserves_revision(self):
-        other = cm.save('admin', dict(self.body, name='other', model='another-model'))
-        with self.assertRaisesRegex(ValueError, '同一模型'):
-            cm.save_operation_mapping('admin', {
-                'operation_id': 'image.xiaole.text', 'state': 'shadow',
-                'channels': [self.ch['id'], other['id']], 'expected_revision': 0,
-            })
-        self.assertIsNone(cm.operation_mapping('image.xiaole.text'))
+    def test_priority_accepts_different_models_and_keeps_auto_chain_homogeneous(self):
+        """手动切换允许两侧展示名 / 模型 ID / 协议 / 参数都不同；自动候补链仍然只收同契约渠道。"""
+        other = cm.save('admin', dict(self.body, name='other', model='another-model',
+                                      adapter='lechuang_image', secret='other-secret'))
+        published = cm.save_operation_mapping('admin', {
+            'operation_id': 'image.xiaole.text', 'state': 'managed',
+            'channels': [other['id'], self.ch['id']], 'expected_revision': 0,
+        })
+        self.assertEqual([other['id'], self.ch['id']], published['channels'])
+        self.assertEqual(other['id'], published['channel'])
+        # 每条渠道各自保留自己的实际模型 ID，没有为了通过比较而被改写成同一个字符串
+        self.assertEqual('another-model', cm.version(other['id'])['model'])
+        self.assertEqual('test-model', cm.version(self.ch['id'])['model'])
+        # 自动故障切换本次不放宽：不同模型 / 协议的渠道不进入同一条自动重试链
+        from server.content_domains.function_registry import operation
+        for ch in (self.ch, other):
+            cm.finish(cm.reserve(ch['id'], 'full'), 'passed', 'fixture checked')
+        _, candidates, skipped = cm._managed_image_route(
+            {'channels': [other['id'], self.ch['id']]}, operation('image.xiaole.text'))
+        self.assertEqual([other['id']], [c['id'] for c in candidates])
+        self.assertEqual([self.ch['id']], [s['id'] for s in skipped])
 
     def test_priority_legacy_cross_model_candidate_is_not_used(self):
         other = cm.save('admin', dict(self.body, name='other', model='another-model'))
@@ -706,12 +720,22 @@ class ChannelTests(unittest.TestCase):
             handler.headers = {'X-HQ-Internal-Token':'trusted-token'}
             self.assertEqual('agent', core._invocation_source(handler))
 
-    def test_managed_publish_requires_fresh_full_generation_evidence(self):
-        with self.assertRaisesRegex(ValueError, '完整生成测试'):
-            cm.save_operation_mapping('admin', {
-                'operation_id':'image.xiaole.text', 'state':'managed',
-                'channel':self.ch['id'], 'expected_revision':0,
-            })
+    def test_managed_publish_no_longer_requires_fresh_full_generation_evidence(self):
+        """从未测试、或测试超过 24/48/72 小时，都不能仅因此阻止手动切换。"""
+        published = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        self.assertEqual('managed', published['state'])
+        self.assertEqual([self.ch['id']], published['channels'])
+        # 测试记录仍作为状态提示存在（未验证），但不再是接单门槛
+        channel = next(i for i in cm.overview()['items'] if i['id'] == self.ch['id'])
+        self.assertIn('health', channel)
+        captured = cm.capture('image', {'source_page':'banana','provider':'xiaole','prompt':'hi'})
+        self.assertEqual(self.ch['id'], captured['_channel_binding']['id'])
+        # 自动切换前的复核仍然保留 24 小时要求（本次不放宽）
+        with self.assertRaisesRegex(ValueError, '24小时'):
+            cm._ready_candidate(self.ch['id'])
 
     def test_operation_mapping_rejects_missing_reference_capability(self):
         with self.assertRaisesRegex(ValueError, '参考图'):

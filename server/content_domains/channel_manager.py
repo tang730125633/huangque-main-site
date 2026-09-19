@@ -284,23 +284,34 @@ def _same_parameter_contract(left, right):
 
 
 def _managed_image_route(mapping, contract, connection=None):
-    """Build a secret-free immutable route plan for one paid image job."""
+    """Build a secret-free immutable route plan for one paid image job.
+
+    映射里的 ``channels`` 是管理员排的可选渠道列表（允许各自使用不同模型 ID）；
+    自动故障切换链在这里按需派生，两者职责分开，不额外建表：
+
+    * **主渠道** ``route_order[0]``：管理员明确指定的接单渠道。只要渠道自身可用
+      （存在、未回收、已启用、能承接该功能）就按它自己的模型 / 参数 / 凭据接单，
+      不再要求与其它渠道同名同参数，也不要求有最近 24 小时的完整生成测试。
+    * **候补链** ``route_candidates``：只收与主渠道同一模型 / 协议 / 参数契约的渠道。
+      自动故障切换只在等价渠道之间跳，异模型渠道只进 ``skipped`` 并说明原因。
+    """
     route_order = mapping_channel_ids(mapping)
     if not route_order:
         raise ValueError('该功能没有可用渠道')
-    pricing = _mapping_channel(route_order[0], contract, connection=connection)
+    pricing = _mapping_channel(
+        route_order[0], contract, require_enabled=True, connection=connection)
     candidates, skipped = [], []
     for channel_id in route_order:
         try:
             cfg = _mapping_channel(
-                channel_id, contract, require_ready=True, connection=connection)
-            if not _same_parameter_contract(pricing, cfg):
-                raise ValueError('模型或参数契约与主渠道不一致')
+                channel_id, contract, require_enabled=True, connection=connection)
+            if channel_id != pricing['id'] and not _same_parameter_contract(pricing, cfg):
+                raise ValueError('与主渠道模型或参数契约不一致，不进入自动故障切换链')
             candidates.append(_route_candidate(cfg))
         except ValueError as exc:
             skipped.append({'id': channel_id, 'reason': str(exc)[:120]})
     if not candidates:
-        raise ValueError('该功能的全部渠道均未通过最近24小时完整生成测试')
+        raise ValueError('该功能没有可用渠道')
     return pricing, candidates, skipped
 
 
@@ -381,10 +392,16 @@ def _validate_operation_config(cfg, contract):
         raise ValueError('Grok 1.5 必须使用参考图，不能承接文生视频功能')
 
 
-def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None):
+def _mapping_channel(cid, contract_or_kind, require_enabled=False, connection=None):
+    """解析一个渠道的当前配置，并做「能不能接这个功能」的校验。
+
+    ``require_enabled=True`` 只额外要求渠道处于启用状态。
+    完整生成测试的 24 小时时效**不再**是接单门槛，只作为后台状态提示；
+    它仍然保留在 ``_ready_candidate()``（自动故障切换前的复核）里。
+    """
     if channel_store.enabled():
         return channel_store._mapping_channel(
-            cid, contract_or_kind, require_ready=require_ready, connection=connection)
+            cid, contract_or_kind, require_enabled=require_enabled, connection=connection)
     contract = contract_or_kind if isinstance(contract_or_kind, dict) else None
     kind = contract['channel_kind'] if contract else str(contract_or_kind)
     cid = str(cid or '').strip()
@@ -409,15 +426,8 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
             _validate_operation_config(cfg, contract)
         elif ADAPTERS[cfg['adapter']]['kind'] != kind:
             raise ValueError('功能与渠道能力不兼容')
-        if require_ready:
-            if not current['enabled']:
-                raise ValueError('主渠道尚未启用，不能发布为托管状态')
-            latest = c.execute(
-                "SELECT state,updated FROM runs WHERE channel=? AND version=? AND kind='full' "
-                'ORDER BY started DESC,rowid DESC LIMIT 1', (cid, current['version']),
-            ).fetchone()
-            if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
-                raise ValueError('发布托管前，当前渠道版本必须有最近24小时内通过的完整生成测试')
+        if require_enabled and not current['enabled']:
+            raise ValueError('渠道尚未启用，不能接单或发布为托管状态')
     finally:
         if owns_connection:
             c.close()
@@ -425,10 +435,11 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
 
 
 def _ready_candidate(cid, connection=None):
-    """切换前的候选渠道复核：存在、不在回收站、仍启用、且有最近 24 小时完整生成测试。
+    """自动故障切换前的候选复核：存在、不在回收站、仍启用、且有最近 24 小时完整生成测试。
 
-    与 ``_mapping_channel(require_ready=True)`` 同一套门槛，但报错按「候补渠道」措辞，
-    便于后台直接看懂为什么这一跳被跳过。
+    这里刻意**不**跟着手动切换一起放宽：管理员手动指定主渠道只看「渠道可用」，
+    而自动切换会在无人值守的情况下把任务交给另一个渠道，因此仍然要求最近 24 小时
+    内有通过的完整生成测试。报错按「候补渠道」措辞，便于后台看懂为什么这一跳被跳过。
     """
     if channel_store.enabled():
         return channel_store._ready_candidate(cid, connection=connection)
@@ -480,16 +491,11 @@ def save_operation_mapping(actor, body):
         if state in {'shadow', 'managed'}:
             if not channels:
                 raise ValueError('请选择主渠道')
-            primary = None
-            for index, target in enumerate(channels):
-                candidate = _mapping_channel(
-                    target, contract,
-                    require_ready=state == 'managed' and index == 0,
-                    connection=c,
-                )
-                if primary is not None and not _same_parameter_contract(primary, candidate):
-                    raise ValueError('候补必须与主渠道使用同一模型、协议和参数契约')
-                primary = primary or candidate
+            # 手动切换只看「渠道自身能否接这个功能」：存在、未回收、已启用、能力匹配。
+            # 不再要求与其它渠道同名 / 同协议适配器 / 同参数配置——映射里的每条渠道
+            # 各自保留自己的模型 ID，由渠道快照带着走，不为了通过比较而改写模型名。
+            for target in channels:
+                _mapping_channel(target, contract, require_enabled=True, connection=c)
         else:
             channels = []
         cid = channels[0] if channels else ''
@@ -664,7 +670,7 @@ def _confirm_acceptance(connection, payload):
     for snapshot in snapshots:
         try:
             cfg = _mapping_channel(
-                snapshot.get('id'), contract, require_ready=True, connection=connection)
+                snapshot.get('id'), contract, require_enabled=True, connection=connection)
         except ValueError:
             raise ValueError('渠道版本已变化，请刷新后重新提交') from None
         if any(cfg.get(key) != snapshot.get(key) for key in ROUTE_CANDIDATE_FIELDS):
@@ -739,7 +745,7 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
         pricing, route_candidates, route_skipped = _managed_image_route(mapping, contract)
         cfg = version(route_candidates[0]['id'], route_candidates[0]['version'])
     else:
-        cfg = _mapping_channel(cid, contract, require_ready=True)
+        cfg = _mapping_channel(cid, contract, require_enabled=True)
         pricing = cfg
     from .channel_parameters import apply
     clean, _ = apply(pricing, clean, required=not preparation)

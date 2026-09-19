@@ -347,7 +347,12 @@ def operation_mapping(operation_id, revision=None, connection=None):
     return _fetch_operation_mapping(connection, operation_id, revision)
 
 
-def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None):
+def _mapping_channel(cid, contract_or_kind, require_enabled=False, connection=None):
+    """解析渠道当前配置并校验能否接该功能（PG）。
+
+    ``require_enabled=True`` 只额外要求渠道启用；完整生成测试的 24 小时时效不再是接单门槛，
+    仅保留在 ``_ready_candidate()``（自动故障切换前的复核）。
+    """
     mgr = _mgr()
     contract = contract_or_kind if isinstance(contract_or_kind, dict) else None
     kind = contract['channel_kind'] if contract else str(contract_or_kind)
@@ -378,12 +383,8 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
             mgr._validate_operation_config(cfg, contract)
         elif mgr.ADAPTERS[cfg['adapter']]['kind'] != kind:
             raise ValueError('功能与渠道能力不兼容')
-        if require_ready:
-            if not current['enabled']:
-                raise ValueError('主渠道尚未启用，不能发布为托管状态')
-            latest = conn.execute(_LATEST_FULL, (cid, current['version'])).fetchone()
-            if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
-                raise ValueError('发布托管前，当前渠道版本必须有最近24小时内通过的完整生成测试')
+        if require_enabled and not current['enabled']:
+            raise ValueError('渠道尚未启用，不能接单或发布为托管状态')
     finally:
         if owns_connection:
             _pool_instance().putconn(conn)
@@ -391,7 +392,11 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
 
 
 def _ready_candidate(cid, connection=None):
-    """切换前的候选渠道复核（PG）：存在、不在回收站、仍启用、且有最近 24 小时完整生成测试。"""
+    """自动故障切换前的候选复核（PG）：存在、未回收、仍启用、且有最近 24 小时完整生成测试。
+
+    刻意不跟着手动切换放宽：自动切换在无人值守下把任务交给另一个渠道，仍然要求
+    最近 24 小时内有通过的完整生成测试。
+    """
     mgr = _mgr()
     cid = str(cid or '').strip()
     if not cid:
@@ -439,16 +444,10 @@ def save_operation_mapping(actor, body):
             if state in {'shadow', 'managed'}:
                 if not channels:
                     raise ValueError('请选择主渠道')
-                primary = None
-                for index, target in enumerate(channels):
-                    candidate = _mapping_channel(
-                        target, contract,
-                        require_ready=state == 'managed' and index == 0,
-                        connection=conn,
-                    )
-                    if primary is not None and not mgr._same_parameter_contract(primary, candidate):
-                        raise ValueError('候补必须与主渠道使用同一模型、协议和参数契约')
-                    primary = primary or candidate
+                # 手动切换只看渠道自身能否接这个功能（存在 / 未回收 / 已启用 / 能力匹配），
+                # 不再要求候补与主渠道同名同协议同参数；每条渠道保留自己的模型 ID。
+                for target in channels:
+                    _mapping_channel(target, contract, require_enabled=True, connection=conn)
             else:
                 channels = []
             cid = channels[0] if channels else ''
@@ -651,7 +650,7 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
             mapping, contract)
         cfg = version(route_candidates[0]['id'], route_candidates[0]['version'])
     else:
-        cfg = _mapping_channel(cid, contract, require_ready=True)
+        cfg = _mapping_channel(cid, contract, require_enabled=True)
         pricing = cfg
     from .channel_parameters import apply
     clean, _ = apply(pricing, clean, required=not preparation)
@@ -698,7 +697,7 @@ def _confirm_acceptance(connection, payload):
     for snapshot in snapshots:
         try:
             cfg = _mapping_channel(
-                snapshot.get('id'), contract, require_ready=True, connection=connection)
+                snapshot.get('id'), contract, require_enabled=True, connection=connection)
         except ValueError:
             raise ValueError('渠道版本已变化，请刷新后重新提交') from None
         if any(cfg.get(key) != snapshot.get(key) for key in mgr.ROUTE_CANDIDATE_FIELDS):
