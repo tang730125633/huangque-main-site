@@ -312,7 +312,7 @@ for f in "$@"; do
     server/content_domains/feature_flags.py) dest=/home/ubuntu/auth-service/content_domains/; svc="huangque-auth huangque-content huangque-admin huangque-imggen-api huangque-leadgen-api" ;;
     # 渠道存储/管理被三个服务同时加载：content（接单）、admin（渠道管理接口）、imggen（生图入口）。
     # 少了任何一个重启，那个进程会继续跑旧代码（典型症状：管理接口已放宽、接单侧仍然按旧规则拒绝）。
-    server/content_domains/channel_manager.py|server/content_domains/channel_store.py)
+    server/content_domains/channel_manager.py|server/content_domains/channel_store.py|server/content_domains/channel_runtime.py|server/content_domains/channel_parameters.py|server/content_domains/channel_capabilities.py)
              dest=/home/ubuntu/content-api/content_domains/
              svc="huangque-content huangque-admin huangque-imggen-api" ;;
     server/content_domains/egress.py) dest=/home/ubuntu/content-api/content_domains/; svc="huangque-content huangque-admin huangque-imggen-api" ;;
