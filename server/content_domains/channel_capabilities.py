@@ -105,17 +105,20 @@ CAPABILITIES = {
     "collect": {
         "switchable": False,
         "adapters": (),
-        "reason": "内容采集走 TikHub 专用接口，不是「生成」类供应商，暂不纳入渠道切换。",
+        "reason": "内容采集走 TikHub 专用接口。tikhub.BASE / tikhub.KEY 是可替换的外部端点，"
+                  "不是固定线路，只是还没新增 TikHub 适配器，所以暂不能切换。",
     },
     "leads": {
         "switchable": False,
         "adapters": (),
-        "reason": "平台获客走固定查询接口，不是「生成」类供应商，暂不纳入渠道切换。",
+        "reason": "平台获客同样走 TikHub 查询（leads.py 引 tikhub），端点可替换；"
+                  "需要先新增 TikHub 适配器才能切换供应商。",
     },
     "canvas_agent": {
         "switchable": False,
         "adapters": (),
-        "reason": "画布 Agent 是规划编排（可能调用多个步骤），没有单一供应商可切换。",
+        "reason": "画布规划调用可配置的外部模型端点（CANVAS_AGENT_API_BASE / CANVAS_AGENT_API_KEY / "
+                  "CANVAS_AGENT_MODEL），有供应商可替换，但还没新增文本适配器。",
     },
 
     # ── 组合流程：应按步骤配置，不能一个开关影响整条链路 ────────────────────
