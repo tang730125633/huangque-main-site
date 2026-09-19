@@ -352,7 +352,7 @@
         +'<p>'+esc(page.label||matrixPageMeta.find(x=>x[0]===pageKey)?.[1]||pageKey)+' · '+esc(product.visible?'前台显示':'前台隐藏')+'</p>'
         +'<code>'+esc(model.actual_model||'实际模型待配置')+'</code>'
         +'<p>支持能力：'+esc((model.capabilities||[]).join(' / ')||'尚未登记')+'</p></div>'
-        +'<div id="cmModelPriority">'+priorityEditor(product,model)+'</div>'
+        +(simpleView?'':'<div id="cmModelPriority">'+priorityEditor(product,model)+'</div>')
         +((model.warnings||[]).length?'<div class="cm-matrix-detail-warning"><b>需要处理</b><span>'+esc(model.warnings.join('；'))+'</span></div>':'')
         +inline+'<details class="cm-model-advanced"><summary><span>备用线路、能力与验证详情</span><small>按需展开</small></summary><div class="cm-model-advanced-body"><section class="cm-current-routes">'+currentRoutes+'</section>'+(routes||'<p class="muted">尚无路由。</p>')+'</div></details>';
       if(legacyManagers[0])env.detail(legacyManagers[0].target,{managementKind:legacyManagers[0].item.management.kind});
@@ -362,15 +362,13 @@
       if(!simpleView){renderAdvancedMatrix();const host=el('cmMatrix');if(host)host.innerHTML='<button type="button" data-cm-simple-toggle>返回简洁视图</button>'+host.innerHTML;return}
       const host=el('cmMatrix');if(!host)return;
       const pages=matrixPages(),page=pages.find(p=>p.page===matrixPage)||pages[0]||{};
-      const cards=(hidden)=> (page.products||[]).flatMap(product=>(product.models||[]).filter(model=>(!product.visible||model.visible===false)===hidden).map(model=>{
-        const status=modelStatus(product,model),routes=model.routes||[];
-        const channel=compactValue(routes.map(r=>r.primary?.name),'尚未配置');
-        const states=unique(routes.map(r=>({managed:'已托管',shadow:'仅验证，不接管生产',legacy:'内置线路',paused:'暂停接单'}[r.control_state]||'生效状态待核实')));
-        const evidence=unique(modelLegs(model,['primary']).map(([,r])=>'生成验证：'+(r.full?.label||'未验证'))).join('；')||'没有完整生成验证记录';
-        return '<article class="cm-simple-row"><div><h4>'+esc(product.label)+' <small>'+esc(model.label)+'</small></h4><p>'+esc(model.actual_model||'模型按功能配置')+'</p></div><button type="button" data-cm-model-config data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">编辑</button></article>';
-      })).join('');
-      const visible=cards(false),hidden=cards(true);
-      host.innerHTML='<div class="cm-simple"><div class="cm-simple-notice">先选模型，再管理供应商。已托管线路可拖拽排序；发布成功并读回后才确认生效。</div><nav class="cm-simple-tabs" aria-label="业务功能">'+pages.map(p=>'<button type="button" data-cm-matrix-page="'+esc(p.page)+'" aria-pressed="'+String(p.page===page.page)+'">'+esc(p.label)+'</button>').join('')+'</nav><div class="cm-simple-heading"><div><h3>'+esc(page.label||'业务功能')+'</h3><p>先找到功能，再查看 API 与验证证据。已启用不等于生成成功。</p></div><button type="button" data-cm-simple-toggle>高级视图 / 优先级</button></div><div class="cm-simple-list">'+(visible||'<div class="empty">当前分类没有可显示的功能。</div>')+'</div>'+(hidden?'<details class="cm-simple-history"><summary>前台隐藏 / 历史配置</summary>'+hidden+'</details>':'')+'</div>';
+      const models=(page.products||[]).flatMap(product=>(product.models||[]).map(model=>({product,model,hidden:!product.visible||model.visible===false})));
+      const active=models.find(({product,model})=>matrixExpanded?.page===page.page&&matrixExpanded.product===product.key&&matrixExpanded.model===model.key)||models.find(item=>!item.hidden);
+      if(active&&!(matrixExpanded?.page===page.page&&matrixExpanded.product===active.product.key&&matrixExpanded.model===active.model.key))matrixExpanded={page:page.page,product:active.product.key,model:active.model.key,operationId:''};
+      const name=({product,model})=>model.label===product.label?product.label:product.label+' · '+model.label;
+      const modelButton=item=>'<button type="button" data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(item.product.key)+'" data-cm-model-key="'+esc(item.model.key)+'" aria-pressed="'+String(item===active)+'"><strong>'+esc(name(item))+'</strong><small>'+esc(item.model.actual_model||'模型按功能配置')+'</small></button>';
+      const hidden=models.filter(item=>item.hidden);
+      host.innerHTML='<div class="cm-simple"><div class="cm-category-toolbar"><details class="cm-category-picker"><summary>☰ <span>'+esc(page.label||'选择功能')+'</span> <small>切换功能 ▾</small></summary><div class="cm-category-sheet"><header><strong>选择业务功能</strong><button type="button" data-cm-category-close aria-label="关闭功能选择">×</button></header><nav aria-label="业务功能">'+pages.map(p=>'<button type="button" data-cm-matrix-page="'+esc(p.page)+'" aria-pressed="'+String(p.page===page.page)+'">'+esc(p.label)+'</button>').join('')+'</nav></div></details><button type="button" data-cm-simple-toggle>高级视图</button></div><nav class="cm-model-strip" aria-label="模型选择">'+(models.filter(item=>!item.hidden).map(modelButton).join('')||'<p>当前分类没有可显示的模型。</p>')+'</nav>'+(hidden.length?'<details class="cm-simple-history"><summary>历史 / 隐藏模型（'+hidden.length+'）</summary><nav class="cm-model-strip">'+hidden.map(modelButton).join('')+'</nav></details>':'')+(active?'<section class="cm-selected-model"><div class="cm-simple-heading"><div><h3>'+esc(name(active))+'</h3><p>'+esc(active.model.actual_model||'模型按功能配置')+'</p></div><button type="button" data-cm-model-config data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(active.product.key)+'" data-cm-model-key="'+esc(active.model.key)+'">编辑</button></div><p class="cm-inline-hint">下方仅排列当前模型的兼容渠道，第一位为优先线路。托管排序发布成功后才生效。</p><div id="cmModelPriority">'+priorityEditor(active.product,active.model)+'</div></section>':'')+'</div>';
     }
     function renderAdvancedMatrix(){
       const host=el('cmMatrix');if(!host)return;
@@ -506,6 +504,7 @@
     function editor(title){closeGuard=null;el('cmEditor').oninput=null;el('cmEditor').onchange=null;el('cmEditor').onclick=null;if(el('cmDrawer').hidden)shell(title);el('cmDrawerTitle').textContent=title;el('cmDetail').hidden=true}
     const root=document.querySelector('[data-module="managedChannels"]');
     root.addEventListener('click',async e=>{const simpleToggle=e.target.closest?e.target.closest('[data-cm-simple-toggle]'):null;if(simpleToggle&&simpleToggle.dataset&&'cmSimpleToggle' in simpleToggle.dataset){simpleView=!simpleView;renderMatrix();return}const configTarget=e.target.closest('[data-cm-model-config]');if(configTarget?.dataset?.cmModelKey){openMatrixModel(configTarget.dataset.cmModelPage,configTarget.dataset.cmModelProduct,configTarget.dataset.cmModelKey);return}const modelTarget=e.target.closest('[data-cm-model-key]');if(modelTarget?.dataset?.cmModelKey){const same=matrixExpanded&&matrixExpanded.page===modelTarget.dataset.cmModelPage&&matrixExpanded.product===modelTarget.dataset.cmModelProduct&&matrixExpanded.model===modelTarget.dataset.cmModelKey;matrixExpanded=same?null:{page:modelTarget.dataset.cmModelPage,product:modelTarget.dataset.cmModelProduct,model:modelTarget.dataset.cmModelKey,operationId:''};renderMatrix();return}const b=e.target.closest('button');if(!b)return;
+      if(b.dataset.cmCategoryClose!=null){b.closest('details').open=false;return}
       if(b.dataset.cmPriorityClose!=null){if(el('cmModelPriority'))el('cmModelPriority').innerHTML='';matrixExpanded=null;renderMatrix();return}
       if((priorityBusy||priorityUncertain)&&Object.keys(b.dataset).some(key=>key.startsWith('cmPriority')))return;
       if(b.dataset.cmPriorityRoute){matrixExpanded.operationId=b.dataset.cmPriorityRoute;refreshPriority();return}
@@ -546,6 +545,14 @@
       if(b.dataset.cmJob){close();env.task(b.dataset.cmJob)}
       if(b.dataset.cmJourney){close();env.journey(b.dataset.cmJourney)}
     });
+    root.addEventListener('wheel',e=>{
+      const strip=e.target.closest?.('.cm-model-strip');
+      if(!strip||e.ctrlKey||strip.scrollWidth<=strip.clientWidth)return;
+      const delta=(Math.abs(e.deltaX)>Math.abs(e.deltaY)?e.deltaX:e.deltaY)*(e.deltaMode===1?20:e.deltaMode===2?strip.clientWidth:1);
+      if(!delta)return;
+      e.preventDefault();
+      strip.scrollLeft=Math.max(0,Math.min(strip.scrollWidth-strip.clientWidth,strip.scrollLeft+delta));
+    },{passive:false});
     root.addEventListener('change',e=>{const operationId=e.target?.dataset?.cmPriorityState;if(!operationId||!priorityDrafts[operationId])return;priorityDrafts[operationId].state=e.target.value});
     root.addEventListener('dragstart',e=>{const row=e.target.closest('[data-cm-priority-channel]');if(!row)return;if(window.ChannelPriorityDrag){e.preventDefault();return}draggedPriorityChannel=row.dataset.cmPriorityChannel;e.dataTransfer?.setData('text/plain',draggedPriorityChannel);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'});
     root.addEventListener('dragover',e=>{if(e.target.closest('[data-cm-priority-channel]'))e.preventDefault()});

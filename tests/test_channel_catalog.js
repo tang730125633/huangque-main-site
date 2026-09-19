@@ -213,7 +213,12 @@ test('frontend function center uses a model list and keeps technical details in 
   bananaModel.routes[0].operation_id='image.banana.nb2.text';
   workspace.render(workspaceData);
   const modelButton={dataset:{cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
-  root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-key]'?modelButton:null}});
+  // 简洁视图会默认选中首个可见模型（否则右侧面板是空的），而这个选择与高级视图
+  // 共享同一个 matrixExpanded —— 所以切到高级视图时该模型已经是展开的。
+  // 因此这里显式验证「点击 = 收起 / 再点 = 展开」这条契约。
+  await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-key]'?modelButton:null}});
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/cm-priority-editor/);
+  await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-key]'?modelButton:null}});
   assert.equal(elements.cmDrawer.hidden,true);
   assert.match(elements.cmMatrix.innerHTML,/cm-priority-editor/);
   assert.match(elements.cmMatrix.innerHTML,/渠道优先级/);
