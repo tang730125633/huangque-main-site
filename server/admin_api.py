@@ -216,8 +216,8 @@ SERVICES = [
         "name": "小探深采服务(抖音下载/ASR)",
         "port": 8501,
         "service_file": "服务器 systemd: xiaotan(docker)",
-        # 只监听 docker 网桥 172.17.0.1,探 127.0.0.1 会误报离线(hq-monitor 的老坑)
-        "health_url": "http://172.17.0.1:8501/docs",
+        # 2026-09-19 起监听 127.0.0.1（config.yaml Host_IP），探 127.0.0.1 正确
+        "health_url": "http://127.0.0.1:8501/docs",
     },
 ]
 
