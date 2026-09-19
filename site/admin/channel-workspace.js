@@ -1,9 +1,11 @@
 (function(){
   window.initChannelWorkspace=function(env){
     const {el,esc,toast}=env,C=window.ChannelCatalog,api=env.api;
+    const priorityRequest=window.ChannelRequest?window.ChannelRequest.createClient(api,{writeTimeout:15000}):null;
     let data={},rows=[],tab='matrix',matrixPage='image',matrixShowHidden=false,selected=null,returnFocus=null,matrixExpanded=null,draggedPriorityChannel='';
     const matrixGroupSelection={};
     const priorityDrafts={};
+    let priorityBusy=false,priorityUncertain=false;
     const serverReplacementTemplates={};
     let layoutLoading=false;
     const filters={category:'all',q:'',supplier:'',transport:'',status:'',history:false};
@@ -165,7 +167,54 @@
       const operation=(data.operations||[]).find(item=>item.operation_id===operationId);
       const mapping=mappingForOperation(operationId),kind=operation?.channel_kind||mapping?.kind||'';
       if(!operation||!kind)return [];
-      return (data.items||[]).filter(item=>!item._lifecycle?.deleted&&data.adapters?.[item.adapter]?.kind===kind);
+      const page=matrixPages().find(p=>p.page===matrixExpanded?.page);
+      const model=page?.products?.find(p=>p.key===matrixExpanded?.product)?.models?.find(m=>m.key===matrixExpanded?.model);
+      const primary=(data.items||[]).find(item=>item.id===mappingChannels(mapping)[0]);
+      const modelName=model?.actual_model||primary?.model;
+      return (data.items||[]).filter(item=>!item._lifecycle?.deleted&&data.adapters?.[item.adapter]?.kind===kind&&modelName&&item.model===modelName&&(!primary||item.adapter===primary.adapter));
+    }
+    function refreshPriority(){
+      const host=el('cmModelPriority');
+      if(host&&matrixExpanded){
+        const page=matrixPages().find(p=>p.page===matrixExpanded.page);
+        const product=page?.products?.find(p=>p.key===matrixExpanded.product);
+        const model=product?.models?.find(m=>m.key===matrixExpanded.model);
+        if(model){
+          host.innerHTML=priorityEditor(product,model);
+          if(priorityUncertain)host.querySelectorAll('button:not([data-cm-priority-close]),select').forEach(node=>{node.disabled=true});
+        }
+      }else renderMatrix();
+    }
+    async function publishPriority(operationId,automatic=false){
+      const draft=priorityDrafts[operationId];if(!draft||priorityBusy||priorityUncertain)return;
+      const mapping=mappingForOperation(operationId);
+      if(automatic&&(mapping?.state!=='managed'||draft.state!=='managed'||JSON.stringify([...draft.channels].sort())!==JSON.stringify(mappingChannels(mapping).sort()))){
+        refreshPriority();toast('顺序已调整为草稿；首次接管请保存并发布。');return;
+      }
+      priorityBusy=true;
+      const editor=root.querySelector('[data-cm-priority-editor="'+operationId+'"]');
+      if(editor)editor.inert=true;
+      const status=root.querySelector('[data-cm-priority-status="'+operationId+'"]');
+      if(status)status.textContent='正在保存，尚未确认生效…';
+      try{
+        const body={operation_id:operationId,state:draft.state,channels:[...draft.channels],expected_revision:draft.revision};
+        const response=priorityRequest?await priorityRequest.post('/api/admin/channel-manager/operation-mapping',body):await api('/api/admin/channel-manager/operation-mapping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(response?.ok===false)throw Error(response.detail||response.error||'发布失败');
+        delete priorityDrafts[operationId];
+        if(await env.refresh()===false)throw Error('服务端顺序读取失败');
+        const saved=mappingForOperation(operationId);
+        if(Number(saved?.revision)<=draft.revision||JSON.stringify(mappingChannels(saved))!==JSON.stringify(draft.channels))throw Error('发布结果待核对，请刷新后确认；不要重复提交。');
+        toast(saved.state==='managed'?'顺序已生效：新任务按此优先级接单。':'顺序已保存，当前未接管生产。');
+      }catch(error){
+        // A network failure may happen after commit. Read back; never claim rollback.
+        delete priorityDrafts[operationId];
+        toast('未确认生效：'+error.message+' 请刷新核对服务端顺序。');
+        try{if(await env.refresh()===false)throw Error('读取失败')}catch(_){priorityUncertain=true;if(status)status.textContent='结果未知，请刷新核对后再操作。';return}
+        const recovered=mappingForOperation(operationId);
+        if(Number(recovered?.revision)>draft.revision&&recovered.state===draft.state&&JSON.stringify(mappingChannels(recovered))===JSON.stringify(draft.channels)){
+          toast(recovered.state==='managed'?'响应中断，但已读回确认顺序生效。':'响应中断，但已读回确认草稿状态已发布。');
+        }
+      }finally{priorityBusy=false;if(editor)editor.inert=false;refreshPriority()}
     }
     function movePriority(operationId,channelId,targetId,direction){
       const draft=priorityDrafts[operationId];if(!draft)return;
@@ -212,14 +261,21 @@
       const histories=(mapping?.history||[]).filter(item=>Number(item.revision)!==Number(mapping.revision));
       const history=histories.length?'<details class="cm-priority-history"><summary>历史版本与回滚</summary><div>'+histories.map(item=>'<button type="button" class="mini" data-cm-priority-rollback="'+Number(item.revision)+'" data-operation="'+esc(active.operation_id)+'" data-expected-revision="'+Number(mapping.revision||0)+'">恢复 r'+Number(item.revision)+' · '+esc(item.state||'')+' · '+esc(date(item.created))+'</button>').join('')+'</div></details>':'';
       const failoverEvidence=recentFailoverEvidence(active.operation_id,byId);
+      const operation=(data.operations||[]).find(item=>item.operation_id===active.operation_id);
+      const rule=operation?.task_match||{};
+      const sample=Object.fromEntries(Object.entries(rule).filter(([key])=>!['kind','reference_count','mask_present'].includes(key)));
+      sample.prompt='在这里填写图片描述';
+      if(rule.reference_count==='>0')sample.reference_images=['<已上传的参考图地址>'];
+      if(rule.mask_present)sample.mask='<已上传的蒙版地址>';
+      const example=operation?.channel_kind==='image'?'<details class="cm-priority-example"><summary>主站调用示例（执行会产生费用）</summary><p>使用已登录账号，由服务端按此功能的渠道顺序路由；不要在前端放供应商 Key。</p><pre>'+esc("fetch('/api/gen/image', {\n  method: 'POST', credentials: 'include',\n  headers: {'Content-Type': 'application/json'},\n  body: JSON.stringify("+JSON.stringify(sample,null,2)+")\n})")+'</pre></details>':'';
       const publishedLine=(()=>{const pub=mapping;const stateTxt={legacy:'旧线路',shadow:'影子',managed:'托管',paused:'暂停'}[pub?.state]||pub?.state||'未发布';const pubTxt=pub&&pub.revision?('已发布 r'+pub.revision+' · '+stateTxt):'未发布稳定映射';const changed=JSON.stringify(draft.channels)!==JSON.stringify(mappingChannels(pub))||draft.state!==(pub?.state||'shadow');return '<div class="cm-priority-published"><span>服务端已发布：</span><strong>'+esc(pubTxt)+'</strong>'+(changed?'<em>草稿未发布（修改后需保存并发布）</em>':'<em class="muted">草稿与已发布一致</em>')+'</div>'})();
       return '<section class="cm-priority-editor" data-cm-priority-editor="'+esc(active.operation_id)+'"><div class="cm-priority-head"><div><span>渠道优先级</span><h4>'+esc(product.label+' · '+model.label)+'</h4><p>'+esc(active.capability||'生成')+' · <code>'+esc(active.operation_id)+'</code></p></div><button type="button" class="mini" data-cm-priority-close>收起</button></div>'+routeTabs
         +'<div class="cm-priority-notice">第 1 项优先接单，其余按顺序候补。生图仅在提交前失败或供应商明确拒绝受理时自动切换；超时、限流、服务器错误、结果未知或已受理后失败均不会切换，避免重复生成与重复计费。视频暂不自动切换。</div>'+failoverEvidence
-        +'<div class="cm-priority-state">控制状态<select data-cm-priority-state="'+esc(active.operation_id)+'"><option value="shadow" '+(draft.state==='shadow'?'selected':'')+'>影子验证（不接管生产）</option><option value="managed" '+(draft.state==='managed'?'selected':'')+'>统一托管（第 1 项接单）</option><option value="legacy" '+(draft.state==='legacy'?'selected':'')+'>保留内置线路</option><option value="paused" '+(draft.state==='paused'?'selected':'')+'>暂停接单</option></select></label>'
+        +'<div class="cm-priority-state">控制状态<select data-cm-priority-state="'+esc(active.operation_id)+'"><option value="shadow" '+(draft.state==='shadow'?'selected':'')+'>影子验证（不接管生产）</option><option value="managed" '+(draft.state==='managed'?'selected':'')+'>统一托管（第 1 项接单）</option><option value="legacy" '+(draft.state==='legacy'?'selected':'')+'>保留内置线路</option><option value="paused" '+(draft.state==='paused'?'selected':'')+'>暂停接单</option></select></div>'
         +publishedLine
         +'<div class="cm-priority-list">'+(ordered||'<p class="cm-priority-empty">尚未添加托管渠道。当前仍由内置线路接单。</p>')+'</div>'
         +'<div class="cm-priority-add"><select data-cm-priority-add-choice="'+esc(active.operation_id)+'"><option value="">选择兼容渠道</option>'+addOptions+'</select><button type="button" data-cm-priority-add="'+esc(active.operation_id)+'" '+(available.length?'':'disabled')+'>添加渠道</button></div>'
-        +'<div class="cm-priority-footer"><span data-cm-priority-status="'+esc(active.operation_id)+'"></span><div class="actions"><button type="button" data-cm-priority-test="'+esc(active.operation_id)+'" '+(draft.channels.length?'':'disabled')+'>测试全部连接</button><button type="button" class="primary" data-cm-priority-save="'+esc(active.operation_id)+'">保存并发布</button></div></div>'+history+'</section>';
+        +'<div class="cm-priority-footer"><span data-cm-priority-status="'+esc(active.operation_id)+'">'+(priorityUncertain?'结果未知，请刷新核对后再操作。':'已托管的相同候选集合：拖拽后自动发布；新增候选或首次接管需确认发布。')+'</span><div class="actions"><button type="button" data-cm-priority-test="'+esc(active.operation_id)+'" '+(draft.channels.length?'':'disabled')+'>测试全部连接</button><button type="button" class="primary" data-cm-priority-save="'+esc(active.operation_id)+'">保存并发布</button></div></div>'+example+history+'</section>';
     }
     function manageAction(item){
       const management=item?.management;if(!management?.uid)return '';
@@ -262,6 +318,7 @@
       const product=(page?.products||[]).find(item=>item.key===productKey);
       const model=(product?.models||[]).find(item=>item.key===modelKey);
       if(!page||!product||!model)return;
+      matrixExpanded={page:pageKey,product:productKey,model:modelKey,operationId:matrixExpanded?.model===modelKey?matrixExpanded.operationId:''};
       if(!closeLegacy())return;closeGuard=null;selected=null;shell(product.label+' · '+model.label);
       const status=modelStatus(product,model);
       const managers=modelManagers(model),legacyManagers=managers.map(item=>({item,target:rows.find(row=>row.uid===item.management.uid)})).filter(entry=>entry.target?.source==='legacy');
@@ -295,9 +352,9 @@
         +'<p>'+esc(page.label||matrixPageMeta.find(x=>x[0]===pageKey)?.[1]||pageKey)+' · '+esc(product.visible?'前台显示':'前台隐藏')+'</p>'
         +'<code>'+esc(model.actual_model||'实际模型待配置')+'</code>'
         +'<p>支持能力：'+esc((model.capabilities||[]).join(' / ')||'尚未登记')+'</p></div>'
-        +'<section class="cm-current-routes">'+(currentRoutes||'<div class="empty">尚无主渠道。</div>')+'</section>'
+        +'<div id="cmModelPriority">'+priorityEditor(product,model)+'</div>'
         +((model.warnings||[]).length?'<div class="cm-matrix-detail-warning"><b>需要处理</b><span>'+esc(model.warnings.join('；'))+'</span></div>':'')
-        +inline+'<details class="cm-model-advanced"><summary><span>备用线路、能力与验证详情</span><small>按需展开</small></summary><div class="cm-model-advanced-body">'+(routes||'<p class="muted">尚无路由。</p>')+'</div></details>';
+        +inline+'<details class="cm-model-advanced"><summary><span>备用线路、能力与验证详情</span><small>按需展开</small></summary><div class="cm-model-advanced-body"><section class="cm-current-routes">'+currentRoutes+'</section>'+(routes||'<p class="muted">尚无路由。</p>')+'</div></details>';
       if(legacyManagers[0])env.detail(legacyManagers[0].target,{managementKind:legacyManagers[0].item.management.kind});
     }
     let simpleView=true;
@@ -310,10 +367,10 @@
         const channel=compactValue(routes.map(r=>r.primary?.name),'尚未配置');
         const states=unique(routes.map(r=>({managed:'已托管',shadow:'仅验证，不接管生产',legacy:'内置线路',paused:'暂停接单'}[r.control_state]||'生效状态待核实')));
         const evidence=unique(modelLegs(model,['primary']).map(([,r])=>'生成验证：'+(r.full?.label||'未验证'))).join('；')||'没有完整生成验证记录';
-        return '<article class="cm-simple-row"><div><h4>'+esc(product.label)+' <small>'+esc(model.label)+'</small></h4><p>'+esc(channel)+' · '+esc(model.actual_model||'模型按功能配置')+'</p><small>'+esc(states.join(' / ')||'生效状态待核实')+'</small></div><div><span class="cm-matrix-status '+status.state+'">'+esc(status.label)+'</span><small class="cm-simple-proof">'+esc(evidence)+'</small></div><button type="button" data-cm-model-config data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">管理 API →</button></article>';
+        return '<article class="cm-simple-row"><div><h4>'+esc(product.label)+' <small>'+esc(model.label)+'</small></h4><p>'+esc(model.actual_model||'模型按功能配置')+'</p></div><button type="button" data-cm-model-config data-cm-model-page="'+esc(page.page)+'" data-cm-model-product="'+esc(product.key)+'" data-cm-model-key="'+esc(model.key)+'">编辑</button></article>';
       })).join('');
       const visible=cards(false),hidden=cards(true);
-      host.innerHTML='<div class="cm-simple"><div class="cm-simple-notice">本地界面 · 显示真实服务数据。保存配置、测试或发布仍会操作生产；本次仅修改界面。</div><nav class="cm-simple-tabs" aria-label="业务功能">'+pages.map(p=>'<button type="button" data-cm-matrix-page="'+esc(p.page)+'" aria-pressed="'+String(p.page===page.page)+'">'+esc(p.label)+'</button>').join('')+'</nav><div class="cm-simple-heading"><div><h3>'+esc(page.label||'业务功能')+'</h3><p>先找到功能，再查看 API 与验证证据。已启用不等于生成成功。</p></div><button type="button" data-cm-simple-toggle>高级视图 / 优先级</button></div><div class="cm-simple-list">'+(visible||'<div class="empty">当前分类没有可显示的功能。</div>')+'</div>'+(hidden?'<details class="cm-simple-history"><summary>前台隐藏 / 历史配置</summary>'+hidden+'</details>':'')+'</div>';
+      host.innerHTML='<div class="cm-simple"><div class="cm-simple-notice">先选模型，再管理供应商。已托管线路可拖拽排序；发布成功并读回后才确认生效。</div><nav class="cm-simple-tabs" aria-label="业务功能">'+pages.map(p=>'<button type="button" data-cm-matrix-page="'+esc(p.page)+'" aria-pressed="'+String(p.page===page.page)+'">'+esc(p.label)+'</button>').join('')+'</nav><div class="cm-simple-heading"><div><h3>'+esc(page.label||'业务功能')+'</h3><p>先找到功能，再查看 API 与验证证据。已启用不等于生成成功。</p></div><button type="button" data-cm-simple-toggle>高级视图 / 优先级</button></div><div class="cm-simple-list">'+(visible||'<div class="empty">当前分类没有可显示的功能。</div>')+'</div>'+(hidden?'<details class="cm-simple-history"><summary>前台隐藏 / 历史配置</summary>'+hidden+'</details>':'')+'</div>';
     }
     function renderAdvancedMatrix(){
       const host=el('cmMatrix');if(!host)return;
@@ -404,6 +461,7 @@
       }));
     }
     function render(next){
+      priorityUncertain=false;
       data=next;rows=C.catalog(data,env.legacy());
       const suppliers=[...new Set(rows.map(c=>c.supplier))].sort();
       el('cmSupplier').innerHTML='<option value="">全部供应商</option>'+suppliers.map(s=>'<option value="'+esc(s)+'">'+esc(s)+'</option>').join('');
@@ -448,13 +506,14 @@
     function editor(title){closeGuard=null;el('cmEditor').oninput=null;el('cmEditor').onchange=null;el('cmEditor').onclick=null;if(el('cmDrawer').hidden)shell(title);el('cmDrawerTitle').textContent=title;el('cmDetail').hidden=true}
     const root=document.querySelector('[data-module="managedChannels"]');
     root.addEventListener('click',async e=>{const simpleToggle=e.target.closest?e.target.closest('[data-cm-simple-toggle]'):null;if(simpleToggle&&simpleToggle.dataset&&'cmSimpleToggle' in simpleToggle.dataset){simpleView=!simpleView;renderMatrix();return}const configTarget=e.target.closest('[data-cm-model-config]');if(configTarget?.dataset?.cmModelKey){openMatrixModel(configTarget.dataset.cmModelPage,configTarget.dataset.cmModelProduct,configTarget.dataset.cmModelKey);return}const modelTarget=e.target.closest('[data-cm-model-key]');if(modelTarget?.dataset?.cmModelKey){const same=matrixExpanded&&matrixExpanded.page===modelTarget.dataset.cmModelPage&&matrixExpanded.product===modelTarget.dataset.cmModelProduct&&matrixExpanded.model===modelTarget.dataset.cmModelKey;matrixExpanded=same?null:{page:modelTarget.dataset.cmModelPage,product:modelTarget.dataset.cmModelProduct,model:modelTarget.dataset.cmModelKey,operationId:''};renderMatrix();return}const b=e.target.closest('button');if(!b)return;
-      if(b.dataset.cmPriorityClose!=null){matrixExpanded=null;renderMatrix();return}
-      if(b.dataset.cmPriorityRoute){matrixExpanded.operationId=b.dataset.cmPriorityRoute;renderMatrix();return}
-      if(b.dataset.cmPriorityMove){movePriority(b.dataset.operation,b.dataset.channel,'',Number(b.dataset.cmPriorityMove));renderMatrix();return}
-      if(b.dataset.cmPriorityRemove){const draft=priorityDrafts[b.dataset.operation];if(draft)draft.channels=draft.channels.filter(id=>id!==b.dataset.cmPriorityRemove);renderMatrix();return}
-      if(b.dataset.cmPriorityAdd){const editor=b.closest('.cm-priority-editor'),choice=editor?.querySelector('[data-cm-priority-add-choice]')?.value,draft=priorityDrafts[b.dataset.cmPriorityAdd];if(choice&&draft&&!draft.channels.includes(choice)){draft.channels.push(choice);renderMatrix()}return}
+      if(b.dataset.cmPriorityClose!=null){if(el('cmModelPriority'))el('cmModelPriority').innerHTML='';matrixExpanded=null;renderMatrix();return}
+      if((priorityBusy||priorityUncertain)&&Object.keys(b.dataset).some(key=>key.startsWith('cmPriority')))return;
+      if(b.dataset.cmPriorityRoute){matrixExpanded.operationId=b.dataset.cmPriorityRoute;refreshPriority();return}
+      if(b.dataset.cmPriorityMove){movePriority(b.dataset.operation,b.dataset.channel,'',Number(b.dataset.cmPriorityMove));await publishPriority(b.dataset.operation,true);return}
+      if(b.dataset.cmPriorityRemove){const draft=priorityDrafts[b.dataset.operation];if(draft)draft.channels=draft.channels.filter(id=>id!==b.dataset.cmPriorityRemove);refreshPriority();return}
+      if(b.dataset.cmPriorityAdd){const editor=b.closest('.cm-priority-editor'),choice=editor?.querySelector('[data-cm-priority-add-choice]')?.value,draft=priorityDrafts[b.dataset.cmPriorityAdd];if(choice&&draft&&!draft.channels.includes(choice)){draft.channels.push(choice);refreshPriority()}return}
       if(b.dataset.cmPriorityTest){const operationId=b.dataset.cmPriorityTest,draft=priorityDrafts[operationId],status=el('cmMatrix').querySelector('[data-cm-priority-status="'+operationId+'"]');b.disabled=true;if(status)status.textContent='正在提交连接检测…';try{for(const id of draft?.channels||[])await api('/api/admin/channel-manager/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,kind:'connection'})});if(status)status.textContent='全部连接检测已排队，请稍后刷新查看结果。';toast('渠道连接检测已排队')}catch(error){if(status)status.textContent=error.message;toast(error.message)}finally{b.disabled=false}return}
-      if(b.dataset.cmPrioritySave){const operationId=b.dataset.cmPrioritySave,draft=priorityDrafts[operationId],status=el('cmMatrix').querySelector('[data-cm-priority-status="'+operationId+'"]');if(!draft)return;if(!confirm('发布 '+operationId+' 的新渠道优先级？\n第 1 项将作为主渠道；仅影响发布后的新任务。'))return;b.disabled=true;if(status)status.textContent='正在发布…';try{await api('/api/admin/channel-manager/operation-mapping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationId,state:draft.state,channels:draft.channels,expected_revision:draft.revision})});delete priorityDrafts[operationId];toast('渠道优先级已发布');await env.refresh()}catch(error){if(status)status.textContent=error.message;toast(error.message)}finally{b.disabled=false}return}
+      if(b.dataset.cmPrioritySave){if(!confirm('发布此模型的渠道优先级？仅影响新任务。'))return;await publishPriority(b.dataset.cmPrioritySave);return}
       if(b.dataset.cmPriorityRollback){const operationId=b.dataset.operation;if(!confirm('恢复 '+operationId+' 到 r'+b.dataset.cmPriorityRollback+'？恢复会发布一个新修订。'))return;b.disabled=true;try{await api('/api/admin/channel-manager/operation-mapping-rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationId,target_revision:Number(b.dataset.cmPriorityRollback),expected_revision:Number(b.dataset.expectedRevision)})});delete priorityDrafts[operationId];toast('历史优先级已恢复');await env.refresh()}catch(error){toast(error.message)}finally{b.disabled=false}return}
       if(b.dataset.layoutMove){
         const parts=b.dataset.layoutMove.split(':'),page=parts[0],key=parts[1],dir=Number(parts[2]);
@@ -488,9 +547,14 @@
       if(b.dataset.cmJourney){close();env.journey(b.dataset.cmJourney)}
     });
     root.addEventListener('change',e=>{const operationId=e.target?.dataset?.cmPriorityState;if(!operationId||!priorityDrafts[operationId])return;priorityDrafts[operationId].state=e.target.value});
-    root.addEventListener('dragstart',e=>{const row=e.target.closest('[data-cm-priority-channel]');if(!row)return;draggedPriorityChannel=row.dataset.cmPriorityChannel;e.dataTransfer?.setData('text/plain',draggedPriorityChannel);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'});
+    root.addEventListener('dragstart',e=>{const row=e.target.closest('[data-cm-priority-channel]');if(!row)return;if(window.ChannelPriorityDrag){e.preventDefault();return}draggedPriorityChannel=row.dataset.cmPriorityChannel;e.dataTransfer?.setData('text/plain',draggedPriorityChannel);if(e.dataTransfer)e.dataTransfer.effectAllowed='move'});
     root.addEventListener('dragover',e=>{if(e.target.closest('[data-cm-priority-channel]'))e.preventDefault()});
-    root.addEventListener('drop',e=>{const row=e.target.closest('[data-cm-priority-channel]');if(!row||!draggedPriorityChannel)return;e.preventDefault();movePriority(row.dataset.cmPriorityOperation,draggedPriorityChannel,row.dataset.cmPriorityChannel,0);draggedPriorityChannel='';renderMatrix()});
+    root.addEventListener('drop',async e=>{const row=e.target.closest('[data-cm-priority-channel]');if(!row||!draggedPriorityChannel||priorityBusy)return;e.preventDefault();movePriority(row.dataset.cmPriorityOperation,draggedPriorityChannel,row.dataset.cmPriorityChannel,0);draggedPriorityChannel='';await publishPriority(row.dataset.cmPriorityOperation,true)});
+    if(window.ChannelPriorityDrag)window.ChannelPriorityDrag(root,async(operationId,order)=>{
+      if(priorityBusy||!priorityDrafts[operationId])return;
+      priorityDrafts[operationId].channels=order;
+      await publishPriority(operationId,true);
+    },()=>priorityBusy||priorityUncertain);
     [['cmSearch','q','input'],['cmSupplier','supplier','change'],['cmTransport','transport','change'],['cmState','status','change'],['cmHistory','history','change']].forEach(([id,key,event])=>el(id).addEventListener(event,()=>{filters[key]=key==='history'?el(id).checked:el(id).value;list()}));
     el('cmDrawer').addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();close()}if(e.key==='Tab'){const nodes=Array.from(el('cmDrawer').querySelectorAll('button,input,select,textarea,a[href]')).filter(n=>!n.disabled&&n.getClientRects().length);if(!nodes.length)return;const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
     return {render,open,close,editor,showTab,setCloseGuard:guard=>{closeGuard=guard}};

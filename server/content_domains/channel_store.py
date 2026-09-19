@@ -439,12 +439,16 @@ def save_operation_mapping(actor, body):
             if state in {'shadow', 'managed'}:
                 if not channels:
                     raise ValueError('请选择主渠道')
+                primary = None
                 for index, target in enumerate(channels):
-                    _mapping_channel(
+                    candidate = _mapping_channel(
                         target, contract,
                         require_ready=state == 'managed' and index == 0,
                         connection=conn,
                     )
+                    if primary is not None and not mgr._same_parameter_contract(primary, candidate):
+                        raise ValueError('候补必须与主渠道使用同一模型、协议和参数契约')
+                    primary = primary or candidate
             else:
                 channels = []
             cid = channels[0] if channels else ''
@@ -670,6 +674,7 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
 
 
 def _confirm_acceptance(connection, payload):
+    mgr = _mgr()
     binding = payload.get('_channel_binding') if isinstance(payload, dict) else None
     if not isinstance(binding, dict) or not binding.get('operation_id'):
         return True
@@ -719,6 +724,10 @@ def acceptance_guard(payloads):
         return
     conn = _pool_instance().getconn()
     try:
+        # Serialize mapping publication with acceptance until the job commits.
+        # Sorted acquisition also prevents inverted-order multi-job deadlocks.
+        for operation_id in sorted({str(p['_channel_binding']['operation_id']) for p in managed}):
+            _lock(conn, 'routing.operation_mapping:' + operation_id)
         for payload in managed:
             _confirm_acceptance(conn, payload)
         yield

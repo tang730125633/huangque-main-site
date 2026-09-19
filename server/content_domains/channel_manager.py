@@ -278,7 +278,8 @@ def _route_candidate(cfg):
 
 
 def _same_parameter_contract(left, right):
-    return (left.get('adapter') == right.get('adapter')
+    return (left.get('model') == right.get('model')
+            and left.get('adapter') == right.get('adapter')
             and (left.get('parameters') or None) == (right.get('parameters') or None))
 
 
@@ -294,7 +295,7 @@ def _managed_image_route(mapping, contract, connection=None):
             cfg = _mapping_channel(
                 channel_id, contract, require_ready=True, connection=connection)
             if not _same_parameter_contract(pricing, cfg):
-                raise ValueError('参数契约与主渠道不一致')
+                raise ValueError('模型或参数契约与主渠道不一致')
             candidates.append(_route_candidate(cfg))
         except ValueError as exc:
             skipped.append({'id': channel_id, 'reason': str(exc)[:120]})
@@ -479,12 +480,16 @@ def save_operation_mapping(actor, body):
         if state in {'shadow', 'managed'}:
             if not channels:
                 raise ValueError('请选择主渠道')
+            primary = None
             for index, target in enumerate(channels):
-                _mapping_channel(
+                candidate = _mapping_channel(
                     target, contract,
                     require_ready=state == 'managed' and index == 0,
                     connection=c,
                 )
+                if primary is not None and not _same_parameter_contract(primary, candidate):
+                    raise ValueError('候补必须与主渠道使用同一模型、协议和参数契约')
+                primary = primary or candidate
         else:
             channels = []
         cid = channels[0] if channels else ''
