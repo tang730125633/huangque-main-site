@@ -17,13 +17,13 @@ test('功能未开放时，原厂及托管主线路都不能宣称正在生产',
     assert.match(html,/就绪状态待核对/);
   }
 });
-test('内置线路主渠道直说不能在此切换，不给无效按钮',()=>{
+test('内置主渠道保留配置入口且第一候选可以设为主渠道',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
   route.control_state='shadow';
   route.primary={id:'legacy:gemini',name:'Google Gemini API',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
   const {elements}=build({},data),html=elements.cmMatrix.innerHTML;
-  // 统一切换接口只接受托管渠道 id：内置线路必须说明原因，而不是摆一个点了没用的按钮
-  assert.match(html,/未接入统一切换接口/);
+  assert.match(html,/查看配置 \/ Key/);
+  assert.match(html,/data-cm-priority-first="ch-banana"/);
   const live=html.match(/<div class="cm-priority-channel cm-live-primary"[\s\S]*?<\/div><\/div>/)[0];
   assert.doesNotMatch(live,/data-cm-priority-first/,'内置线路不应有统一切换按钮');
 });
@@ -411,4 +411,42 @@ test('精简编辑只更改供应商 URL Key，保留其他生产参数',()=>{
   assert.match(manager,/channelHistory:showChannelHistory/);
   const history=manager.slice(manager.indexOf('    function showChannelHistory('),manager.indexOf('    function edit(c='));
   assert.match(history,/data-rollback/);
+});
+
+
+test('托管接管后原厂渠道、模型、配置入口仍保留，提供切回按钮',()=>{
+  const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
+  route.original={id:'legacy:gemini:primary',name:'Google Gemini API',model:'gemini-3.1-flash-image',enabled:true,configured:true,base_urls:['https://generativelanguage.googleapis.com'],management:{kind:'server_env',uid:'legacy:gemini'}};
+  const html=build({},data).elements.cmMatrix.innerHTML;
+  assert.match(html,/data-cm-original-channel="legacy:gemini:primary"/);
+  assert.match(html,/原厂线路 · 未选中 · Key 已配置/);
+  assert.match(html,/data-cm-live-detail="legacy:gemini"/);
+  assert.match(html,/data-cm-priority-first="@original" data-operation="image.banana.text"/);
+  assert.ok(html.indexOf('data-cm-managed-edit="ch-banana"')<html.indexOf('data-cm-original-channel='));
+  assert.doesNotMatch(html,/data-cm-priority-first="ch-banana"/);
+});
+
+test('原厂配置缺失时保留配置入口但禁用切回按钮',()=>{
+  const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
+  route.original={id:'legacy:gemini:primary',name:'Google',enabled:true,configured:false,management:{kind:'server_env',uid:'legacy:gemini'}};
+  const html=build({},data).elements.cmMatrix.innerHTML;
+  assert.match(html,/data-cm-priority-first="@original" data-operation="image.banana.text" disabled/);
+  assert.match(html,/data-cm-live-detail="legacy:gemini"/);
+});
+
+
+test('显示顺序保留在服务端：B 首位原厂第二，切回后原厂首位 B 第二',()=>{
+  for(const state of ['managed','legacy']){
+    const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
+    const original={id:'legacy:gemini:primary',name:'Google',enabled:true,configured:true,management:{kind:'server_env',uid:'legacy:gemini'}};
+    route.original=original;route.control_state=state;
+    const order=state==='managed'?['ch-banana','@original','ch-engine2']:['@original','ch-banana','ch-engine2'];
+    data.operation_mappings[0]={...data.operation_mappings[0],state,channels:state==='managed'?['ch-banana']:[],display_order:order};
+    if(state==='legacy')route.primary=original;
+    const html=build({},data).elements.cmMatrix.innerHTML;
+    const actual=[...html.matchAll(/data-cm-priority-channel="([^"]+)"/g)].map(m=>m[1]);
+    assert.deepEqual(actual,order);
+    assert.match(html,/data-cm-live-detail="legacy:gemini"/);
+    assert.match(html,/data-cm-managed-edit="ch-banana"/);
+  }
 });

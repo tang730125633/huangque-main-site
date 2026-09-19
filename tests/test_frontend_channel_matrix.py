@@ -170,6 +170,25 @@ class FrontendChannelMatrixTests(unittest.TestCase):
         self.assertEqual(nb2['routes'][0]['primary']['name'], '乐创图片主线')
         self.assertEqual(nb2['routes'][1]['primary']['name'], 'Google Gemini API')
 
+    def test_original_route_retained_after_all_banana_modes_switch(self):
+        self.workspace['operation_mappings'] = [
+            {'operation_id': 'image.banana.' + tier + '.' + mode,
+             'state': 'managed', 'channel': 'managed-image', 'backup': ''}
+            for tier in ['nb2', 'pro'] for mode in ['text', 'reference']
+        ]
+        products = {item['key']: item for item in self.build()['products']}
+        for model in products['banana']['models']:
+            for route in model['routes']:
+                self.assertEqual(route['primary']['id'], 'managed-image')
+                original = route['original']
+                self.assertEqual(original['name'], 'Google Gemini API')
+                self.assertEqual(original['management']['uid'], 'legacy:gemini')
+                self.assertEqual(original['base_host'], 'generativelanguage.googleapis.com')
+                self.assertTrue(original['configured'])
+                self.assertEqual(original['model'], 'gemini-3.1-flash-image' if model['key'] == 'nb2' else 'gemini-3-pro-image')
+                self.assertIsNone(route['backup'])
+        self.assertNotIn('secret', json.dumps(products).lower())
+
     def test_xiaole_follows_feature_flag_and_zelong_remains_retired(self):
         result = self.build()
         products = {item['key']: item for item in result['products']}

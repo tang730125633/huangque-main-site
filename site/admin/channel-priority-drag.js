@@ -10,7 +10,11 @@
       d.ghost.remove();
       d.rows.forEach(row=>{row.style.transform='';row.classList.remove('cm-sort-moving','cm-sort-placeholder')});
       if(d.handle.hasPointerCapture?.(d.pointerId))d.handle.releasePointerCapture(d.pointerId);
-      if(!cancel&&d.order.some((id,i)=>id!==d.original[i])&&d.order[0]!=='@original')commit(d.operation,d.order.filter(id=>id!=='@original'));
+      if(!cancel&&d.order.some((id,i)=>id!==d.original[i])){
+        const originalSortable=d.rows.some(row=>row.dataset.cmPriorityChannel==='@original');
+        if(originalSortable)commit(d.operation,d.order);
+        else if(d.order[0]!=='@original')commit(d.operation,d.order.filter(id=>id!=='@original'));
+      }
     }
     root.addEventListener('pointerdown',event=>{
       const handle=event.target.closest('.cm-priority-drag');

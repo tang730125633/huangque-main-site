@@ -531,6 +531,23 @@ class PostgresModeTest(_ChannelFixture):
         self.assertEqual(rolled["revision"], revision + 1)
         self.assertEqual(revision, self.revision_max + 1)
 
+    def test_original_order_roundtrip_and_rollback_postgres(self):
+        channel_manager.save('admin', self.body)
+        rev = self.operation_before['revision'] if self.operation_before else 0
+        first = channel_manager.save_operation_mapping('admin', {
+            'operation_id': self.operation_id, 'state': 'managed', 'channels': [self.cid],
+            'display_order': [self.cid, '@original'], 'expected_revision': rev})
+        second = channel_manager.save_operation_mapping('admin', {
+            'operation_id': self.operation_id, 'state': 'legacy', 'channels': [],
+            'display_order': ['@original', self.cid], 'expected_revision': first['revision']})
+        self.assertEqual(channel_manager.operation_mapping(self.operation_id)['display_order'], ['@original', self.cid])
+        self.assertEqual(second['channels'], [])
+        restored = channel_manager.rollback_operation_mapping('admin', {
+            'operation_id': self.operation_id, 'target_revision': first['revision'],
+            'expected_revision': second['revision']})
+        self.assertEqual(restored['display_order'], [self.cid, '@original'])
+        self.assertEqual(channel_manager.version(self.cid, 1, True)['secret'], 'private-secret')
+
     def test_priority_accepts_cross_model_postgres(self):
         """PG 路径：手动切换允许两侧模型 ID 不同；自动候补链仍然只收同契约渠道。"""
         channel_manager.save('m3c-test', self.body)

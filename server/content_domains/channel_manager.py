@@ -273,6 +273,21 @@ def _requested_mapping_channels(body):
     return channels
 
 
+def _display_order(body, state, channels):
+    """Persist UI order separately from the executable managed failover chain."""
+    order = body.get('display_order')
+    if order is None:
+        return None
+    if (not isinstance(order, list) or not order or len(order) > 200
+            or any(not isinstance(x, str) or not x.strip() or len(x) > 200 for x in order)
+            or len(set(order)) != len(order)):
+        raise ValueError('显示顺序必须是不重复的渠道列表')
+    expected = channels[0] if state == 'managed' and channels else '@original' if state == 'legacy' else None
+    if expected and order[0] != expected:
+        raise ValueError('显示顺序第一项必须是当前接单线路')
+    return list(order)
+
+
 def _route_candidate(cfg):
     return {key: cfg.get(key) for key in ROUTE_CANDIDATE_FIELDS}
 
@@ -504,6 +519,9 @@ def save_operation_mapping(actor, body):
             'kind': contract['channel_kind'], 'label': contract['name'],
             'channel': cid, 'backup': backup, 'channels': channels,
         }
+        display_order = _display_order(body, state, channels)
+        if display_order is not None:
+            config['display_order'] = display_order
         current = c.execute('SELECT revision FROM operation_mappings WHERE operation_id=?',
                             (operation_id,)).fetchone()
         expected = body.get('expected_revision')
@@ -539,6 +557,7 @@ def rollback_operation_mapping(actor, body):
     return save_operation_mapping(actor, {
         'operation_id': operation_id, 'state': old['state'],
         'channels': mapping_channel_ids(old),
+        'display_order': old.get('display_order'),
         'expected_revision': body.get('expected_revision'),
     })
 
