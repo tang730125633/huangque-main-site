@@ -6,6 +6,36 @@
 */
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const ROOT=path.join(__dirname,'..');
+test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
+  const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
+  route.control_state='shadow';route.primary={id:'legacy:gemini',name:'真实原厂线路',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
+  data.operation_mappings[0].state='shadow';
+  const {elements}=build({},data),html=elements.cmMatrix.innerHTML;
+  assert.ok(html.indexOf('真实原厂线路')<html.indexOf('data-cm-managed-edit="ch-banana"'));
+  assert.match(html,/候选 1 · 未接管/);
+  assert.match(html,/data-cm-live-detail="legacy:gemini"/);
+  const live=html.match(/<div class="cm-priority-channel cm-live-primary"[\s\S]*?<\/div><\/div>/)[0];
+  assert.doesNotMatch(live,/draggable|data-cm-priority-channel/);
+});
+
+test('无托管操作的文本音频等仍显示原生产线路，暂停时不假装接单',()=>{
+  const data=workspaceData(),model=data.frontend_matrix.pages[0].products[0].models[0];
+  data.operations=[];model.routes[0].primary.name='原线路';
+  let html=build({},data).elements.cmMatrix.innerHTML;
+  assert.match(html,/data-cm-live-primary/);assert.match(html,/原线路/);
+  model.routes[0].control_state='paused';
+  html=build({},data).elements.cmMatrix.innerHTML;
+  assert.match(html,/当前功能已暂停/);assert.doesNotMatch(html,/data-cm-live-primary/);
+});
+
+test('已发布托管主渠道不重复插入，新增草稿不冒充已发布候补',()=>{
+  const data=workspaceData(),built=build({},data);
+  assert.doesNotMatch(built.elements.cmMatrix.innerHTML,/data-cm-live-primary/);
+  data.items.push({...data.items[0],id:'draft-new'});
+  built.workspace.render(data);
+  built.workspace.addCreatedChannel({id:'draft-new'},{operationId:'image.banana.text'});
+  assert.match(built.elements.cmMatrix.innerHTML,/候选 2 · 未发布/);
+});
 function submitHarness(post){
   const manager=fs.readFileSync(path.join(ROOT,'site/admin/channel-manager.js'),'utf8');
   let handler;const button={disabled:false},form={id:'cmForm',dataset:{compact:'true'},querySelector:()=>button};
