@@ -975,11 +975,14 @@ def overview():
                     channel['checks'].append(dict(check_row))
     from .function_registry import operation_catalog
     operations = operation_catalog(channel_eligible=True)
+    # 与 SQLite 路径一致：全量目录（含不可切换的）用于后台展示不可切换原因。
+    all_operations = operation_catalog()
     current = {item['operation_id']: item for item in operation_mappings}
     for item in operations:
         item['mapping'] = current.get(item['operation_id'])
     return {'items': channels, 'mappings': mappings, 'operation_mappings': operation_mappings,
-            'operations': operations, 'runs': runs, 'events': events, 'adapters': mgr.ADAPTERS,
+            'operations': operations, 'all_operations': all_operations,
+            'runs': runs, 'events': events, 'adapters': mgr.ADAPTERS,
             'legacy_controls': _legacy_states(), 'legacy_scopes': LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone': 'Asia/Shanghai',
             'stats_window': '最近24小时'}

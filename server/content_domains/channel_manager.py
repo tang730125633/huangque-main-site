@@ -883,11 +883,15 @@ def overview():
                     channel['checks'].append(dict(check_row))
     from .function_registry import operation_catalog
     operations = operation_catalog(channel_eligible=True)
+    # 全量功能目录（含不可切换的）：后台据此展示「为什么这个功能不能切」，
+    # 而不是只给一个拖不动的手柄。不改变 operations 的既有语义。
+    all_operations = operation_catalog()
     current = {item['operation_id']: item for item in operation_mappings}
     for item in operations:
         item['mapping'] = current.get(item['operation_id'])
     return {'items': channels, 'mappings': mappings, 'operation_mappings': operation_mappings,
-            'operations': operations, 'runs': runs, 'events': events, 'adapters': ADAPTERS,
+            'operations': operations, 'all_operations': all_operations,
+            'runs': runs, 'events': events, 'adapters': ADAPTERS,
             'legacy_controls':legacy_states(), 'legacy_scopes':LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone':'Asia/Shanghai', 'stats_window':'最近24小时'}
 

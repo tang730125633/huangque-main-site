@@ -1627,6 +1627,7 @@ def e2e_runner(operation_key):
 
 def operation(operation_id):
     """Return one public operation contract from the customer-function registry."""
+    from . import channel_capabilities as channel_capability_domain
     operation_id = str(operation_id or "").strip()
     for page in FUNCTION_REGISTRY:
         for feature in page["functions"]:
@@ -1634,7 +1635,11 @@ def operation(operation_id):
                 if leaf.get("key") == operation_id:
                     task_match = deepcopy(leaf.get("task_match") or {})
                     kind = str(task_match.get("kind") or "")
-                    channel_kind = kind if kind in {"image", "xiaole_video"} else ""
+                    # 能不能切换由 channel_capabilities 的数据表决定（含具体原因），
+                    # 不再用一行硬编码白名单。
+                    capability = channel_capability_domain.capability(kind)
+                    switchable = bool(kind) and capability["switchable"]
+                    channel_kind = kind if switchable else ""
                     return {
                         "operation_id": operation_id,
                         "name": leaf.get("name") or operation_id,
@@ -1644,7 +1649,10 @@ def operation(operation_id):
                         "feature_name": feature.get("name") or "",
                         "task_match": task_match,
                         "channel_kind": channel_kind,
-                        "channel_eligible": bool(channel_kind),
+                        "channel_eligible": switchable,
+                        # 不能切换时后台直接展示这个原因，而不是只给一个拖不动的手柄。
+                        "channel_reason": "" if switchable else capability["reason"],
+                        "channel_adapters": list(capability["adapters"]),
                         "agent_capabilities": (
                             ["image-generate"] if channel_kind == "image" and page["key"] == "banana"
                             else ["video-generate"] if channel_kind == "xiaole_video" and page["key"] == "video"
