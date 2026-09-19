@@ -235,10 +235,7 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/拖至首位自动申请应用/);
   const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
   await root.listeners.click({target:{closest:selector=>selector==='button'?moveButton:null}});
-  const priorityHtml=elements.cmMatrix.innerHTML.match(/<div class="cm-priority-list">[\s\S]*?<div class="cm-priority-add">/)[0];
-  assert.ok(priorityHtml.indexOf('托管备用渠道')<priorityHtml.indexOf('托管主渠道'));
-  const saveButton={dataset:{cmPrioritySave:'image.banana.nb2.text'},disabled:false};
-  await root.listeners.click({target:{closest:selector=>selector==='button'?saveButton:null}});
+  // Reordering itself submits; there is no separate save control.
   const publish=JSON.parse(requests.find(([path])=>path.endsWith('/operation-mapping'))[1].body);
   assert.deepEqual(Array.from(publish.channels),['managed-backup','managed-primary']);
   assert.equal(publish.expected_revision,4);
