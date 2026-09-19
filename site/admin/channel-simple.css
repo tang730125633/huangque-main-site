@@ -2,9 +2,18 @@
 .cm-simple .cm-simple-row{grid-template-columns:minmax(0,1fr) auto}.cm-simple .cm-simple-row>button{justify-self:end}.cm-simple-row p{color:var(--muted)}
 .cm-category-toolbar{display:flex;justify-content:space-between;align-items:center;gap:16px}.cm-category-picker summary{display:flex;gap:14px;align-items:center;cursor:pointer;padding:14px 20px;border:1px solid var(--line);border-radius:12px;background:var(--surface2);list-style:none;color:var(--gold)}.cm-category-picker summary::-webkit-details-marker{display:none}.cm-category-picker summary small{color:var(--muted)}.cm-category-sheet{position:fixed;left:0;top:0;bottom:0;width:min(330px,88vw);z-index:1500;background:var(--surface2,#18201b);box-shadow:20px 0 70px #0009;padding:28px;overflow:auto;border-right:1px solid var(--line)}.cm-category-sheet header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}.cm-category-sheet nav{display:grid;gap:10px}.cm-category-sheet nav button{text-align:left;padding:17px;border-radius:10px}.cm-category-sheet button[aria-pressed=true],.cm-model-strip button[aria-pressed=true]{border-color:var(--gold);color:var(--gold);background:rgba(217,155,53,.1)}.cm-model-strip{display:flex;gap:12px;overflow-x:auto;padding:4px 0 14px;scroll-snap-type:x proximity}.cm-model-strip>button{flex:0 0 auto;min-width:190px;max-width:330px;display:grid;gap:9px;text-align:left;padding:18px 22px;border-radius:12px;scroll-snap-align:start}.cm-model-strip strong{font-size:14px}.cm-model-strip small{color:var(--muted);font-size:11px;overflow-wrap:anywhere}.cm-selected-model{border:1px solid var(--line);border-radius:16px;padding:24px;min-width:0}.cm-inline-hint{font-size:12px;color:var(--muted);margin:20px 0}.cm-selected-model [data-cm-priority-close]{display:none}.cm-selected-model .cm-priority-editor{margin:0}.cm-simple-history{min-width:0}@media(max-width:700px){.cm-selected-model{padding:14px}.cm-model-strip>button{min-width:165px;padding:14px}.cm-category-toolbar{gap:8px}.cm-category-picker summary{padding:12px}.cm-category-picker summary small{display:none}}
 .cm-sort-moving{transition:transform 180ms ease}.cm-priority-drag{touch-action:none;cursor:grab}.cm-sort-placeholder{opacity:.15;border:1px dashed var(--gold)}.cm-sort-ghost{position:fixed!important;z-index:10000;pointer-events:none;box-sizing:border-box;margin:0!important;background:var(--surface2,#19201d);box-shadow:0 16px 45px #0008;border:1px solid var(--gold,#c9a449);transform:scale(1.015)}
-/* 简洁视图：主界面只留「选模型 → 排渠道」。这里只收起说明性文字与历史块，
-   编辑 / 发布 / 错误反馈 / 回滚 / 测试 / 移除 等操作入口一律保留可达（验收要求），
-   高级视图按钮也保留，作为回到完整矩阵的出口。 */
+/* 简洁视图保留选模型、排渠道、编辑；辅助操作折叠而非删除。 */
+.cm-priority-tools,.cm-view-tools{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+.cm-priority-tools>summary,.cm-view-tools>summary{cursor:pointer;color:var(--muted);font-size:12px;padding:8px 0}
+.cm-view-tools{position:relative;margin:0;border:0;padding:0}.cm-view-tools>button{margin-top:8px}
+.cm-selected-model .cm-priority-info code{display:none}
+.cm-row-tools{display:inline-block}.cm-row-tools>summary{cursor:pointer;color:var(--muted);font-size:11px;padding:6px}.cm-row-tools[open]{display:flex;gap:5px}
+.cm-selected-model .cm-priority-health{display:none}
+#cmMatrix #cmModelPriority .cm-priority-channel{grid-template-columns:30px 24px minmax(0,1fr) auto auto}
+#cmMatrix #cmModelPriority .cm-priority-info{grid-column:3;grid-row:1}
+#cmMatrix #cmModelPriority .cm-priority-role{grid-column:4;grid-row:1}
+#cmMatrix #cmModelPriority .cm-priority-actions{grid-column:5;grid-row:1}
+@media(max-width:600px){#cmMatrix #cmModelPriority .cm-priority-channel{grid-template-columns:26px 20px minmax(0,1fr) auto}#cmMatrix #cmModelPriority .cm-priority-role{display:none}#cmMatrix #cmModelPriority .cm-priority-actions{grid-column:4}}
 [data-module="managedChannels"]>.section-head .actions,[data-module="managedChannels"]>.section-head p,.cm-simple-history,.cm-inline-hint,.cm-selected-model .cm-priority-head{display:none!important}
 [data-module="managedChannels"],#cmMatrix,.cm-simple{min-width:0;max-width:100%}
 #cmMatrix .cm-model-strip{min-width:0;width:100%;box-sizing:border-box;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;scroll-snap-type:none;overscroll-behavior-x:contain;padding:4px 0 8px;align-items:stretch}

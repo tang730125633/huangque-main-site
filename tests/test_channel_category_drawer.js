@@ -201,3 +201,21 @@ test('模型横排不会把模型名截断（CSS 契约）',()=>{
   assert.match(rule[1],/white-space:nowrap/);
   assert.ok(!/text-overflow:\s*ellipsis/.test(rule[1]),'模型名不应使用省略号截断');
 });
+
+test('默认界面折叠辅助操作但保留渠道列表和发布状态',()=>{
+  const {elements}=build();
+  const html=elements.cmMatrix.innerHTML;
+  assert.match(html,/<details class="cm-view-tools"><summary>更多<\/summary>/);
+  assert.match(html,/<details class="cm-priority-tools"><summary>配置、检测与回滚<\/summary>/);
+  assert.ok(html.indexOf('cm-priority-list')<html.indexOf('cm-priority-tools'));
+  assert.ok(html.indexOf('cm-priority-published')<html.indexOf('cm-priority-tools'));
+  assert.ok(html.indexOf('data-cm-priority-save')>html.indexOf('cm-priority-tools'));
+  assert.doesNotMatch(html,/<details class="cm-priority-tools" open/);
+});
+
+test('渠道样式版本随内容变化而更新',()=>{
+  const crypto=require('node:crypto');
+  const index=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
+  const hash=crypto.createHash('md5').update(css.replace(/\r\n/g,'\n')).digest('hex').slice(0,8);
+  assert.ok(index.includes('/admin/channel-simple.css?v='+hash));
+});
