@@ -162,9 +162,9 @@ function element(id){
     classList:{toggle(){},add(){},remove(){}},querySelector(){return null},querySelectorAll(){return[]}};
 }
 
-function route(operationId,channelId,name){
+function route(operationId,channelId,name,legacyModel){
   return {capability:'文生图',control_state:'managed',admitted:true,operation_id:operationId,
-    primary:{id:channelId,name,supplier:'供应商',connection_type:'official',base_host:'x.example.com',
+    primary:{id:channelId,name,supplier:'供应商',model:legacyModel||'',connection_type:'official',base_host:'x.example.com',
       credential_source:'渠道密钥库',configured:true,enabled:true,
       auth:{state:'ok',label:'鉴权通过'},full:{state:'ok',label:'成品验证通过'},
       management:{kind:'managed_channel',uid:'managed:'+channelId}}};
@@ -191,8 +191,8 @@ function workspaceData(){
     frontend_matrix:{pages:[
       {page:'image',label:'生图',summary:{products:1,models:2,admitted_models:2,attention_models:0},products:[
         {key:'banana',label:'纳米香蕉',description:'前台产品',visible:true,admitted:true,models:[
-          {key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图'],visible:true,admitted:true,routes:[route('image.banana.text','ch-banana','纳米香蕉渠道')]},
-          {key:'engine2',label:'黄雀引擎 2',actual_model:'gpt-image-2',capabilities:['文生图'],visible:true,admitted:true,routes:[route('image.engine2.text','ch-engine2','引擎 2 渠道')]}
+          {key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图'],visible:true,admitted:true,routes:[route('image.banana.text','ch-banana','纳米香蕉渠道','gemini-3')]},
+          {key:'engine2',label:'黄雀引擎 2',actual_model:'gpt-image-2',capabilities:['文生图'],visible:true,admitted:true,routes:[route('image.engine2.text','ch-engine2','引擎 2 渠道','gpt-image-2')]}
         ]}
       ]},
       {page:'video',label:'生视频',summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[
@@ -271,18 +271,19 @@ test('模型横排展示模型名与英文标识，且英文标识来自实际�
   assert.match(strip,/data-cm-model-key="nb2"/);
 });
 
-test('切换模型后渠道列表对应该模型，不残留上一个模型',async()=>{
-  const {elements,root,workspace}=build();
-  // 默认选中的是首个可见模型（纳米香蕉 2）→ 渠道列表应指向它的 operation
+test('切换模型后渠道列表对应该模型，且跨模型候选被标出来',async()=>{
+  const {elements,root}=build();
+  // 简洁视图默认选中首个可见模型（纳米香蕉 2）→ 渠道列表指向它的 operation
   assert.match(elements.cmMatrix.innerHTML,/data-cm-priority-operation="image.banana.text"/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-operation="image.engine2.text"/);
+  // 方案 B：候选池按类型列出，与原厂线路模型不同的候选要被标出来（不静默接管）
+  assert.match(elements.cmMatrix.innerHTML,/cm-priority-diff/);
+  assert.match(elements.cmMatrix.innerHTML,/与原厂不同模型/);
 
   await click(root,'[data-cm-model-key]',modelBtn('image','banana','engine2'));
   const html=elements.cmMatrix.innerHTML;
-  assert.match(html,/data-cm-priority-operation="image\.engine2\.text"/);
-  assert.doesNotMatch(html,/data-cm-priority-operation="image\.banana\.text"/,'不应残留上一个模型的渠道列表');
-  assert.match(html,/引擎 2 渠道/);
-  assert.doesNotMatch(html,/纳米香蕉渠道/);
+  assert.match(html,/data-cm-priority-operation="image\.engine2\.text"/,'渠道列表必须切到该模型的 operation');
+  assert.doesNotMatch(html,/data-cm-priority-operation="image\.banana\.text"/,'不应残留上一个模型的 operation');
   assert.equal(elements.cmDrawer.hidden,true,'切换模型不应自行打开抽屉');
 });
 
