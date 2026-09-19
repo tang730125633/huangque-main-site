@@ -371,7 +371,7 @@ test('精简编辑只更改供应商 URL Key，保留其他生产参数',()=>{
   const example=ctx.invocationExample({...old,base_url:'https://old.example/v1'});
   assert.match(example,/YOUR_API_KEY/);assert.doesNotMatch(example,/NEVER_COPY/);assert.match(example,/images\/generations/);
   assert.match(ctx.invocationExample({...old,adapter:'minimax_h3',model:'MiniMax-H3'}),/v2\/video_generation/);
-  const compactForm=manager.slice(manager.indexOf('      if(c.id||c._modelCreate){'),manager.indexOf("      el('cmEditor').innerHTML='<form id=\"cmForm\" class=\"cm-form\"><h3>"));
+  const compactForm=manager.slice(manager.indexOf('      if((c.id||c._modelCreate)&&!validation){'),manager.indexOf("      el('cmEditor').innerHTML='<form id=\"cmForm\" class=\"cm-form\"><h3>"));
   assert.match(compactForm,/供应商名称/);assert.match(compactForm,/Base URL/);assert.match(compactForm,/secretField/);assert.match(compactForm,/调用示例/);
   assert.doesNotMatch(compactForm,/field\('实际模型|data-edit-pane/);
   assert.match(source,/data-cm-channel-history/);

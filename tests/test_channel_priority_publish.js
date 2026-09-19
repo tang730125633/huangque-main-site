@@ -45,4 +45,9 @@ test('lost response after commit is recovered by readback without resubmission',
   await h.ctx.publishPriority('op',true);
   assert.equal(h.calls.length,1);assert.equal(h.ctx.priorityUncertain,false);
   assert.match(h.messages.at(-1),/已读回确认顺序生效/);
+  assert.equal(h.ctx.priorityErrors.op,undefined);
+});
+test('unassigned disabled same-model channels do not block a published reorder',async()=>{
+ const h=harness();h.ctx.data.items.push({id:'disabled',enabled:false,model:'same-model'});h.ctx.priorityDrafts.op.channels.push('disabled');await h.ctx.publishPriority('op',true);
+ assert.deepEqual(h.calls[0].channels,['b','a']);
 });

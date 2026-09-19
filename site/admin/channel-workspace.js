@@ -195,6 +195,9 @@
       const draft=priorityDrafts[operationId];if(!draft||priorityBusy||priorityUncertain)return;
       const mapping=mappingForOperation(operationId);
       if(automatic){
+        // Visible unassigned candidates are not silently added as production backups.
+        const published=mappingChannels(mapping);
+        draft.channels=draft.channels.filter((id,index)=>index===0||published.includes(id));
         const route=matrixPages().flatMap(p=>p.products||[]).flatMap(p=>p.models||[]).flatMap(m=>m.routes||[]).find(r=>r.operation_id===operationId);
         const model=route?.primary?.model;
         const candidates=draft.channels.map(id=>(data.items||[]).find(c=>c.id===id));
@@ -226,6 +229,7 @@
         try{if(await env.refresh()===false)throw Error('读取失败')}catch(_){priorityUncertain=true;if(status)status.textContent='结果未知，请刷新核对后再操作。';return}
         const recovered=mappingForOperation(operationId);
         if(Number(recovered?.revision)>draft.revision&&recovered.state===draft.state&&JSON.stringify(mappingChannels(recovered))===JSON.stringify(draft.channels)){
+          delete priorityErrors[operationId];
           toast(recovered.state==='managed'?'响应中断，但已读回确认顺序生效。':'响应中断，但已读回确认草稿状态已发布。');
         }
       }finally{priorityBusy=false;if(editor)editor.inert=false;refreshPriority()}
@@ -583,7 +587,7 @@
         body+='<p>已移入回收站，保留历史配置与调用记录。恢复后仍为停用状态。</p><p>'+esc(c._lifecycle?.reason||'')+'</p><button data-cm-action="restore" data-cm-uid="'+esc(c.uid)+'">恢复渠道</button>';
       }else if(c.source==='managed'){
         body+='<p>当前版本 v'+c.version+' · '+esc(c.enabled?'接单已启用':'已停用')+'</p>'+threeStatusHtml(c)+'<p class="muted">API：'+esc(c.base_url)+'<br>网络：'+esc(c.proxy||'直连')+'<br>参考图：'+Number(c.material_count||0)+' 张</p><div class="actions"><button data-edit="'+esc(c.id)+'">连接配置与巡检</button><button data-cm-mapping="'+esc(c.id)+'">配置功能映射</button></div>';
-        body+='<h3>测试与素材</h3><p class="muted">连接可达、鉴权通过、生成成品分别验证。完整测试可能产生供应商费用；不代表用户已接收。</p><div class="actions">'+['connection','auth','full'].map((kind,i)=>'<button data-test="'+kind+'" data-id="'+esc(c.id)+'">'+['连接检测','鉴权检测','完整生成测试'][i]+'</button>').join('')+'<button data-cm-refresh="1">刷新结果</button></div>';
+        body+='<h3>测试与素材</h3><p class="muted">连接可达、鉴权通过、生成成品分别验证。完整测试可能产生供应商费用；不代表用户已接收。</p><div class="actions"><button type="button" data-cm-validation-settings="'+esc(c.id)+'">设置验证素材与预算</button>'+['connection','auth','full'].map((kind,i)=>'<button data-test="'+kind+'" data-id="'+esc(c.id)+'">'+['连接检测','鉴权检测','完整生成测试'][i]+'</button>').join('')+'<button data-cm-refresh="1">刷新结果</button></div>';
         body+='<p>测试提示词：'+esc(c.fixture?.prompt||'未准备')+'<br>素材：'+(data.adapters?.[c.adapter]?.references?'可使用参考图，已准备 '+Number(c.material_count||0)+' 张':'当前协议仅支持文本输入')+'</p><h3>最近调用与故障</h3>';
         const runs=(data.runs||[]).filter(r=>r.channel===c.id).slice(0,10);
         body+=runs.map(r=>'<div class="task-proof-line"><b>'+esc(date(r.started)+' · v'+r.version+' · '+r.kind+' · '+r.state)+'</b><span>'+esc(r.detail||'无额外说明')+'</span><span>供应商工单：'+esc(r.provider_id||'未采集')+'</span>'+(r.job_id?'<button data-cm-job="'+esc(r.job_id)+'">查看任务 #'+esc(r.job_id)+'</button>':'')+'</div>').join('')||'<p class="muted">暂无调用记录</p>';
@@ -599,6 +603,7 @@
       if(b.dataset.cmCategoryClose!=null){b.closest('details').open=false;return}
       if(b.dataset.cmLiveDetail){open(b.dataset.cmLiveDetail);return}
       if(b.dataset.cmLatency){await detectLatency(b.dataset.cmLatency,b.dataset.cmLatencySource);return}
+      if(b.dataset.cmValidationSettings){env.validationSettings?.(b.dataset.cmValidationSettings);return}
       if(b.dataset.cmPriorityClose!=null){if(el('cmModelPriority'))el('cmModelPriority').innerHTML='';matrixExpanded=null;renderMatrix();return}
       if((priorityBusy||priorityUncertain)&&Object.keys(b.dataset).some(key=>key.startsWith('cmPriority')))return;
       if(b.dataset.cmPriorityRoute){matrixExpanded.operationId=b.dataset.cmPriorityRoute;refreshPriority();return}
