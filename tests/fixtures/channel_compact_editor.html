@@ -2,7 +2,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'">
 <link rel="stylesheet" href="../../site/admin/channel-simple.css">
 <style>body{min-width:0!important;padding:24px}#fixtureLabel{padding:16px;background:#40391e;margin-bottom:20px}</style>
-<div id="fixtureLabel">隔离测试：虚构供应商，禁止所有配置写请求，不连接生产。</div><div id="fixtureHost"></div>
+<div id="fixtureLabel">隔离测试：虚构供应商，写请求只更新内存，不连接生产。</div><pre id="fixtureAudit"></pre><div id="fixtureHost"></div>
 <script src="../../site/admin/channel-catalog.js"></script><script src="../../site/admin/channel-workspace.js"></script><script src="../../site/admin/channel-manager.js"></script>
 <script>
 (async()=>{
@@ -15,7 +15,18 @@
   const data={items:[item],mappings:[],operation_mappings:[{operation_id:op,state:'managed',channels:['test-a'],revision:4}],operations:[{operation_id:op,channel_kind:'image',name:'生图'}],adapters:{openai_image:{kind:'image',name:'OpenAI兼容'}},runs:[],events:[],frontend_matrix:{page:'image',products:[{key:'openai',label:'黄雀引擎 2',visible:true,models:[{key:'gpt',label:'GPT Image 2',actual_model:'gpt-image-2',routes:[{operation_id:op,primary:{id:'test-a',name:'测试渠道',management:{kind:'managed_channel',uid:'managed:test-a'}}}]}]}]}};
   window.initChannelParameterEditor=()=>({open(){}});
   const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const load=window.initChannelManager({api:async(path,opts)=>{if(opts?.method&&opts.method!=='GET')throw Error('隔离测试禁止写请求');return data},el:id=>document.getElementById(id),esc,toast:message=>{document.getElementById('fixtureLabel').textContent=message},legacy:()=>[],closeLegacy:()=>true,active:()=>false});
+  let writes=0;
+  const mockApi=async(path,opts)=>{
+    if(opts?.method&&opts.method!=='GET'){
+      if(path!=='/api/admin/channel-manager/save')throw Error('隔离测试禁止路由及生成请求');
+      const body=JSON.parse(opts.body);writes++;
+      document.getElementById('fixtureAudit').textContent=JSON.stringify({writes,hasId:!!body.id,model:body.model,daily_test:body.daily_test,mapping:data.operation_mappings[0].channels});
+      data.items.push({...body,secret:undefined,id:'fixture-new',version:1,history:[]});
+      return {id:'fixture-new',version:1};
+    }
+    return data;
+  };
+  const load=window.initChannelManager({api:mockApi,el:id=>document.getElementById(id),esc,toast:message=>{document.getElementById('fixtureLabel').textContent=message},legacy:()=>[],closeLegacy:()=>true,active:()=>false});
   await load();
 })().catch(e=>{document.getElementById('fixtureLabel').textContent=e.stack});
 </script>
