@@ -179,7 +179,10 @@
         const page=matrixPages().find(p=>p.page===matrixExpanded.page);
         const product=page?.products?.find(p=>p.key===matrixExpanded.product);
         const model=product?.models?.find(m=>m.key===matrixExpanded.model);
-        if(model)host.innerHTML=priorityEditor(product,model);
+        if(model){
+          host.innerHTML=priorityEditor(product,model);
+          if(priorityUncertain)host.querySelectorAll('button:not([data-cm-priority-close]),select').forEach(node=>{node.disabled=true});
+        }
       }else renderMatrix();
     }
     async function publishPriority(operationId,automatic=false){
@@ -207,6 +210,10 @@
         delete priorityDrafts[operationId];
         toast('未确认生效：'+error.message+' 请刷新核对服务端顺序。');
         try{if(await env.refresh()===false)throw Error('读取失败')}catch(_){priorityUncertain=true;if(status)status.textContent='结果未知，请刷新核对后再操作。';return}
+        const recovered=mappingForOperation(operationId);
+        if(Number(recovered?.revision)>draft.revision&&recovered.state===draft.state&&JSON.stringify(mappingChannels(recovered))===JSON.stringify(draft.channels)){
+          toast(recovered.state==='managed'?'响应中断，但已读回确认顺序生效。':'响应中断，但已读回确认草稿状态已发布。');
+        }
       }finally{priorityBusy=false;if(editor)editor.inert=false;refreshPriority()}
     }
     function movePriority(operationId,channelId,targetId,direction){

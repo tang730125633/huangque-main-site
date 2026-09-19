@@ -35,3 +35,10 @@ test('real refresh failure contract is false, and still locks writes',async()=>{
   const h=harness();h.ctx.api=async()=>{throw Error('network')};h.ctx.env.refresh=async()=>false;
   await h.ctx.publishPriority('op',true);assert.equal(h.ctx.priorityUncertain,true);
 });
+test('lost response after commit is recovered by readback without resubmission',async()=>{
+  const h=harness(),save=h.ctx.api;
+  h.ctx.api=async(...args)=>{await save(...args);throw Error('response lost')};
+  await h.ctx.publishPriority('op',true);
+  assert.equal(h.calls.length,1);assert.equal(h.ctx.priorityUncertain,false);
+  assert.match(h.messages.at(-1),/已读回确认顺序生效/);
+});
