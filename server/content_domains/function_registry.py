@@ -1638,7 +1638,10 @@ def operation(operation_id):
                     # 能不能切换由 channel_capabilities 的数据表决定（含具体原因），
                     # 不再用一行硬编码白名单。
                     capability = channel_capability_domain.capability(kind)
-                    switchable = bool(kind) and capability["switchable"]
+                    # 同一 kind 下可能有多个供应商的功能（如换装两条线路）：
+                    # 逐功能黑名单优先于按 kind 的判断。
+                    switchable = (bool(kind) and capability["switchable"]
+                                  and operation_id not in channel_capability_domain.OPERATION_BLOCKED)
                     channel_kind = kind if switchable else ""
                     return {
                         "operation_id": operation_id,

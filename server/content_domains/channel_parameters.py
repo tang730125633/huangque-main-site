@@ -210,6 +210,12 @@ def capabilities(cfg,profile=None):
         return dict(profile='xai_video',profiles=['xai_video'],fields={'ratio':['9:16','16:9','1:1'],
                     'resolution':resolutions,'duration':list(range(1,16))},
                     reference_min=1 if cfg['model']=='grok-imagine-video-1.5' else 0,reference_max=1,count=1)
+    if adapter=='wavespeed_tryon':
+        # 线路二换装：人物图 + 衣服图 → 换装展示视频。时长取自原厂同一套 _tryon_seconds 规则。
+        from . import video as video_domain
+        return dict(profile='wavespeed_tryon',profiles=['wavespeed_tryon'],
+                    fields={'duration':list(range(5,16))},
+                    reference_min=2,reference_max=2,count=1)
     if adapter=='sora_video':
         # 复用原厂 Sora 的模型 / 时长 / 比例 / 尺寸事实，不另写一份白名单。
         from . import video as video_domain

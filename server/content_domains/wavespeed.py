@@ -194,9 +194,16 @@ def _material_url(local_rel, private=False):
     return cos.upload(str(fp), key, private=private)
 
 
-def _run_and_wait(model_path, body, job_id=None, config_ref=None):
+def _run_and_wait(model_path, body, job_id=None, config_ref=None, credential=None, base_url=None):
+    # 托管渠道注入：直接用渠道自己的 Key 与线路，不再查 provider_config。
+    # 提交 / 轮询 / 产出解析完全复用下面同一段代码。
+    if credential is not None or base_url:
+        config = {"credential": credential,
+                  "url": (base_url or WS_API).rstrip("/"),
+                  "wired": credential is not None}
+    else:
+        config = _credentials(config_ref)
     from functools import partial
-    config = _credentials(config_ref)
     request = partial(_ws_req, credential=config["credential"]) if config["wired"] else _ws_req
     base = config["url"]
     r = request("POST", base + model_path, body)
@@ -353,11 +360,17 @@ def _download_to_lib(url, prefix):
     return fn
 
 
-def generate_tryon(person_image_file, clothes_file, duration, job_id=None, config_ref=None):
-    """线路二·换装：人物图 + 衣服图 → outfit-tryon。返回 {video_file, video_url, provider}。"""
+def generate_tryon(person_image_file, clothes_file, duration, job_id=None, config_ref=None,
+                   credential=None, base_url=None, material_resolver=None):
+    """线路二·换装：人物图 + 衣服图 → outfit-tryon。返回 {video_file, video_url, provider}。
+
+    ``credential`` / ``base_url`` 由托管渠道注入；
+    ``material_resolver`` 供隔离测试替换素材上传（生产不传）。
+    """
     _phase(job_id, "ws_uploading")
-    person_url = _material_url(person_image_file)
-    clothes_url = _material_url(clothes_file)
+    resolve = material_resolver or _material_url
+    person_url = resolve(person_image_file)
+    clothes_url = resolve(clothes_file)
     dur = max(5, min(15, int(duration or 5)))
     _phase(job_id, "ws_running")
     generated = _run_and_wait(
@@ -365,6 +378,8 @@ def generate_tryon(person_image_file, clothes_file, duration, job_id=None, confi
         {"image": person_url, "clothes_images": [clothes_url], "duration": dur},
         job_id=job_id,
         config_ref=config_ref,
+        credential=credential,
+        base_url=base_url,
     )
     out_url = generated["output_url"]
     _phase(job_id, "downloading")

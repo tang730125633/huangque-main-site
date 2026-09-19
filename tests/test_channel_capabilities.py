@@ -74,6 +74,7 @@ class ChannelCapabilityTests(unittest.TestCase):
         """本次改动不能把已经能用的能力收回去。"""
         self.assertIn('image', caps.switchable_kinds())
         self.assertIn('xiaole_video', caps.switchable_kinds())
+        self.assertIn('tryon', caps.switchable_kinds())
         self.assertTrue(registry.operation('image.banana.nb2.text')['channel_eligible'])
         self.assertTrue(registry.operation('video.grok.text')['channel_eligible'])
 
@@ -81,7 +82,7 @@ class ChannelCapabilityTests(unittest.TestCase):
         """还没接通执行器的，必须明确说明缺什么，而不是含糊的「不支持」。"""
         for operation_id, keyword in (
             ('video.digital_ip.text.single', 'HeyGen'),
-            ('video.tryon.fast', 'WaveSpeed'),
+            ('video.tryon.classic', 'RunningHub'),
             ('audio.tts.public', 'TTS'),
         ):
             with self.subTest(operation_id=operation_id):

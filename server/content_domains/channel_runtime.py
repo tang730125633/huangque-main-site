@@ -10,6 +10,7 @@ SQLite 路径与行为逐字节不变。本模块不再直连 ``channel_manager.
 import base64
 import io
 import json
+import os
 import time
 import threading
 import urllib.parse
@@ -51,10 +52,12 @@ GEMINI_RESPONSE_MAX_BYTES = 24 * 1024 * 1024
 def validate_payload(cfg, payload):
     if any(k.startswith('_short_drama') for k in payload) or payload.get('short_drama_binding'):
         raise ValueError('短剧绑定任务不支持通用渠道映射，请使用专用渠道配置')
-    if not str(payload.get('prompt') or '').strip():
-        raise ValueError('提示词不能为空')
-    if len(str(payload['prompt'])) > 7000:
-        raise ValueError('提示词不得超过7000字')
+    # 换装/换背景按图像素材工作，没有提示词；提示词规则只对文本驱动型协议生效。
+    if cfg['adapter'] != 'wavespeed_tryon':
+        if not str(payload.get('prompt') or '').strip():
+            raise ValueError('提示词不能为空')
+        if len(str(payload['prompt'])) > 7000:
+            raise ValueError('提示词不得超过7000字')
     if int(payload.get('n') or payload.get('count') or 1) != 1:
         raise ValueError('受管理渠道当前每个任务只生成一个产物')
     if payload.get('operation') not in {None,'','generate'}:
@@ -86,6 +89,22 @@ def validate_payload(cfg, payload):
             raise ValueError('Gemini 官方生图参考图总大小超过 48MB')
         if str(payload.get('ratio') or '1:1') not in RATIOS:
             raise ValueError('Gemini 官方生图不支持该画面比例')
+    if cfg['adapter'] == 'wavespeed_tryon':
+        # 线路二换装：人物图 + 衣服图，不支持换背景（与 validate_tryon_payload 同一套规则）。
+        from . import video as video_domain
+        person = str(payload.get('person_image_data') or payload.get('image_data') or '').strip()
+        clothes = str(payload.get('clothes_data') or '').strip()
+        if not person or not video_domain._is_valid_data_url(person, video_domain.VALID_IMAGE_MIMES):
+            raise ValueError('线路二换装请上传有效的人物照片')
+        if not clothes or not video_domain._is_valid_data_url(clothes, video_domain.VALID_IMAGE_MIMES):
+            raise ValueError('请上传衣服图')
+        if str(payload.get('background_data') or '').strip():
+            raise ValueError('线路二不支持换背景，请改用线路一')
+        if payload.get('person_video_data'):
+            raise ValueError('线路二换装不接受人物视频，请改用线路一')
+        seconds = video_domain._tryon_seconds(payload, '2')
+        if not 5 <= seconds <= 15:
+            raise ValueError('线路二换装时长须为5～15秒')
     if cfg['adapter'] == 'sora_video':
         from . import video as video_domain
         if len(refs) > 1:
@@ -359,6 +378,77 @@ def build_generation_request(cfg, payload, preview=False):
     return '/videos/generations', body, None
 
 
+def _tryon_material_resolver(local_rel):
+    """素材转公网直链：生产走 COS；隔离测试可用环境变量替换（生产不设该变量）。"""
+    base = os.environ.get('HQ_TRYON_MATERIAL_BASE')
+    if base:
+        return base.rstrip('/') + '/' + str(local_rel).replace('/', '-')
+    from . import wavespeed
+    return wavespeed._material_url(local_rel)
+
+
+def _generate_tryon_ws(cfg, payload, rid, job_id, metadata):
+    """托管换装（线路二）：复用原厂 wavespeed.generate_tryon。
+
+    两次素材上传与提交/轮询/下载全部由原厂模块完成，这里只把渠道自己的
+    Key 与线路注入进去（wavespeed 已支持 credential / base_url）。
+    """
+    from . import video as video_domain, wavespeed, core
+    person = video_domain._save_data_file(
+        payload.get('person_image_data') or payload.get('image_data'),
+        'tryon_person_img', ['.jpg', '.jpeg', '.png', '.webp'])
+    if not person:
+        raise PreSubmissionFailure('线路二换装请上传人物照片')
+    clothes = video_domain._save_data_file(
+        payload.get('clothes_data'), 'tryon_cloth', ['.jpg', '.jpeg', '.png', '.webp'])
+    if not clothes:
+        raise PreSubmissionFailure('请上传衣服图')
+    seconds = video_domain._tryon_seconds(payload, '2')
+    store.finish(rid, 'running', '提交换装供应商')
+    wres = trace.call(
+        job_id, 'provider_submit',
+        lambda: wavespeed.generate_tryon(
+            person, clothes, seconds, job_id=job_id,
+            credential=cfg['secret'], base_url=cfg['base_url'],
+            material_resolver=_tryon_material_resolver),
+        **metadata)
+    provider_id = str((wres or {}).get('provider_video_id') or '')
+    video_file = (wres or {}).get('video_file')
+    if not video_file:
+        raise ProviderError('换装未返回成品文件')
+    target = core.OUT_DIR / video_file
+    if not target.is_file():
+        raise ProviderError('换装成品文件不存在：%s' % str(video_file)[:120])
+    try:
+        import subprocess
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-count_frames',
+             '-show_entries', 'stream=codec_type,width,height,nb_read_frames',
+             '-of', 'json', str(target)],
+            capture_output=True, timeout=120, check=True)
+        streams = json.loads(probe.stdout).get('streams', [])
+        ok = any(s.get('codec_type') == 'video' and int(s.get('width') or 0) > 0
+                 and int(s.get('height') or 0) > 0
+                 and str(s.get('nb_read_frames') or '').isdigit()
+                 and int(s['nb_read_frames']) > 0 for s in streams)
+        if probe.stderr or not ok:
+            raise ValueError('成品帧解码未通过，不能判定视频有效')
+    except Exception:
+        raise
+    trace.record(job_id, 'artifact', 'passed', provider_task_id=provider_id, **metadata)
+    url = core.public_url(video_file, 'video/mp4')
+    binding = payload.get('_channel_binding') or {}
+    return {'type': 'video', 'status': 'done', 'mode': 'tryon', 'tryon_mode': 'clothes_only',
+            'file': video_file, 'video_file': video_file, 'url': url, 'video_url': url,
+            'files': [video_file], 'urls': [url], 'count': 1,
+            'person_image_file': person, 'clothes_file': clothes,
+            'provider': cfg['name'], 'model': cfg['model'], 'request_id': provider_id,
+            'channel_id': cfg['id'], 'channel_version': cfg['version'],
+            'operation_id': binding.get('operation_id'),
+            'mapping_revision': binding.get('mapping_revision'),
+            'invocation_source': binding.get('invocation_source')}
+
+
 def _sora_size(cfg, payload):
     """按原厂同一张 SORA_SIZE_MAP 推导尺寸，保证与原线路行为一致。"""
     from . import video as video_domain
@@ -448,9 +538,11 @@ def generate(cfg, payload, rid, job_id):
         raise PreSubmissionFailure(str(exc)[:200]) from None
     trace.record(job_id,'route','recorded',**metadata)
     store.finish(rid,'running','提交供应商')
-    # Sora 走原厂 video_openai（已支持注入 Key/base）；其余适配器走通用 HTTP 路径。
+    # Sora 走原厂 video_openai（已支持注入 Key/base）；换装走原厂 wavespeed；其余走通用 HTTP 路径。
     if cfg['adapter'] == 'sora_video':
         return _generate_sora(cfg, payload, rid, job_id, metadata, refs)
+    if cfg['adapter'] == 'wavespeed_tryon':
+        return _generate_tryon_ws(cfg, payload, rid, job_id, metadata)
     # 乐创付费创建请求要求 8-128 字符幂等键；run id 为 32 位 hex，天然幂等。
     extra_headers = {'Idempotency-Key': str(rid)} if is_lechuang else None
     result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body,extra_headers=extra_headers,files=files),**metadata)

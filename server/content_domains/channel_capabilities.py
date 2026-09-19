@@ -80,11 +80,12 @@ CAPABILITIES = {
         "adapters": (),
         "reason": "HeyGen 形象生成会写回用户形象归属，需要先新增 HeyGen 适配器并保留归属逻辑。",
     },
+    # ── 已接入：换装换背景·线路二（WaveSpeed）─────────────────────────────
+    # 线路一（RunningHub）是另一套供应商与输入，尚未接入，见 OPERATION_REASONS。
     "tryon": {
-        "switchable": False,
-        "adapters": (),
-        "reason": "换装换背景走 WaveSpeed / RunningHub 工作流（多图输入 + 工作流编号），"
-                  "需要先新增对应适配器。",
+        "switchable": True,
+        "adapters": ("wavespeed_tryon",),
+        "reason": "",
     },
     "audio": {
         "switchable": False,
@@ -164,7 +165,17 @@ NO_TASK_KIND_REASON = (
 
 # 逐项原因：这些功能没有 task_match，不能共用一句「不适用」搪塞。
 # 每一项都是按实际调用链查出来的（见 PR 说明）。
+# 逐功能强制不可切换：同一个 task_match.kind 下可能有多个不同供应商/输入的功能。
+# 典型：换装 kind=tryon 有两条线路 —— 线路二（WaveSpeed，已接入）与线路一（RunningHub，未接入）。
+# 只按 kind 判会让线路一被误判为可切换，所以这里逐功能显式挡回。
+OPERATION_BLOCKED = {
+    'video.tryon.classic',
+}
+
 OPERATION_REASONS = {
+    'video.tryon.classic':
+        "换装线路一走 RunningHub 两段式 AI App（人物视频 + 可换背景），与线路二的 WaveSpeed "
+        "是不同供应商与不同输入，尚未接入；线路二已可切换。",
     'video.one_click.compose':
         "一键成片是组合流水线：转写走 OpenAI Whisper（OPENAI_TRANSCRIBE_BASE / OPENAI_KEY，"
         "可替换），拼接与混流是本地 ffmpeg。有供应商的是转写步骤，需拆步骤后再接入适配器。",
