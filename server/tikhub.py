@@ -841,8 +841,20 @@ def ch_detail(object_id):
         "note_type": "video",
     }
 
+def _ch_comments_raw(object_id, last_buffer="", attempts=3):
+    """fetch_video_comments 同样偶发错误信封，同参数重试（信封不含 comments 字段）。"""
+    last = None
+    for attempt in range(attempts):
+        d = _p(CH + "/fetch_video_comments", object_id=str(object_id), raw=False, last_buffer=last_buffer)
+        if not (isinstance(d, dict) and d.get("message") and "comments" not in d):
+            return d
+        last = d
+        if attempt < attempts - 1:
+            time.sleep(_CH_ENVELOPE_GAPS[min(attempt, len(_CH_ENVELOPE_GAPS) - 1)])
+    return last
+
 def ch_comments(object_id, last_buffer=""):
-    d = _p(CH + "/fetch_video_comments", object_id=str(object_id), raw=False, last_buffer=last_buffer)
+    d = _ch_comments_raw(object_id, last_buffer=last_buffer)
     items = []
     for c in (d.get("comments") or []):
         items.append({"text": c.get("content"), "ip": c.get("ip_region"),

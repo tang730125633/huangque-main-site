@@ -201,6 +201,24 @@ class ChannelsDetailTest(unittest.TestCase):
         self.assertEqual(sleep.call_count, 1)
         self.assertEqual(result["items"], [])
 
+    def test_comments_retry_error_envelope(self):
+        envelope = {"debug_id": "x", "message": "请求参数可能有误"}
+        good = {"comments": [
+            {"nickname": "遗计定辽东", "username": "u1@finder",
+             "content": "准备大看一场的我:", "like_count": 3, "create_time": 1789293602,
+             "comment_id": "c1", "reply_count": 0, "ip_region": "", "head_url": ""},
+        ], "last_buffer": "buf", "down_continue": 0}
+
+        with patch.object(tikhub, "_p", side_effect=[envelope, good]) as request, \
+             patch.object(tikhub.time, "sleep") as sleep:
+            result = tikhub.ch_comments("15009682628233337494")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["text"], "准备大看一场的我:")
+        self.assertEqual(result["items"][0]["user"], "遗计定辽东")
+
 
 class ChannelsTranscriptRecoveryTest(unittest.TestCase):
     def setUp(self):
