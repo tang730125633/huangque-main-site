@@ -69,6 +69,64 @@ class ChannelsDetailTest(unittest.TestCase):
         self.assertEqual(result["author"]["name"], "作者")
         self.assertEqual(result["stats"]["like"], 3)
 
+    def test_object_id_query_uses_wrapped_objects_shape(self):
+        """object_id 查询的 feed 包在 objects[0]（share_url 查询才平铺顶层），两种都要解析。"""
+        wrapped = {
+            "objects": [{
+                "id": "obj-9", "nickname": "dy厌罪", "username": "u@finder",
+                "likeCount": 1, "commentCount": 2, "forwardCount": 3, "favCount": 4,
+                "createtime": 1789835449,
+                "objectDesc": {
+                    "mediaType": 4,
+                    "description": "love me",
+                    "media": [{
+                        "url": "https://wxapp.tc.qq.com/v",
+                        "urlToken": "&token=tv",
+                        "decodeKey": "dk",
+                    }],
+                },
+            }],
+        }
+
+        with patch.object(tikhub, "_p", return_value=wrapped) as request:
+            result = tikhub.ch_detail("14992982781774268926")
+
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(result["note_type"], "video")
+        self.assertEqual(result["id"], "obj-9")
+        self.assertEqual(result["title"], "love me")
+        self.assertEqual(result["play_url"], "https://wxapp.tc.qq.com/v&token=tv")
+        self.assertEqual(result["decode_key"], "dk")
+        self.assertEqual(result["author"]["name"], "dy厌罪")
+        self.assertEqual(result["stats"]["like"], 1)
+
+    def test_image_note_in_wrapped_objects_shape(self):
+        wrapped = {
+            "objects": [{
+                "id": "img-obj", "nickname": "图文号", "username": "u@finder",
+                "createtime": 1789293602,
+                "objectDesc": {
+                    "mediaType": 2,
+                    "description": "九宫格",
+                    "media": [
+                        {"url": "https://wxapp.tc.qq.com/i1", "urlToken": "&token=t1"},
+                        {"url": "https://wxapp.tc.qq.com/i2", "urlToken": "&token=t2"},
+                    ],
+                },
+            }],
+        }
+
+        with patch.object(tikhub, "_p", return_value=wrapped):
+            result = tikhub.ch_detail("img-object-id")
+
+        self.assertEqual(result["note_type"], "image")
+        self.assertEqual(result["images"], [
+            "https://wxapp.tc.qq.com/i1&token=t1",
+            "https://wxapp.tc.qq.com/i2&token=t2",
+        ])
+        self.assertEqual(result["cover"], "https://wxapp.tc.qq.com/i1&token=t1")
+        self.assertEqual(result["author"]["name"], "图文号")
+
 
 class ChannelsTranscriptRecoveryTest(unittest.TestCase):
     def setUp(self):

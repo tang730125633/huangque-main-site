@@ -744,11 +744,21 @@ def _ch_download_decrypt(play_url, decode_key, dest_path, deadline_ts,
         try: os.unlink(enc)
         except OSError: pass
 
+def _ch_feed(d):
+    """fetch_video_detail 两种返回形状取 feed 条目：
+    share_url 查询平铺在顶层；object_id 查询包在 objects[0]（objectDesc/id/nickname 全在里面）。"""
+    if d.get("objectDesc") is not None:
+        return d
+    first = (d.get("objects") or [{}])[0]
+    return first if isinstance(first, dict) else {}
+
+
 def ch_detail(object_id):
     s = str(object_id)
     loc = {"share_url": s} if ("://" in s or "weixin" in s) else {"object_id": s}
     d = _p(CH + "/fetch_video_detail", raw=True, **loc)  # raw=False 会裁掉 objectDesc.media(无播放地址)，视频号下载必须 raw=True
-    obj = d.get("objectDesc") or {}
+    feed = _ch_feed(d)
+    obj = feed.get("objectDesc") or {}
     media = (obj.get("media") or [{}])[0] or {}  # 视频号真实字段都在 objectDesc.media[0]
     title = obj.get("description") or obj.get("shortTitle") or ""
     if obj.get("mediaType") == 2:
@@ -756,39 +766,40 @@ def ch_detail(object_id):
         # raw=False 的解析版只回第一张图，必须从 raw 的完整 media 列表逐张取。
         images = [u for u in (_ch_play_url(m) for m in (obj.get("media") or [])) if u]
         return {
-            "platform": "channels", "id": d.get("id") or object_id, "url": None,
+            "platform": "channels", "id": feed.get("id") or object_id, "url": None,
             "title": title, "desc": title, "tags": _tags_from_text(title),
-            "author": {"name": d.get("nickname"), "id": d.get("username"),
+            "author": {"name": feed.get("nickname"), "id": feed.get("username"),
                        "fans": None, "ip": None, "signature": None},
-            "stats": {"like": d.get("likeCount"), "comment": d.get("commentCount"),
-                      "share": d.get("forwardCount"), "collect": d.get("favCount")},
+            "stats": {"like": feed.get("likeCount"), "comment": feed.get("commentCount"),
+                      "share": feed.get("forwardCount"), "collect": feed.get("favCount")},
             "cover": images[0] if images else None,
             "play_url": None, "images": images,  # 图文无视频：play_url 置空，图片画廊在 images
             "subtitle_url": None, "decode_key": None,
             "duration": None,
-            "publish_time": d.get("createtime"),
+            "publish_time": feed.get("createtime"),
             "note_type": "image",
         }
     play = _ch_play_url(media)
     # ponytail: TikHub 偶发返回缺播放地址或解密密钥的不完整 media，重取一次即可。
     if not play or not media.get("decodeKey"):
         d = _p(CH + "/fetch_video_detail", raw=True, **loc)
-        obj = d.get("objectDesc") or {}
+        feed = _ch_feed(d)
+        obj = feed.get("objectDesc") or {}
         media = (obj.get("media") or [{}])[0] or {}
         title = obj.get("description") or obj.get("shortTitle") or title
         play = _ch_play_url(media)
     return {
-        "platform": "channels", "id": d.get("id") or object_id, "url": None,
+        "platform": "channels", "id": feed.get("id") or object_id, "url": None,
         "title": title, "desc": title, "tags": _tags_from_text(title),
-        "author": {"name": d.get("nickname"), "id": d.get("username"),
+        "author": {"name": feed.get("nickname"), "id": feed.get("username"),
                    "fans": None, "ip": None, "signature": None},
-        "stats": {"like": d.get("likeCount"), "comment": d.get("commentCount"),
-                  "share": d.get("forwardCount"), "collect": d.get("favCount")},
+        "stats": {"like": feed.get("likeCount"), "comment": feed.get("commentCount"),
+                  "share": feed.get("forwardCount"), "collect": feed.get("favCount")},
         "cover": _ch_cover_url(media),
         "play_url": play,  # 视频号下载直链(有时效，详情 1h 内安全)；None 时前端不显示下载按钮
         "subtitle_url": None, "decode_key": media.get("decodeKey"),
         "duration": media.get("videoPlayLen") or media.get("duration"),
-        "publish_time": d.get("createtime"),
+        "publish_time": feed.get("createtime"),
         "note_type": "video",
     }
 
