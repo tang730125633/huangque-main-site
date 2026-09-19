@@ -7,7 +7,7 @@ function harness(mode='managed'){
   const item=id=>({id,enabled:true,adapter:'ad-image',model:'model-'+id});
   const ctx={unique:values=>[...new Set(values.filter(Boolean))],priorityErrors:{},priorityRequest:null,priorityBusy:false,priorityUncertain:false,priorityDrafts:{op:{state:mode,revision:4,channels:['b','a']}},
     data:{items:['a','b','c'].map(item),
-      operations:[{operation_id:'op',channel_kind:'image'}],
+      operations:[{operation_id:'op',channel_eligible:true,channel_kind:'image'}],
       adapters:{'ad-image':{kind:'image'},'ad-video':{kind:'video'}}},
     matrixPages:()=>[{products:[{models:[{routes:[{operation_id:'op',primary:{model:'model-a'}}]}]}]}],
     mappingForOperation:()=>mapping,mappingChannels:m=>[...m.channels],refreshPriority(){},toast:m=>messages.push(m),

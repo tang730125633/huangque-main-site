@@ -207,7 +207,7 @@ test('frontend function center uses a model list and keeps technical details in 
     {id:'managed-backup',name:'托管备用渠道',supplier:'供应商 B',adapter:'openai_image',model:'gemini-3.1-flash-image',base_url:'https://backup.example/v1',connection_type:'relay',enabled:true,configured:true,health:'未验证'}
   ];
   workspaceData.adapters={openai_image:{kind:'image',name:'图片生成'},gemini_image:{kind:'image',name:'Google Gemini 官方生图'}};
-  workspaceData.operations=[{operation_id:'image.banana.nb2.text',channel_kind:'image',name:'纳米香蕉 2 文生图',mapping:{operation_id:'image.banana.nb2.text',state:'shadow',revision:4,channels:['managed-primary','managed-backup'],channel:'managed-primary',backup:'managed-backup'}}];
+  workspaceData.operations=[{operation_id:'image.banana.nb2.text',channel_eligible:true,channel_kind:'image',name:'纳米香蕉 2 文生图',mapping:{operation_id:'image.banana.nb2.text',state:'shadow',revision:4,channels:['managed-primary','managed-backup'],channel:'managed-primary',backup:'managed-backup'}}];
   workspaceData.operation_mappings=[workspaceData.operations[0].mapping];
   workspaceData.runs=[{id:81,job_id:501,operation_id:'image.banana.nb2.text',mapping_revision:4,channel:'managed-backup',state:'passed',execution_snapshot:{route_attempt:2,attempts:[{attempt:1,channel:'managed-primary',version:1,state:'failed',detail:'供应商明确拒绝提交'}]}}];
   bananaModel.routes[0].operation_id='image.banana.nb2.text';

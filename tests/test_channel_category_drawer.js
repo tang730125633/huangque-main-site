@@ -160,9 +160,25 @@ test('新增入口绑定当前模型，不继承现有 ID 或密钥，不提交�
 
 test('无法确认同模型协议时明确拒绝，不借用候选或其他模型',async()=>{
   let called=0,message='';const data=workspaceData();
+  // 后端能力表未给该功能任何可用协议（模拟未接入切换的功能）
+  data.operations[0].channel_adapters=[];
+  data.operations[0].channel_reason='Sora 走专用提交流程，尚未接入渠道切换。';
   const {root}=build({newChannel:()=>called++,toast:m=>message=m},data);
   await click(root,'[data-cm-model-add]',modelBtn('image','banana','nb2'));
-  assert.equal(called,0);assert.match(message,/不支持新增兼容供应商/);
+  assert.equal(called,0);
+  // 直接用后端给的原因，而不是含糊的「不支持」
+  assert.match(message,/尚未接入渠道切换/);
+});
+test('后端给出多个可用协议时，按能力表选默认协议并把其余交给表单',async()=>{
+  let template;const data=workspaceData();
+  data.adapters.gemini_image={kind:'image',name:'Gemini'};
+  data.adapters.lechuang_image={kind:'image',name:'乐创'};
+  const {root}=build({legacy:()=>[{key:'gemini',name:'Gemini',category:'生图',configured:true}],newChannel:t=>template=t},data);
+  await click(root,'[data-cm-model-add]',modelBtn('image','banana','nb2'));
+  // 关键是「这个功能支持的协议」被完整交给表单（而不是只能接受推断值），
+  // 且默认值必定来自这张表。
+  assert.deepEqual(template._allowedAdapters,['openai_image','gemini_image','lechuang_image']);
+  assert.ok(template._allowedAdapters.includes(template.adapter));
 });
 
 test('新增必填 Key，编辑仍可留空；新建载荷不携带旧 ID',()=>{
@@ -204,9 +220,9 @@ const items=[
   {id:'ch-video',name:'视频渠道',supplier:'供应商 C',adapter:'xiaole_video',model:'v1',base_url:'https://c.example/v1',connection_type:'relay',enabled:true,configured:true,health:'未验证'}
 ];
 const operations=[
-  {operation_id:'image.banana.text',channel_kind:'image',name:'纳米香蕉 文生图',mapping:{operation_id:'image.banana.text',state:'managed',revision:1,channels:['ch-banana'],channel:'ch-banana'}},
-  {operation_id:'image.engine2.text',channel_kind:'image',name:'引擎 2 文生图',mapping:{operation_id:'image.engine2.text',state:'managed',revision:1,channels:['ch-engine2'],channel:'ch-engine2'}},
-  {operation_id:'video.banana.text',channel_kind:'video',name:'视频 文生视频',mapping:{operation_id:'video.banana.text',state:'managed',revision:1,channels:['ch-video'],channel:'ch-video'}}
+  {operation_id:'image.banana.text',channel_eligible:true,channel_kind:'image',channel_adapters:['openai_image','gemini_image','lechuang_image'],channel_reason:'',name:'纳米香蕉 文生图',mapping:{operation_id:'image.banana.text',state:'managed',revision:1,channels:['ch-banana'],channel:'ch-banana'}},
+  {operation_id:'image.engine2.text',channel_eligible:true,channel_kind:'image',channel_adapters:['openai_image','gemini_image','lechuang_image'],channel_reason:'',name:'引擎 2 文生图',mapping:{operation_id:'image.engine2.text',state:'managed',revision:1,channels:['ch-engine2'],channel:'ch-engine2'}},
+  {operation_id:'video.banana.text',channel_eligible:true,channel_kind:'video',channel_adapters:[],channel_reason:'此功能尚未接入托管渠道切换。',name:'视频 文生视频',mapping:{operation_id:'video.banana.text',state:'managed',revision:1,channels:['ch-video'],channel:'ch-video'}}
 ];
 
 function workspaceData(){

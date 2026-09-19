@@ -152,6 +152,9 @@
       });
     }
     const mappingForOperation=operationId=>(data.operation_mappings||[]).find(item=>item.operation_id===operationId)||(data.operations||[]).find(item=>item.operation_id===operationId)?.mapping||null;
+    // 全量功能目录（含不可切换的）：优先用它，才能拿到 channel_reason。
+    const operationCatalog=()=>(data.all_operations&&data.all_operations.length?data.all_operations:data.operations)||[];
+    const operationContract=id=>operationCatalog().find(item=>item.operation_id===id)||null;
     const mappingChannels=mapping=>{
       if(Array.isArray(mapping?.channels))return unique(mapping.channels.map(String));
       return unique([mapping?.channel,mapping?.backup]);
@@ -359,8 +362,18 @@
       return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'" data-cm-priority-anchor="'+esc(route.operation_id||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(label)+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+latencyControls(management.uid)+action+'</div></div>';
     }
     function priorityEditor(product,model){
-      const routes=(model.routes||[]).filter(route=>(data.operations||[]).some(item=>item.operation_id===route.operation_id));
-      if(!routes.length)return '<section class="cm-priority-editor"><div class="cm-priority-list">'+((model.routes||[]).map(route=>livePrimaryRow(route,model,product)).join('')||'<p role="status">当前主渠道未知</p>')+'</div><p class="cm-priority-empty">现有线路保持不变；此功能尚未接通托管候选发布。</p></section>';
+      const routes=(model.routes||[]).filter(route=>{
+        // 只有「已接入托管切换」的功能才给可拖动列表；其余走下面的原因分支，
+        // 不留一个拖不动、点了也没用的手柄。
+        const contract=operationContract(route.operation_id);
+        return contract&&contract.channel_eligible;
+      });
+      if(!routes.length){
+        // 说不出原因才用兜底文案；能查到就用后端给的具体原因。
+        const known=(model.routes||[]).map(route=>operationContract(route.operation_id)).filter(Boolean);
+        const reason=(known.find(op=>op.channel_reason)||{}).channel_reason||'此功能尚未接入托管渠道切换，现有线路保持不变。';
+        return '<section class="cm-priority-editor"><div class="cm-priority-list">'+((model.routes||[]).map(route=>livePrimaryRow(route,model,product)).join('')||'<p role="status">当前主渠道未知</p>')+'</div><p class="cm-priority-empty">'+esc(reason)+'</p></section>';
+      }
       const active=routes.find(route=>route.operation_id===matrixExpanded?.operationId)||routes[0];
       matrixExpanded.operationId=active.operation_id;
       const draft=priorityDraft(active),mapping=mappingForOperation(active.operation_id),candidates=compatiblePriorityChannels(active.operation_id);
@@ -449,14 +462,24 @@
       const primary=route.primary;
       const managed=(data.items||[]).find(c=>primary?.management?.kind==='managed_channel'&&c.id===primary.management.uid?.replace(/^managed:/,'')&&c.model===model.actual_model);
       const legacy=rows.find(c=>c.uid===primary?.management?.uid);
-      const adapter=managed?.adapter||(primary?.management?.kind==='server_env'?{gemini:'gemini_image',openai:'openai_image'}[legacy?.key]:'');
-      if(!adapter||data.adapters?.[adapter]?.kind!==operation.channel_kind){toast('当前模型暂不支持新增兼容供应商；不会套用其他模型的协议');return}
+      // 该功能支持的协议由后端能力表给出（operation.channel_adapters），
+      // 不再用只认 gemini/openai 的硬编码映射——那会把其它原厂线路一律判为「不支持新增」。
+      const allowed=(operation.channel_adapters||[]).filter(k=>data.adapters?.[k]&&data.adapters[k].kind===operation.channel_kind);
+      const inferred=managed?.adapter||(primary?.management?.kind==='server_env'?{gemini:'gemini_image',openai:'openai_image'}[legacy?.key]:'');
+      const adapter=allowed.includes(inferred)?inferred:(allowed[0]||'');
+      if(!adapter){
+        toast(operation.channel_reason||'当前功能尚未接入可切换的渠道协议；不会套用其他模型的协议');
+        return;
+      }
       if(!closeLegacy())return;
       env.newChannel?.({
         _modelCreate:{page:pageKey,product:productKey,model:modelKey,operationId:operation.operation_id},
         name:model.label,model:model.actual_model,adapter,supplier:'',base_url:'',
         connection_type:'unknown',enabled:true,monitor:false,daily_test:false,
         test_cost:0,daily_budget:0,daily_limit:0,
+        // 把这个功能真正支持的协议交给表单：管理员能改成其中任一条，而不是只能接受推断值。
+        _allowedAdapters:allowed,
+        _adapterReason:operation.channel_reason||'',
         fixture:{prompt:'一张简洁的产品展示图',ratio:'1:1',duration:5}
       });
     }

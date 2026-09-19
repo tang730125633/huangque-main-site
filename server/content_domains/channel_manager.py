@@ -31,6 +31,13 @@ ADAPTERS = {
     # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
     'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True},
     'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True},
+    # Sora：复用原厂 video_openai 客户端（已支持注入 api_key / api_base），
+    # kind 用任务类型 sora_video，与 function_registry 的 task_match.kind 一致。
+    'sora_video': {'name': 'OpenAI Sora 协议', 'kind': 'sora_video', 'references': True},
+    # 换装两条线路是不同供应商、不同输入（线路二=人物图+衣服图；线路一=人物视频），
+    # 各占一个适配器，由任务类型契约的 line 区分匹配。
+    'wavespeed_tryon': {'name': 'WaveSpeed 换装（线路二）', 'kind': 'tryon', 'references': True,
+                        'line': '2'},
 }
 
 
@@ -392,6 +399,13 @@ def operation_mapping(operation_id, revision=None, connection=None):
 def _validate_operation_config(cfg, contract):
     if not contract or ADAPTERS[cfg['adapter']]['kind'] != contract['channel_kind']:
         raise ValueError('功能与渠道能力不兼容')
+    # 换装两条线路是不同供应商、不同输入（线路二=人物图+衣服图；线路一=人物视频），
+    # 用 task_match.line 做硬约束，避免把线路二渠道配到线路一功能上。
+    adapter_line = str(ADAPTERS[cfg['adapter']].get('line') or '')
+    contract_line = str((contract.get('task_match') or {}).get('line') or '')
+    if adapter_line and contract_line and adapter_line != contract_line:
+        raise ValueError('该渠道协议对应换装线路 %s，与功能的线路 %s 不一致' % (
+            adapter_line, contract_line))
     rule = contract.get('task_match') or {}
     needs_references = rule.get('reference_count') == '>0'
     supports_references = bool(
@@ -883,11 +897,15 @@ def overview():
                     channel['checks'].append(dict(check_row))
     from .function_registry import operation_catalog
     operations = operation_catalog(channel_eligible=True)
+    # 全量功能目录（含不可切换的）：后台据此展示「为什么这个功能不能切」，
+    # 而不是只给一个拖不动的手柄。不改变 operations 的既有语义。
+    all_operations = operation_catalog()
     current = {item['operation_id']: item for item in operation_mappings}
     for item in operations:
         item['mapping'] = current.get(item['operation_id'])
     return {'items': channels, 'mappings': mappings, 'operation_mappings': operation_mappings,
-            'operations': operations, 'runs': runs, 'events': events, 'adapters': ADAPTERS,
+            'operations': operations, 'all_operations': all_operations,
+            'runs': runs, 'events': events, 'adapters': ADAPTERS,
             'legacy_controls':legacy_states(), 'legacy_scopes':LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone':'Asia/Shanghai', 'stats_window':'最近24小时'}
 

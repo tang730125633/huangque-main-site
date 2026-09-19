@@ -1,0 +1,227 @@
+"""渠道切换能力表：哪些任务类型可以换成别的供应商，为什么不能。
+
+背景
+----
+原来 ``function_registry.operation()`` 里写的是：:
+
+    channel_kind = kind if kind in {"image", "xiaole_video"} else ""
+
+也就是说「能不能切换」由一行硬编码白名单决定，后台只能看到「不能切」，
+看不到**为什么**不能切，加了新协议也没人知道该改哪里。
+
+这里把判断改成数据驱动的一张表：每个任务类型显式声明
+
+* ``switchable``  —— 是否已接入托管渠道切换
+* ``adapters``    —— 该类型可用的渠道协议（真正能执行它的 channel_runtime 适配器）
+* ``reason``      —— 不能切换时的具体原因（后台直接展示给管理员）
+
+**判断标准（不是「有没有供应商」，而是「执行路径是否已接入渠道框架」）**
+
+任务执行在 ``core.py``：
+
+    if payload.get('_channel_binding'):
+        result = channel_runtime.run_task(...)   # 托管执行
+    else:
+        result = HANDLERS[kind](payload)         # 原厂执行
+
+所以一个类型要真正可切换，必须同时满足：
+
+1. ``channel_runtime.generate()`` 支持它的适配器（否则托管执行会失败）；
+2. 参数与成品校验（``channel_parameters`` / ``validate_payload``）认识它的 payload；
+3. 它自己有稳定的 ``task_match``，能被 ``capture()`` 分类到。
+
+只满足第 3 条就开始放行（例如 ``sora_video``：``core.py`` 已经对它调 ``capture``，
+但 ``channel_runtime`` 没有 Sora 适配器），会出现「后台能切、任务却在执行时失败」——
+这正是本表要挡住的情况。
+
+新增一个协议的正确做法
+----------------------
+1. 在 ``channel_runtime.ADAPTERS`` 加协议（请求构造 + 返回解析 + 成品下载）；
+2. 在 ``channel_parameters`` 加参数契约；
+3. 把这里对应类型的 ``switchable`` 改 True、``adapters`` 填上、``reason`` 清空；
+4. 在 ``tests/`` 加密闭环境的请求构造与返回处理测试。
+"""
+
+# 每个任务类型：能否切换 / 可用的渠道协议 / 不能切换的原因
+CAPABILITIES = {
+    # ── 已接入：生图（三种协议都已实现并有成品核验）────────────────────────
+    "image": {
+        "switchable": True,
+        "adapters": ("openai_image", "gemini_image", "lechuang_image"),
+        "reason": "",
+    },
+    # ── 已接入：视频（乐创 / xAI / MiniMax 三条协议）────────────────────────
+    "xiaole_video": {
+        "switchable": True,
+        "adapters": ("lechuang_video", "xai_video", "minimax_h3"),
+        "reason": "",
+    },
+
+    # ── 有供应商，但执行器还没接进渠道框架：需要新增适配器 ──────────────────
+    # ── 已接入：Sora（适配器复用原厂 video_openai，它已支持注入 api_key / api_base）──
+    "sora_video": {
+        "switchable": True,
+        "adapters": ("sora_video",),
+        "reason": "",
+    },
+    "video": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "HeyGen 数字人口播是专用流程（订阅位 / 官方 API + 素材绑定），"
+                  "需要先新增 HeyGen 适配器才能切换渠道。",
+    },
+    "cinematic": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "HeyGen 电影化身与数字人共用形象与素材绑定流程，需要先新增 HeyGen 适配器。",
+    },
+    "avatar": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "HeyGen 形象生成会写回用户形象归属，需要先新增 HeyGen 适配器并保留归属逻辑。",
+    },
+    # ── 已接入：换装换背景·线路二（WaveSpeed）─────────────────────────────
+    # 线路一（RunningHub）是另一套供应商与输入，尚未接入，见 OPERATION_REASONS。
+    "tryon": {
+        "switchable": True,
+        "adapters": ("wavespeed_tryon",),
+        "reason": "",
+    },
+    "audio": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "配音走 CosyVoice 等 TTS 专用流程（含声音复刻与音色槽），"
+                  "需要先新增 TTS 适配器。",
+    },
+    "copy": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "文案走文本模型专用调用，需要先新增文本适配器才能切换供应商。",
+    },
+    "breakdown": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "素材拆解走多模态理解调用，需要先新增视觉理解适配器。",
+    },
+    "collect": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "内容采集走 TikHub 专用接口。tikhub.BASE / tikhub.KEY 是可替换的外部端点，"
+                  "不是固定线路，只是还没新增 TikHub 适配器，所以暂不能切换。",
+    },
+    "leads": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "平台获客同样走 TikHub 查询（leads.py 引 tikhub），端点可替换；"
+                  "需要先新增 TikHub 适配器才能切换供应商。",
+    },
+    "canvas_agent": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "画布规划调用可配置的外部模型端点（CANVAS_AGENT_API_BASE / CANVAS_AGENT_API_KEY / "
+                  "CANVAS_AGENT_MODEL），有供应商可替换，但还没新增文本适配器。",
+    },
+
+    # ── 组合流程：应按步骤配置，不能一个开关影响整条链路 ────────────────────
+    "script_to_video": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "文案成片是组合流水线（文案 → 配音 → 画面 → 合成），"
+                  "应按具体步骤分别配置渠道，不能整个功能一次性切换。",
+    },
+    "matrix_template_video": {
+        "switchable": False,
+        "adapters": (),
+        "reason": "模板成片是组合流水线（文案 → 素材 → 字幕 → 渲染），"
+                  "应按具体步骤分别配置渠道。",
+    },
+    "short_drama_preview": {
+        "switchable": False, "adapters": (),
+        "reason": "短剧预览是本地渲染合成，没有外部供应商线路。",
+    },
+    "short_drama_final": {
+        "switchable": False, "adapters": (),
+        "reason": "短剧成片是本地渲染合成，没有外部供应商线路。",
+    },
+    "short_drama_remux": {
+        "switchable": False, "adapters": (),
+        "reason": "短剧转封装是本地处理，没有外部供应商线路。",
+    },
+    "short_drama_sound_effect": {
+        "switchable": False, "adapters": (),
+        "reason": "短剧音效走音效供应商专用流程，需先新增对应适配器。",
+    },
+    "director_agent": {
+        "switchable": False, "adapters": (),
+        "reason": "编导 Agent 是对话式编排（可能调用多个生成步骤），没有单一供应商可切换。",
+    },
+}
+
+# 没有 task_match / 不属于「付费生成任务」的项目：默认不适用渠道切换。
+NO_TASK_KIND_REASON = (
+    "这一步是本地处理或组合流程的一部分，没有独立的供应商线路，"
+    "不适用渠道切换。"
+)
+
+# 逐项原因：这些功能没有 task_match，不能共用一句「不适用」搪塞。
+# 每一项都是按实际调用链查出来的（见 PR 说明）。
+# 逐功能强制不可切换：同一个 task_match.kind 下可能有多个不同供应商/输入的功能。
+# 典型：换装 kind=tryon 有两条线路 —— 线路二（WaveSpeed，已接入）与线路一（RunningHub，未接入）。
+# 只按 kind 判会让线路一被误判为可切换，所以这里逐功能显式挡回。
+OPERATION_BLOCKED = {
+    'video.tryon.classic',
+}
+
+OPERATION_REASONS = {
+    'video.tryon.classic':
+        "换装线路一走 RunningHub 两段式 AI App（人物视频 + 可换背景），与线路二的 WaveSpeed "
+        "是不同供应商与不同输入，尚未接入；线路二已可切换。",
+    'video.one_click.compose':
+        "一键成片是组合流水线：转写走 OpenAI Whisper（OPENAI_TRANSCRIBE_BASE / OPENAI_KEY，"
+        "可替换），拼接与混流是本地 ffmpeg。有供应商的是转写步骤，需拆步骤后再接入适配器。",
+    'assets.audio.clone_vip':
+        "VIP 声音复刻走 CosyVoice（cosyvoice.create_voice / synth），有供应商可替换，"
+        "需先新增 TTS 适配器。",
+    'short_drama.live_action.script_planning':
+        "短剧流水线的剧本步骤，经子域间接调用文本模型；需拆步骤后再接入。",
+    'short_drama.live_action.character_reference':
+        "短剧流水线的角色形象步骤，实际调用生图供应商；需拆步骤后再接入。",
+    'short_drama.live_action.shot_video':
+        "短剧流水线的分镜视频步骤，实际调用视频供应商；需拆步骤后再接入。",
+    'short_drama.live_action.preview':
+        "短剧预览是本地渲染合成，但它上游的分镜/配音步骤有供应商；需拆步骤后再接入。",
+    'short_drama.live_action.delivery':
+        "短剧交付是本地封装，上游生成步骤有供应商；需拆步骤后再接入。",
+}
+
+
+def capability(kind):
+    """返回某个任务类型的渠道能力（未知类型按「不适用」处理）。"""
+    item = CAPABILITIES.get(str(kind or ""))
+    if item:
+        return dict(item)
+    return {"switchable": False, "adapters": (), "reason": NO_TASK_KIND_REASON}
+
+
+def operation_reason(operation_id, kind=""):
+    """某个功能的不可切换原因：先看逐项表，再看类型表，最后才用兵底文案。"""
+    specific = OPERATION_REASONS.get(str(operation_id or ""))
+    if specific:
+        return specific
+    return reason_for(kind)
+
+
+def is_switchable(kind):
+    return bool(capability(kind)["switchable"])
+
+
+def switchable_kinds():
+    return tuple(kind for kind, item in CAPABILITIES.items() if item["switchable"])
+
+
+def adapters_for(kind):
+    return tuple(capability(kind)["adapters"])
+
+
+def reason_for(kind):
+    return capability(kind)["reason"] or NO_TASK_KIND_REASON
