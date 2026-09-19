@@ -6,6 +6,17 @@
 */
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const ROOT=path.join(__dirname,'..');
+test('功能未开放时，原厂及托管主线路都不能宣称正在生产',()=>{
+  for(const control of ['shadow','managed']){
+    const data=workspaceData(),model=data.frontend_matrix.pages[0].products[0].models[0];
+    model.admitted=false;model.routes[0].control_state=control;
+    data.operation_mappings[0].state=control;
+    const html=build({},data).elements.cmMatrix.innerHTML;
+    assert.match(html,/已配置主线路/);
+    assert.doesNotMatch(html,/当前生产主渠道/);
+    assert.match(html,/功能未开放或就绪状态待核对/);
+  }
+});
 test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
   route.control_state='shadow';route.primary={id:'legacy:gemini',name:'真实原厂线路',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};

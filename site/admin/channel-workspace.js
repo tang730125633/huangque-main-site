@@ -239,19 +239,20 @@
       if(current)steps.push('<li class="current"><b>'+esc(current.name)+'</b><span>'+esc(run.state==='passed'?'生成成功':'当前尝试 · '+(run.state||'处理中'))+'</span></li>');
       return '<aside class="cm-priority-evidence"><div><strong>最近安全切换</strong><small>任务 #'+esc(run.job_id||run.id||'—')+' · 映射 r'+esc(run.mapping_revision||snapshot.mapping_revision||'—')+'</small></div><ol>'+steps.join('')+'</ol></aside>';
     }
-    function livePrimaryRow(route){
+    function livePrimaryRow(route,model,product){
       if(route.control_state==='paused')return '<p class="cm-live-status" role="status">当前功能已暂停，不展示接单主渠道。</p>';
       const item=route.primary;
       if(!item)return '<p class="cm-live-status" role="status">当前主渠道未知，不能以候选顺序代替生产状态。</p>';
       const management=item.management||{};
+      const ready=route.admitted===true&&model.admitted===true&&product.admitted===true;
       const action=management.kind==='managed_channel'
         ?'<button type="button" data-cm-managed-edit="'+esc((management.uid||'').replace(/^managed:/,''))+'">编辑</button>'
         :management.uid?'<button type="button" data-cm-live-detail="'+esc(management.uid)+'">查看配置</button>':'';
-      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(route.admitted?'当前生产主渠道':'当前路由主渠道 · 就绪状态待核对')+'</small></div><span class="cm-priority-role primary">当前主渠道</span><div class="cm-priority-actions">'+action+'</div></div>';
+      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(ready?'当前生产主渠道':'已配置主线路 · 功能未开放或就绪状态待核对')+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+action+'</div></div>';
     }
     function priorityEditor(product,model){
       const routes=(model.routes||[]).filter(route=>(data.operations||[]).some(item=>item.operation_id===route.operation_id));
-      if(!routes.length)return '<section class="cm-priority-editor"><div class="cm-priority-list">'+((model.routes||[]).map(livePrimaryRow).join('')||'<p role="status">当前主渠道未知</p>')+'</div><p class="cm-priority-empty">现有线路保持不变；此功能尚未接通托管候选发布。</p></section>';
+      if(!routes.length)return '<section class="cm-priority-editor"><div class="cm-priority-list">'+((model.routes||[]).map(route=>livePrimaryRow(route,model,product)).join('')||'<p role="status">当前主渠道未知</p>')+'</div><p class="cm-priority-empty">现有线路保持不变；此功能尚未接通托管候选发布。</p></section>';
       const active=routes.find(route=>route.operation_id===matrixExpanded?.operationId)||routes[0];
       matrixExpanded.operationId=active.operation_id;
       const draft=priorityDraft(active),mapping=mappingForOperation(active.operation_id),candidates=compatiblePriorityChannels(active.operation_id);
@@ -259,16 +260,17 @@
       const actualId=active.primary?.management?.kind==='managed_channel'?(active.primary.management.uid||'').replace(/^managed:/,''):'';
       const published= mappingChannels(mapping);
       const liveInline=active.control_state==='managed'&&draft.state==='managed'&&actualId&&draft.channels[0]===actualId&&published[0]===actualId;
-      const prefix=liveInline?'':livePrimaryRow(active);
+      const prefix=liveInline?'':livePrimaryRow(active,model,product);
+      const ready=active.admitted===true&&model.admitted===true&&product.admitted===true;
       const ordered=draft.channels.map((id,index)=>{
         const channel=byId[id]||{id,name:'已删除或不可见渠道',supplier:'未知',model:'',base_url:'',connection_type:'unknown',enabled:false,health:'不可用'};
         const isPublished=draft.state===mapping?.state&&published[index]===id;
-        const role=liveInline&&isPublished?(index===0?'当前主渠道':'已发布候补 '+index):'候选 '+(index+1)+(isPublished?' · 未接管':' · 未发布');
+        const role=liveInline&&isPublished?(index===0?(ready?'当前主渠道':'已配置主线路 · 未就绪'):'已发布候补 '+index):'候选 '+(index+1)+(isPublished?' · 未接管':' · 未发布');
         const proof=C.verificationStatus(channel).overall||{state:'neutral',label:'待验证'};
         const tone={ok:'ok',failed:'bad',unknown:'warn',running:'neutral',queued:'neutral',blocked:'warn',expired:'warn',missing:'neutral',unattributed:'warn','stale-version':'neutral',attention:'warn',neutral:'neutral',off:'muted'};
         const healthTone=channel.enabled?tone[proof.state]||'neutral':'off';
         const healthLabel=channel.enabled?proof.label:'已停用';
-        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small><code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions"><button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" class="mini" data-cm-priority-remove="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">移除</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
+        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions"><button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" class="mini" data-cm-priority-remove="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">移除</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
       }).join('');
       const available=candidates.filter(item=>!draft.channels.includes(item.id));
       const routeTabs=routes.length>1?'<nav class="cm-priority-route-tabs" aria-label="模型能力">'+routes.map(route=>'<button type="button" data-cm-priority-route="'+esc(route.operation_id)+'" class="'+(route.operation_id===active.operation_id?'active':'')+'" aria-pressed="'+String(route.operation_id===active.operation_id)+'">'+esc(route.capability||route.operation_id)+'</button>').join('')+'</nav>':'';
@@ -288,7 +290,7 @@
         +publishedLine+'<div class="cm-priority-list">'+prefix+(ordered||'<p class="cm-priority-empty">尚未添加托管候选。</p>')+'</div>'
         +'<p role="status" data-cm-priority-status="'+esc(active.operation_id)+'">'+(priorityUncertain?'结果未知，请刷新核对后再操作。':'')+'</p>'
         +(simpleView?'<details class="cm-priority-tools"><summary>配置、检测与回滚</summary>':'')
-        +'<div class="cm-priority-notice">第 1 项优先接单，其余按顺序候补。生图仅在提交前失败或供应商明确拒绝受理时自动切换；超时、限流、服务器错误、结果未知或已受理后失败均不会切换，避免重复生成与重复计费。视频暂不自动切换。</div>'+failoverEvidence
+        +'<div class="cm-priority-notice">只有已发布且启用的托管顺序才决定接单；原线路置首展示不等于已迁入托管，影子候选与草稿均不接管生产。生图仅在提交前失败或供应商明确拒绝受理时自动切换；超时、限流、服务器错误、结果未知或已受理后失败均不会切换，避免重复生成与重复计费。视频暂不自动切换。</div>'+failoverEvidence
         +'<div class="cm-priority-state">控制状态<select data-cm-priority-state="'+esc(active.operation_id)+'"><option value="shadow" '+(draft.state==='shadow'?'selected':'')+'>影子验证（不接管生产）</option><option value="managed" '+(draft.state==='managed'?'selected':'')+'>统一托管（第 1 项接单）</option><option value="legacy" '+(draft.state==='legacy'?'selected':'')+'>保留内置线路</option><option value="paused" '+(draft.state==='paused'?'selected':'')+'>暂停接单</option></select></div>'
         +'<div class="cm-priority-add"><select data-cm-priority-add-choice="'+esc(active.operation_id)+'"><option value="">选择兼容渠道</option>'+addOptions+'</select><button type="button" data-cm-priority-add="'+esc(active.operation_id)+'" '+(available.length?'':'disabled')+'>添加渠道</button></div>'
         +'<div class="cm-priority-footer"><div class="actions"><button type="button" data-cm-priority-test="'+esc(active.operation_id)+'" '+(draft.channels.length?'':'disabled')+'>测试全部连接</button><button type="button" class="primary" data-cm-priority-save="'+esc(active.operation_id)+'">保存并发布</button></div></div>'+example+history+(simpleView?'</details>':'')+'</section>';
