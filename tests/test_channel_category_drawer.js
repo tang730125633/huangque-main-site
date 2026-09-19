@@ -29,6 +29,22 @@ test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
   assert.doesNotMatch(live,/draggable|data-cm-priority-channel/);
 });
 
+test('纳米香蕉三行：官方在前，乐创候选在后，保留拖动测速且无发布管理栏',()=>{
+  const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
+  route.control_state='shadow';
+  route.primary={id:'legacy:gemini',name:'Google Gemini API',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
+  data.items.push({id:'xlw-image-2',name:'GPT Image 2 生图（乐创）',supplier:'乐创',adapter:'openai_image',model:'gpt-image-2',enabled:true});
+  data.items.push({id:'xlw-image-25',name:'GPT Image 2.5 生图（乐创）',supplier:'乐创',adapter:'openai_image',model:'gpt-image-2.5-flare',enabled:true});
+  data.operation_mappings[0]={operation_id:'image.banana.text',state:'shadow',revision:1,channels:['xlw-image-2','xlw-image-25']};
+  const html=build({},data).elements.cmMatrix.innerHTML;
+  const positions=['Google Gemini API','GPT Image 2 生图（乐创）','GPT Image 2.5 生图（乐创）'].map(name=>html.indexOf(name));
+  assert.ok(positions.every(pos=>pos>=0)&&positions[0]<positions[1]&&positions[1]<positions[2]);
+  assert.equal((html.match(/class="cm-priority-channel/g)||[]).length,3);
+  assert.match(html,/class="cm-priority-drag"/);
+  assert.match(html,/检测延迟/);
+  assert.doesNotMatch(html,/服务端已发布|cm-priority-published|cm-priority-state|选择兼容渠道/);
+});
+
 test('无托管操作的文本音频等仍显示原生产线路，暂停时不假装接单',()=>{
   const data=workspaceData(),model=data.frontend_matrix.pages[0].products[0].models[0];
   data.operations=[];model.routes[0].primary.name='原线路';
@@ -344,12 +360,12 @@ test('模型横排不会把模型名截断（CSS 契约）',()=>{
   assert.ok(!/text-overflow:\s*ellipsis/.test(rule[1]),'模型名不应使用省略号截断');
 });
 
-test('渠道页移除底部配置检测回滚，保留列表与真实发布状态',()=>{
+test('简洁渠道页保留列表，隐藏发布管理栏与底部配置区域',()=>{
   const {elements}=build();
   const html=elements.cmMatrix.innerHTML;
   assert.match(html,/<details class="cm-view-tools"><summary>更多<\/summary>/);
   assert.match(html,/cm-priority-list/);
-  assert.match(html,/cm-priority-published/);
+  assert.doesNotMatch(html,/cm-priority-published|服务端已发布|cm-priority-state|选择兼容渠道/);
   assert.doesNotMatch(html,/cm-priority-tools|配置、检测与回滚|data-cm-priority-save|data-cm-priority-rollback|data-cm-priority-test/);
 });
 
