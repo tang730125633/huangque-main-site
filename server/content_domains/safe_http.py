@@ -120,7 +120,9 @@ class PinnedProxyHTTPSConnection(http.client.HTTPSConnection):
 
 def request_bytes(method, url, *, body=None, headers=None, timeout=60,
                   max_bytes=8 * 1024 * 1024, proxy='', resolver=socket.getaddrinfo,
-                  connection_factory=None):
+                  connection_factory=None, head_status_only=False):
+    if head_status_only and str(method).upper() != 'HEAD':
+        raise ValueError('状态探测仅支持 HEAD')
     target = validate_target(url, resolver=resolver)
     proxy_target = validate_target(proxy, proxy=True, resolver=resolver) if proxy else None
     if proxy_target:
@@ -145,6 +147,8 @@ def request_bytes(method, url, *, body=None, headers=None, timeout=60,
         response = connection.getresponse()
         if 300 <= int(response.status) < 400:
             raise SafeHttpError('禁止跟随重定向响应', response.status)
+        if head_status_only:
+            return int(response.status)
         raw = response.read(max_bytes + 1)
         if len(raw) > max_bytes:
             raise SafeHttpError('响应超过大小限制', response.status)

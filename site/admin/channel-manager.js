@@ -86,7 +86,7 @@
       parts.push(line('muted','下一步：等待完整生成测试通过后，在“功能映射 / 渠道优先级”中把该渠道提升为主渠道并发布。请刷新核对实际写入结果，勿重复新建。'));
       host.innerHTML=parts.join('');host.hidden=false;host.scrollIntoView({behavior:'smooth',block:'nearest'});
     }
-    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById,channelHistory:showChannelHistory,newChannel:template=>edit(template||{})});
+    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById,channelHistory:showChannelHistory,newChannel:template=>edit(template||{}),validationSettings:id=>{const c=data.items.find(item=>item.id===id);if(c)edit(c,true)}});
     const mappingChannels=m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean);
     function routeMappings(){return [...(data.mappings||[]),...(data.operation_mappings||[])]}
     const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>routeMappings().filter(m=>mappingChannels(m).includes(id))});
@@ -195,12 +195,12 @@
       editing=c;workspace.editor('配置版本回滚 · '+c.name);el('cmEditor').hidden=false;el('cmMappingEditor').hidden=true;
       el('cmEditor').innerHTML='<h3>历史配置</h3><p class="muted">恢复会创建新版本，仅影响新任务。</p><div class="actions">'+((c.history||[]).filter(h=>h.version!==c.version).map(h=>'<button data-rollback="'+h.version+'">恢复 v'+h.version+' · '+esc(date(h.created))+'</button>').join('')||'<p>暂无可回滚版本。</p>')+'</div><button type="button" id="cmCancel">关闭</button>';
     }
-    function edit(c={}){
+    function edit(c={},validation=false){
       if(c._modelCreate&&createPending){toast('正在保存新增渠道，请等待结果后再新增');return}
       if(c._modelCreate&&createUncertain){toast('上次新增结果待核对，请刷新页面核对渠道列表后再新增，勿重复提交');return}
       const replacement=!!c._replacement;
       editing=c;clearTimeout(secretTimer);if(el('cmReplacementResult'))el('cmReplacementResult').hidden=true;workspace.editor(c.id?'配置渠道 · '+c.name:replacement?'直接修改 API Key / Base URL':'新增渠道');el('cmMappingEditor').hidden=true;el('cmEditor').hidden=false;
-      if(c.id||c._modelCreate){
+      if((c.id||c._modelCreate)&&!validation){
         el('cmEditor').innerHTML='<form id="cmForm" class="cm-form" data-compact="true"><div class="cm-fields">'+field('供应商名称','supplier',c.supplier)+field('Base URL','base_url',c.base_url)+ (c._modelCreate?field('API Key（必填）','secret','','password'):secretField())+'</div>'+(c._modelCreate?'<p class="muted">绑定模型：'+esc(c.model)+'。保存仅新增渠道和当前列表草稿，不覆盖原渠道、不发布生产路由、不自动生成或扣费。</p>':'')+'<section class="cm-call-example"><h4>调用示例</h4><p class="muted">仅展示，不会自动执行；手动运行可能产生供应商费用。API Key 使用占位符。</p><pre id="cmCompactExample">'+esc(invocationExample(c))+'</pre></section><div class="actions"><button type="submit" class="primary">保存</button><button type="button" id="cmCancel">取消</button></div></form>';
         const form=el('cmForm');
         form.elements.base_url.oninput=()=>{el('cmCompactExample').textContent=invocationExample({...c,base_url:form.elements.base_url.value})};

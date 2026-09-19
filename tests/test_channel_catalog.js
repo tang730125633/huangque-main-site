@@ -211,6 +211,7 @@ test('frontend function center uses a model list and keeps technical details in 
   workspaceData.operation_mappings=[workspaceData.operations[0].mapping];
   workspaceData.runs=[{id:81,job_id:501,operation_id:'image.banana.nb2.text',mapping_revision:4,channel:'managed-backup',state:'passed',execution_snapshot:{route_attempt:2,attempts:[{attempt:1,channel:'managed-primary',version:1,state:'failed',detail:'供应商明确拒绝提交'}]}}];
   bananaModel.routes[0].operation_id='image.banana.nb2.text';
+  bananaModel.routes[0].primary.model='gemini-3.1-flash-image';
   workspace.render(workspaceData);
   const modelButton={dataset:{cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
   // 简洁视图会默认选中首个可见模型（否则右侧面板是空的），而这个选择与高级视图
@@ -231,13 +232,11 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/未受理，已安全切换/);
   assert.match(elements.cmMatrix.innerHTML,/生成成功/);
   assert.match(elements.cmMatrix.innerHTML,/结果未知或已受理后失败均不会切换/);
-  assert.match(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
+  assert.match(elements.cmMatrix.innerHTML,/拖至首位自动申请应用/);
   const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
   await root.listeners.click({target:{closest:selector=>selector==='button'?moveButton:null}});
-  const priorityHtml=elements.cmMatrix.innerHTML.match(/<div class="cm-priority-list">[\s\S]*?<div class="cm-priority-add">/)[0];
-  assert.ok(priorityHtml.indexOf('托管备用渠道')<priorityHtml.indexOf('托管主渠道'));
-  const saveButton={dataset:{cmPrioritySave:'image.banana.nb2.text'},disabled:false};
-  await root.listeners.click({target:{closest:selector=>selector==='button'?saveButton:null}});
+  // Reordering itself submits; there is no separate save control.
   const publish=JSON.parse(requests.find(([path])=>path.endsWith('/operation-mapping'))[1].body);
   assert.deepEqual(Array.from(publish.channels),['managed-backup','managed-primary']);
   assert.equal(publish.expected_revision,4);
