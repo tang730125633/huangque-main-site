@@ -19,9 +19,22 @@ test('same-set managed reorder uses CAS and confirms readback',async()=>{
 test('explicit drag promotes same-model candidates through server managed gate',async()=>{
   const h=harness('shadow');await h.ctx.publishPriority('op',true);assert.equal(h.calls.length,1);assert.equal(h.calls[0].state,'managed');assert.match(h.messages[0],/生效/);
 });
-test('cross-model and disabled candidates cannot take over by dragging',async()=>{
-  for(const change of [{model:'different'},{enabled:false},{_lifecycle:{deleted:true}}]){
-    const h=harness();Object.assign(h.ctx.data.items[1],change);await h.ctx.publishPriority('op',true);assert.equal(h.calls.length,0);assert.match(h.messages[0],/未应用/);
+test('dragging a different-model channel takes over only after explicit confirmation',async()=>{
+  // 方案 B：换的是另一家的模型时，候选仍然可选，但必须先确认，绝不静默接管。
+  const denied=harness();Object.assign(denied.ctx.data.items[1],{model:'different'});
+  denied.ctx.confirm=()=>false;await denied.ctx.publishPriority('op',true);
+  assert.equal(denied.calls.length,0,'取消确认时不得接管');
+  assert.match(denied.messages[0],/已取消/);
+
+  const allowed=harness();Object.assign(allowed.ctx.data.items[1],{model:'different'});
+  allowed.ctx.confirm=()=>true;await allowed.ctx.publishPriority('op',true);
+  assert.equal(allowed.calls.length,1,'确认后允许切换');
+  assert.equal(allowed.calls[0].state,'managed');
+});
+test('disabled and deleted candidates can never take over by dragging',async()=>{
+  for(const change of [{enabled:false},{_lifecycle:{deleted:true}}]){
+    const h=harness();Object.assign(h.ctx.data.items[1],change);await h.ctx.publishPriority('op',true);
+    assert.equal(h.calls.length,0);assert.match(h.messages[0],/未应用/);
   }
 });
 test('concurrent drag cannot submit twice',async()=>{
