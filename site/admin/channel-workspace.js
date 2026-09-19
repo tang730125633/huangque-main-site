@@ -6,7 +6,7 @@
     const matrixGroupSelection={};
     const priorityDrafts={};
     const latencyResults={},latencyChoices={},latencyBusy=new Set(),priorityErrors={};
-    let latencyEpoch=0;
+    const latencyIdentities={};
     let priorityBusy=false,priorityUncertain=false;
     const serverReplacementTemplates={};
     let layoutLoading=false;
@@ -263,20 +263,33 @@
       const choices=(latencyChoices[uid]||[]).map(source=>'<button type="button" data-cm-latency="'+esc(uid)+'" data-cm-latency-source="'+esc(source)+'">'+esc(({env:'环境配置',pool:'号池',image_primary:'生图主线路',image_fallback:'生图备用',video:'视频线路'})[source]||source)+'</button>').join('');
       return '<span class="cm-latency"><button type="button" data-cm-latency="'+esc(uid)+'" '+(latencyBusy.has(uid)?'disabled':'')+'>'+(latencyBusy.has(uid)?'检测中…':'检测延迟')+'</button><small role="status">'+esc(result||'')+'</small>'+choices+'</span>';
     }
+    function latencyIdentity(uid){
+      if(uid.startsWith('managed:')){
+        const item=(data.items||[]).find(c=>c.id===uid.slice(8));
+        return item?JSON.stringify([item.version,item.base_url]):null;
+      }
+      const item=rows.find(c=>c.uid===uid);
+      return item?JSON.stringify(['base_url','env_base_url','pool_base_url','image_primary_base_url','image_fallback_base_url','video_base_url'].map(key=>item[key]||'')):null;
+    }
+    function invalidateLatency(){
+      for(const uid of Object.keys(latencyIdentities))if(latencyIdentities[uid]!==latencyIdentity(uid)){
+        delete latencyResults[uid];delete latencyChoices[uid];delete latencyIdentities[uid];
+      }
+    }
     async function detectLatency(uid,source){
       if(latencyBusy.has(uid))return;
-      const epoch=latencyEpoch;
+      const identity=latencyIdentity(uid);latencyIdentities[uid]=identity;
       latencyBusy.add(uid);latencyResults[uid]='';refreshPriority();
       try{
         const result=await api('/api/admin/channel-manager/latency',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(source?{uid,source}:{uid})});
-        if(epoch!==latencyEpoch)return;
+        if(identity!==latencyIdentity(uid))return;
         if(uid.startsWith('managed:')&&Number(result.version)!==Number((data.items||[]).find(c=>c.id===uid.slice(8))?.version))return;
         if(result?.ok===false)throw Error('检测未完成');
         latencyChoices[uid]=Array.isArray(result.sources)?result.sources:[];
         const ms=Number.isFinite(result?.latency_ms)?Math.round(result.latency_ms)+' ms':'';
         const labels={reachable:'网络可达',http_error:'HTTP '+result.http_status,redirect_blocked:'重定向未跟随',timeout:'超时',network_error:'连接失败',unavailable:'当前线路暂不支持检测'};
         latencyResults[uid]=latencyChoices[uid].length?'请选择要检测的地址来源':[ms,source,labels[result.state]||'结果未知'].filter(Boolean).join(' · ');
-      }catch(_){if(epoch===latencyEpoch)latencyResults[uid]='检测失败，请重试'}
+      }catch(_){if(identity===latencyIdentity(uid))latencyResults[uid]='检测失败，请重试'}
       finally{latencyBusy.delete(uid);refreshPriority()}
     }
     function livePrimaryRow(route,model,product){
@@ -554,9 +567,9 @@
       }));
     }
     function render(next){
-      latencyEpoch++;Object.keys(latencyResults).forEach(uid=>delete latencyResults[uid]);Object.keys(latencyChoices).forEach(uid=>delete latencyChoices[uid]);
       priorityUncertain=false;
       data=next;rows=C.catalog(data,env.legacy());
+      invalidateLatency();
       const suppliers=[...new Set(rows.map(c=>c.supplier))].sort();
       el('cmSupplier').innerHTML='<option value="">全部供应商</option>'+suppliers.map(s=>'<option value="'+esc(s)+'">'+esc(s)+'</option>').join('');
       el('cmSupplier').value=filters.supplier;renderMatrix();list();health();showTab(tab);
