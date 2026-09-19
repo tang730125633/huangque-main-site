@@ -233,7 +233,7 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/生成成功/);
   assert.match(elements.cmMatrix.innerHTML,/结果未知或已受理后失败均不会切换/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
-  assert.match(elements.cmMatrix.innerHTML,/拖至首位自动申请应用/);
+  assert.match(elements.cmMatrix.innerHTML,/拖到第一位即切换主渠道/);
   const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
   await root.listeners.click({target:{closest:selector=>selector==='button'?moveButton:null}});
   // Reordering itself submits; there is no separate save control.

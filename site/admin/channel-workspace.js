@@ -163,21 +163,21 @@
         const mapping=mappingForOperation(operationId);
         priorityDrafts[operationId]={operation_id:operationId,state:mapping?.state||'shadow',revision:Number(mapping?.revision||0),channels:mappingChannels(mapping)};
         const kind=(data.operations||[]).find(o=>o.operation_id===operationId)?.channel_kind;
+        // 手动切换不再按「实际模型 ID / 适配器 / 参数」比对：只要适配器 kind 能承接这个功能
+        // 且渠道仍在启用状态，就列为可选渠道；每条渠道保留自己的模型 ID，不为了通过比较而改写。
         for(const item of data.items||[]){
-          if(route.primary?.model&&item.model===route.primary.model&&data.adapters?.[item.adapter]?.kind===kind&&!item._lifecycle?.deleted&&!priorityDrafts[operationId].channels.includes(item.id))priorityDrafts[operationId].channels.push(item.id);
+          if(kind&&item.enabled&&!item._lifecycle?.deleted&&data.adapters?.[item.adapter]?.kind===kind&&!priorityDrafts[operationId].channels.includes(item.id))priorityDrafts[operationId].channels.push(item.id);
         }
       }
       return priorityDrafts[operationId];
     }
     function compatiblePriorityChannels(operationId){
+      // 手动切换的可选渠道 = 适配器能力能承接该功能、且未进回收站的渠道。
+      // 不再限定「与主渠道实际模型同名 / 同适配器」：展示名称与实际模型 ID 由各渠道自持。
       const operation=(data.operations||[]).find(item=>item.operation_id===operationId);
       const mapping=mappingForOperation(operationId),kind=operation?.channel_kind||mapping?.kind||'';
       if(!operation||!kind)return [];
-      const page=matrixPages().find(p=>p.page===matrixExpanded?.page);
-      const model=page?.products?.find(p=>p.key===matrixExpanded?.product)?.models?.find(m=>m.key===matrixExpanded?.model);
-      const primary=(data.items||[]).find(item=>item.id===mappingChannels(mapping)[0]);
-      const modelName=model?.actual_model||primary?.model;
-      return (data.items||[]).filter(item=>!item._lifecycle?.deleted&&data.adapters?.[item.adapter]?.kind===kind&&modelName&&item.model===modelName&&(!primary||item.adapter===primary.adapter));
+      return (data.items||[]).filter(item=>!item._lifecycle?.deleted&&data.adapters?.[item.adapter]?.kind===kind);
     }
     function refreshPriority(){
       const host=el('cmModelPriority');
@@ -198,11 +198,25 @@
         // Visible unassigned candidates are not silently added as production backups.
         const published=mappingChannels(mapping);
         draft.channels=draft.channels.filter((id,index)=>index===0||published.includes(id));
-        const route=matrixPages().flatMap(p=>p.products||[]).flatMap(p=>p.models||[]).flatMap(m=>m.routes||[]).find(r=>r.operation_id===operationId);
-        const model=route?.primary?.model;
+        const operation=(data.operations||[]).find(o=>o.operation_id===operationId);
+        const kind=operation?.channel_kind||mapping?.kind||'';
         const candidates=draft.channels.map(id=>(data.items||[]).find(c=>c.id===id));
-        if(!model||!candidates.length||candidates.some(c=>!c||!c.enabled||c._lifecycle?.deleted||c.model!==model)){
-          delete priorityDrafts[operationId];refreshPriority();toast('未应用：只能切换同一实际模型且已启用的渠道，原生产顺序不变。');return;
+        // 能力校验：渠道必须仍存在、已启用、未回收，且适配器 kind 能承接本功能。
+        // 不再要求与主渠道同名同参数：切换后的任务会带上目标渠道自己的完整配置快照。
+        // 注意用显式循环：candidates.find(c=>!c) 在元素本身是 undefined 时会返回 undefined，
+        // 看起来像「没找到问题渠道」而放行不存在的渠道。
+        let reason='';
+        for(const id of draft.channels){
+          const channel=(data.items||[]).find(c=>c.id===id);
+          if(!channel){reason='渠道 '+id+' 已不存在（可能已被删除），请刷新后重试。';break}
+          if(!channel.enabled){reason='渠道「'+(channel.name||id)+'」已停用，不能接单。';break}
+          if(channel._lifecycle?.deleted){reason='渠道「'+(channel.name||id)+'」在回收站里。';break}
+          if(kind&&data.adapters?.[channel.adapter]?.kind!==kind){reason='渠道「'+(channel.name||id)+'」的接口类型不能承接此功能。';break}
+        }
+        if(!draft.channels.length||reason){
+          delete priorityDrafts[operationId];refreshPriority();
+          toast('未应用：'+(reason||'请先把要接单的渠道拖到第一位。')+'原生产顺序不变。');
+          return;
         }
         draft.state='managed';
       }
@@ -211,7 +225,7 @@
       const editor=root.querySelector('[data-cm-priority-editor="'+operationId+'"]');
       if(editor)editor.inert=true;
       const status=root.querySelector('[data-cm-priority-status="'+operationId+'"]');
-      if(status)status.textContent='正在保存，尚未确认生效…';
+      if(status)status.textContent='正在切换主渠道，等待服务端确认…';
       try{
         const body={operation_id:operationId,state:draft.state,channels:[...draft.channels],expected_revision:draft.revision};
         const response=priorityRequest?await priorityRequest.post('/api/admin/channel-manager/operation-mapping',body):await api('/api/admin/channel-manager/operation-mapping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -220,17 +234,18 @@
         if(await env.refresh()===false)throw Error('服务端顺序读取失败');
         const saved=mappingForOperation(operationId);
         if(saved?.state!==draft.state||Number(saved?.revision)<=draft.revision||JSON.stringify(mappingChannels(saved))!==JSON.stringify(draft.channels))throw Error('发布结果待核对，请刷新后确认；不要重复提交。');
-        toast(saved.state==='managed'?'顺序已生效：新任务按此优先级接单。':'顺序已保存，当前未接管生产。');
+        const switchedName=(data.items||[]).find(c=>c.id===mappingChannels(saved)[0])?.name||mappingChannels(saved)[0]||'新主渠道';
+        toast(saved.state==='managed'?('已切换：新任务将从「'+switchedName+'」接单。'):'顺序已保存，当前未接管生产。');
       }catch(error){
-        priorityErrors[operationId]={message:'未应用或结果待核对：'+error.message,channel:draft.channels[0]};
+        priorityErrors[operationId]={message:'切换结果待确认：'+error.message,channel:draft.channels[0]};
         // A network failure may happen after commit. Read back; never claim rollback.
         delete priorityDrafts[operationId];
-        toast('未确认生效：'+error.message+' 请刷新核对服务端顺序。');
-        try{if(await env.refresh()===false)throw Error('读取失败')}catch(_){priorityUncertain=true;if(status)status.textContent='结果未知，请刷新核对后再操作。';return}
+        toast('切换结果待确认：'+error.message+' 请刷新核对服务端当前主渠道。');
+        try{if(await env.refresh()===false)throw Error('读取失败')}catch(_){priorityUncertain=true;if(status)status.textContent='切换结果待确认，请刷新核对后再操作。';return}
         const recovered=mappingForOperation(operationId);
         if(Number(recovered?.revision)>draft.revision&&recovered.state===draft.state&&JSON.stringify(mappingChannels(recovered))===JSON.stringify(draft.channels)){
           delete priorityErrors[operationId];
-          toast(recovered.state==='managed'?'响应中断，但已读回确认顺序生效。':'响应中断，但已读回确认草稿状态已发布。');
+          toast(recovered.state==='managed'?'响应中断，但已读回确认主渠道已切换。':'响应中断，但已读回确认草稿状态已发布。');
         }
       }finally{priorityBusy=false;if(editor)editor.inert=false;refreshPriority()}
     }
@@ -298,10 +313,17 @@
       if(!item)return '<p class="cm-live-status" role="status">当前主渠道未知，不能以候选顺序代替生产状态。</p>';
       const management=item.management||{};
       const ready=route.admitted===true&&model.admitted===true&&product.admitted===true;
-      const action=management.kind==='managed_channel'
+      const managed=management.kind==='managed_channel';
+      // 内置线路（legacy / provider_pool / server_env）不在托管渠道表里，统一切换接口只接受
+      // 托管渠道 id。这里直说原因，不摆一个点了也没用的「设为主渠道」。
+      const label=managed
+        ?(ready?'当前生产主渠道':'已配置主线路 · 就绪状态待核对')
+        :(ready?'当前生产主渠道 · 内置线路，未接入统一切换接口，不能在此设为主渠道'
+               :'已配置主线路 · 就绪状态待核对 · 内置线路，未接入统一切换接口，不能在此设为主渠道');
+      const action=managed
         ?'<button type="button" data-cm-managed-edit="'+esc((management.uid||'').replace(/^managed:/,''))+'">编辑</button>'
         :management.uid?'<button type="button" data-cm-live-detail="'+esc(management.uid)+'">查看配置</button>':'';
-      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'" data-cm-priority-anchor="'+esc(route.operation_id||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(ready?'当前生产主渠道':'已配置主线路 · 功能未开放或就绪状态待核对')+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+latencyControls(management.uid)+action+'</div></div>';
+      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'" data-cm-priority-anchor="'+esc(route.operation_id||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(label)+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+latencyControls(management.uid)+action+'</div></div>';
     }
     function priorityEditor(product,model){
       const routes=(model.routes||[]).filter(route=>(data.operations||[]).some(item=>item.operation_id===route.operation_id));
@@ -323,7 +345,7 @@
         const tone={ok:'ok',failed:'bad',unknown:'warn',running:'neutral',queued:'neutral',blocked:'warn',expired:'warn',missing:'neutral',unattributed:'warn','stale-version':'neutral',attention:'warn',neutral:'neutral',off:'muted'};
         const healthTone=channel.enabled?tone[proof.state]||'neutral':'off';
         const healthLabel=channel.enabled?proof.label:'已停用';
-        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
+        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+(index===0?'':'<button type="button" class="mini" data-cm-priority-first="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">设为主渠道</button>')+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.channels.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
       }).join('');
       const available=candidates.filter(item=>!draft.channels.includes(item.id));
       const routeTabs=routes.length>1?'<nav class="cm-priority-route-tabs" aria-label="模型能力">'+routes.map(route=>'<button type="button" data-cm-priority-route="'+esc(route.operation_id)+'" class="'+(route.operation_id===active.operation_id?'active':'')+'" aria-pressed="'+String(route.operation_id===active.operation_id)+'">'+esc(route.capability||route.operation_id)+'</button>').join('')+'</nav>':'';
@@ -341,7 +363,7 @@
       const publishedLine=(()=>{const pub=mapping;const stateTxt={legacy:'旧线路',shadow:'影子',managed:'托管',paused:'暂停'}[pub?.state]||pub?.state||'未发布';const pubTxt=pub&&pub.revision?('已发布 r'+pub.revision+' · '+stateTxt):'未发布稳定映射';const changed=JSON.stringify(draft.channels)!==JSON.stringify(mappingChannels(pub))||draft.state!==(pub?.state||'shadow');return '<div class="cm-priority-published"><span>服务端已发布：</span><strong>'+esc(pubTxt)+'</strong>'+(changed?'<em>待应用：将候选拖至首位</em>':'<em class="muted">草稿与已发布一致</em>')+'</div>'})();
       return '<section class="cm-priority-editor" data-cm-priority-editor="'+esc(active.operation_id)+'"><div class="cm-priority-head"><div><span>渠道优先级</span><h4>'+esc(product.label+' · '+model.label)+'</h4><p>'+esc(active.capability||'生成')+' · <code>'+esc(active.operation_id)+'</code></p></div><button type="button" class="mini" data-cm-priority-close>收起</button></div>'+routeTabs
         +(simpleView?'':publishedLine)+'<div class="cm-priority-list">'+prefix+(ordered||'<p class="cm-priority-empty">尚未添加托管候选。</p>')+'</div>'
-        +'<p role="status" data-cm-priority-status="'+esc(active.operation_id)+'">'+esc(priorityUncertain?'结果未知，请刷新核对后再操作。':priorityErrors[active.operation_id]?.message||'拖至首位自动申请应用，仅影响新任务；原线路仅作只读展示。')+'</p>'
+        +'<p role="status" data-cm-priority-status="'+esc(active.operation_id)+'">'+esc(priorityUncertain?'切换结果待确认，请刷新核对后再操作。':priorityErrors[active.operation_id]?.message||'拖到第一位即切换主渠道，影响新任务；已创建的任务继续用原渠道。')+'</p>'
         +(priorityErrors[active.operation_id]?.channel?'<button type="button" data-cm-live-detail="managed:'+esc(priorityErrors[active.operation_id].channel)+'">查看渠道验证与未应用原因</button>':'')
         +(simpleView?'':'<p class="cm-priority-notice">结果未知或已受理后失败均不会切换，避免重复生成与重复计费。</p>')+failoverEvidence+'</section>';
     }
@@ -620,6 +642,7 @@
       if(b.dataset.cmPriorityClose!=null){if(el('cmModelPriority'))el('cmModelPriority').innerHTML='';matrixExpanded=null;renderMatrix();return}
       if((priorityBusy||priorityUncertain)&&Object.keys(b.dataset).some(key=>key.startsWith('cmPriority')))return;
       if(b.dataset.cmPriorityRoute){matrixExpanded.operationId=b.dataset.cmPriorityRoute;refreshPriority();return}
+      if(b.dataset.cmPriorityFirst){const operationId=b.dataset.operation,id=b.dataset.cmPriorityFirst,draft=priorityDrafts[operationId];if(!draft)return;const from=draft.channels.indexOf(id);if(from>0){draft.channels.splice(from,1);draft.channels.unshift(id)}await publishPriority(operationId,true);return}
       if(b.dataset.cmPriorityMove){movePriority(b.dataset.operation,b.dataset.channel,'',Number(b.dataset.cmPriorityMove));await publishPriority(b.dataset.operation,true);return}
       if(b.dataset.cmPriorityRemove){const draft=priorityDrafts[b.dataset.operation];if(draft)draft.channels=draft.channels.filter(id=>id!==b.dataset.cmPriorityRemove);refreshPriority();return}
       if(b.dataset.cmPriorityAdd){const editor=b.closest('.cm-priority-editor'),choice=editor?.querySelector('[data-cm-priority-add-choice]')?.value,draft=priorityDrafts[b.dataset.cmPriorityAdd];if(choice&&draft&&!draft.channels.includes(choice)){draft.channels.push(choice);refreshPriority()}return}

@@ -14,8 +14,18 @@ test('功能未开放时，原厂及托管主线路都不能宣称正在生产',
     const html=build({},data).elements.cmMatrix.innerHTML;
     assert.match(html,/已配置主线路/);
     assert.doesNotMatch(html,/当前生产主渠道/);
-    assert.match(html,/功能未开放或就绪状态待核对/);
+    assert.match(html,/就绪状态待核对/);
   }
+});
+test('内置线路主渠道直说不能在此切换，不给无效按钮',()=>{
+  const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
+  route.control_state='shadow';
+  route.primary={id:'legacy:gemini',name:'Google Gemini API',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
+  const {elements}=build({},data),html=elements.cmMatrix.innerHTML;
+  // 统一切换接口只接受托管渠道 id：内置线路必须说明原因，而不是摆一个点了没用的按钮
+  assert.match(html,/未接入统一切换接口/);
+  const live=html.match(/<div class="cm-priority-channel cm-live-primary"[\s\S]*?<\/div><\/div>/)[0];
+  assert.doesNotMatch(live,/data-cm-priority-first/,'内置线路不应有统一切换按钮');
 });
 test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
@@ -29,7 +39,7 @@ test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
   assert.doesNotMatch(live,/draggable|data-cm-priority-channel/);
 });
 
-test('纳米香蕉三行：官方在前，乐创候选在后，保留拖动测速且无发布管理栏',()=>{
+test('官方主线路排最前，可接单的乐创候选在后，保留拖动测速',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
   route.control_state='shadow';
   route.primary={id:'legacy:gemini',name:'Google Gemini API',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
@@ -39,7 +49,9 @@ test('纳米香蕉三行：官方在前，乐创候选在后，保留拖动测�
   const html=build({},data).elements.cmMatrix.innerHTML;
   const positions=['Google Gemini API','GPT Image 2 生图（乐创）','GPT Image 2.5 生图（乐创）'].map(name=>html.indexOf(name));
   assert.ok(positions.every(pos=>pos>=0)&&positions[0]<positions[1]&&positions[1]<positions[2]);
-  assert.equal((html.match(/class="cm-priority-channel/g)||[]).length,3);
+  // 手动切换允许跨模型：可选渠道按「能力兼容」列出，不再只留与主渠道同名的那些。
+  // 1 条内置主线路 + 4 条 image 渠道（乐创 2 条 + 固定数据里的 ch-banana / ch-engine2，模型各不相同）
+  assert.equal((html.match(/class="cm-priority-channel/g)||[]).length,5);
   assert.match(html,/class="cm-priority-drag"/);
   assert.match(html,/检测延迟/);
   assert.doesNotMatch(html,/服务端已发布|cm-priority-published|cm-priority-state|选择兼容渠道/);
@@ -287,7 +299,7 @@ test('模型横排展示模型名与英文标识，且英文标识来自实际�
   assert.match(strip,/data-cm-model-key="nb2"/);
 });
 
-test('切换模型后渠道列表对应该模型，不残留上一个模型',async()=>{
+test('切换模型后渠道列表切到该功能的 operation，可选渠道按能力列出',async()=>{
   const {elements,root,workspace}=build();
   // 默认选中的是首个可见模型（纳米香蕉 2）→ 渠道列表应指向它的 operation
   assert.match(elements.cmMatrix.innerHTML,/data-cm-priority-operation="image.banana.text"/);
@@ -296,9 +308,13 @@ test('切换模型后渠道列表对应该模型，不残留上一个模型',asy
   await click(root,'[data-cm-model-key]',modelBtn('image','banana','engine2'));
   const html=elements.cmMatrix.innerHTML;
   assert.match(html,/data-cm-priority-operation="image\.engine2\.text"/);
-  assert.doesNotMatch(html,/data-cm-priority-operation="image\.banana\.text"/,'不应残留上一个模型的渠道列表');
+  assert.doesNotMatch(html,/data-cm-priority-operation="image\.banana\.text"/,'不应残留上一个功能的渠道列表');
   assert.match(html,/引擎 2 渠道/);
-  assert.doesNotMatch(html,/纳米香蕉渠道/);
+  // 手动切换必须能跨模型：同一功能下能力兼容的渠道都列出，各自带着自己的实际模型 ID
+  assert.match(html,/纳米香蕉渠道/,'跨模型候选也要列出，否则无法手动切回');
+  assert.match(html,/gemini-3/);
+  assert.match(html,/gpt-image-2/);
+  assert.doesNotMatch(html,/视频渠道/,'不能跨能力类型列出渠道');
   assert.equal(elements.cmDrawer.hidden,true,'切换模型不应自行打开抽屉');
 });
 

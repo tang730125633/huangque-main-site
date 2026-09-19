@@ -531,15 +531,26 @@ class PostgresModeTest(_ChannelFixture):
         self.assertEqual(rolled["revision"], revision + 1)
         self.assertEqual(revision, self.revision_max + 1)
 
-    def test_priority_rejects_cross_model_postgres(self):
+    def test_priority_accepts_cross_model_postgres(self):
+        """PG 路径：手动切换允许两侧模型 ID 不同；自动候补链仍然只收同契约渠道。"""
         channel_manager.save('m3c-test', self.body)
         other = 'm3c-other-' + uuid.uuid4().hex[:8]
         channel_manager.save('m3c-test', dict(self.body, id=other, model='different-model'))
-        with self.assertRaisesRegex(ValueError, '同一模型'):
-            channel_manager.save_operation_mapping('m3c-test', {
-                'operation_id': 'image.xiaole.text', 'state': 'shadow',
-                'channels': [self.cid, other], 'expected_revision': 0,
-            })
+        published = channel_manager.save_operation_mapping('m3c-test', {
+            'operation_id': 'image.xiaole.text', 'state': 'managed',
+            'channels': [other, self.cid], 'expected_revision': 0,
+        })
+        self.assertEqual([other, self.cid], published['channels'])
+        self.assertEqual(other, published['channel'])
+        # 每条渠道各自保留自己的实际模型 ID，没有为了通过比较而被改写成同一个字符串
+        self.assertEqual('different-model', channel_manager.version(other)['model'])
+        self.assertEqual(self.body['model'], channel_manager.version(self.cid)['model'])
+        # 自动故障切换本次不放宽：不同模型的渠道不进入同一条自动重试链
+        from content_domains.function_registry import operation
+        _, candidates, skipped = channel_manager._managed_image_route(
+            {'channels': [other, self.cid]}, operation('image.xiaole.text'))
+        self.assertEqual([other], [c['id'] for c in candidates])
+        self.assertEqual([self.cid], [s['id'] for s in skipped])
 
     def test_acceptance_holds_mapping_lock_until_job_commit(self):
         started = threading.Event()

@@ -668,7 +668,7 @@
           <p id="cmCount" class="muted" role="status"></p><div id="cmList"></div>
         </div>
         <div data-cm-panel="mapping" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>功能映射</h3><p class="muted">配置前端功能与托管渠道的调用关系。</p></div><button id="cmMapNew">配置功能</button></div><p class="muted">以稳定 operation_id 统一网页、Agent、后台测试和任务证据。映射按版本发布；托管生图可在明确未受理时按渠道优先级安全切换，结果未知或已受理时不会切换。</p><div id="cmMappings"></div><p class="muted">legacy 保持旧线路，shadow 只记录候选路由，managed 才接管新任务，paused 明确拒绝且不静默降级。</p></div>
-        <div data-cm-panel="health" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>运行检查</h3><p class="muted">检查渠道连接、鉴权、生成结果和通知状态。</p></div></div><p class="muted">证据有效期 24 小时；未验证、过期或缺少证据不会显示为通过。统计取最近 24 小时，定时任务使用北京时间。</p><div id="cmHealth"></div><h3>通知设置与发送状态</h3><div id="cmNotifications"></div><h3>最近测试与任务</h3><div id="cmRuns"></div></div>
+        <div data-cm-panel="health" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>运行检查</h3><p class="muted">检查渠道连接、鉴权、生成结果和通知状态。</p></div></div><p class="muted">证据有效期 24 小时；未验证、过期或缺少证据不会显示为通过（仅状态提示，不阻止手动切换与新任务接单）。统计取最近 24 小时，定时任务使用北京时间。</p><div id="cmHealth"></div><h3>通知设置与发送状态</h3><div id="cmNotifications"></div><h3>最近测试与任务</h3><div id="cmRuns"></div></div>
         <div data-cm-panel="audit" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>配置操作记录</h3><p class="muted">查看渠道、密钥与映射配置的历史变更。</p></div></div><p class="muted">托管渠道版本与映射变更。号池密钥操作沿用现有管理员审计。</p><div id="cmAudit"></div></div>
         <div data-cm-panel="layout" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>调整前台展示</h3><p class="muted">设置图片页和视频页的入口顺序与默认项。</p></div></div><div id="cmLayout"></div></div>
         <div data-cm-panel="providerConfig" hidden><div class="cm-secondary-head"><button data-cm-view="matrix">← 返回模型与渠道</button><div><h3>线路 URL／Key</h3><p class="muted">直接修改现有线路的 API 地址与密钥（服务端环境变量型线路的后台覆盖）。发布后以运行服务的实际上报为准。</p></div></div><div id="cmProviderConfig"></div></div>
@@ -931,9 +931,9 @@
 <script src="/admin/channel-catalog.js?v=ee10b62c"></script>
 <link rel="stylesheet" href="/admin/channel-simple.css?v=cc783b02">
 <script src="/admin/channel-priority-drag.js?v=20260919a"></script>
-<script src="/admin/channel-workspace.js?v=f66cc6df"></script>
+<script src="/admin/channel-workspace.js?v=873bd064"></script>
 <script src="/admin/channel-request.js"></script>
-<script src="/admin/channel-manager.js?v=bac5e89c"></script>
+<script src="/admin/channel-manager.js?v=4b4a14cf"></script>
 <script src="/admin/channel-provider-config.js?v=d5d84414"></script>
 <script>
 (function(){
