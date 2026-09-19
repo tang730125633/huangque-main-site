@@ -27,9 +27,3 @@
 @media(prefers-reduced-motion:reduce){.cm-sort-moving{transition:none}.cm-sort-ghost{transform:none}}
 #cmModelPriority .cm-priority-channel{grid-template-columns:30px 24px minmax(0,1fr) auto;min-width:0}#cmModelPriority .cm-priority-info{min-width:0}#cmModelPriority .cm-priority-info code{overflow-wrap:anywhere}#cmModelPriority .cm-priority-health{grid-column:3}#cmModelPriority .cm-priority-actions{grid-column:3/-1;flex-wrap:wrap}#cmModelPriority .cm-priority-state{display:flex;gap:12px;align-items:center}#cmModelPriority .cm-priority-published{margin:12px 0}#cmModelPriority pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .cm-latency{display:inline-flex;flex-direction:column;gap:4px;align-items:center}.cm-latency small{font-size:11px;max-width:180px;white-space:normal;color:var(--muted)}
-
-/* 方案 B：跨模型候选不静默接管 —— 在行内标出「与原厂线路不同模型」。 */
-.cm-priority-diff{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;border:1px solid rgba(217,155,53,.45);background:rgba(217,155,53,.12);color:var(--warn);font-size:10px;white-space:nowrap}
-
-.cm-fulltest{display:inline-flex;align-items:center;gap:8px}
-.cm-fulltest small{color:var(--muted);font-size:10px;max-width:190px;overflow-wrap:anywhere}
