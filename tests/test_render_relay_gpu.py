@@ -102,6 +102,38 @@ class RenderRelayGpuTests(unittest.TestCase):
         self.relay._LAST_CLAIM["cpu"] = now
         self.assertFalse(self.relay._priority_has_room(now, "nine-grid-reveal", True))
 
+    def test_standby_does_not_block_primary_from_filling_another_slot(self):
+        self.relay.PRIORITY_NODES = {'fast'}
+        now = self.relay._now()
+        self.heartbeat('fast'); self.heartbeat('standby')
+        self.relay._LAST_CLAIM.update({'fast': now, 'standby': now})
+        first = self.call('/v1/jobs', {'template_id': 'nine-grid-reveal'})[1]['job_id']
+        self.assertEqual(first, self.call('/v1/claim', {'node': 'fast', 'gpu_render': self.contract()}, node=True)[1]['job']['job_id'])
+        second = self.call('/v1/jobs', {'template_id': 'nine-grid-reveal'})[1]['job_id']
+        standby = self.call('/v1/claim', {'node': 'standby', 'gpu_render': self.contract()}, node=True)[1]
+        self.assertEqual('priority', standby['deferred'])
+        fast = self.call('/v1/claim', {'node': 'fast', 'gpu_render': self.contract()}, node=True)[1]
+        self.assertIsNotNone(fast['job'])
+        self.assertEqual(second, fast['job']['job_id'])
+
+    def test_standby_can_claim_after_primary_capacity_window_expires(self):
+        self.relay.PRIORITY_NODES = {'fast'}
+        now = self.relay._now()
+        self.heartbeat('fast'); self.heartbeat('standby')
+        self.relay._LAST_CLAIM['fast'] = now - self.relay.PRIORITY_WINDOW - 1
+        job = self.call('/v1/jobs', {'template_id': 'nine-grid-reveal'})[1]['job_id']
+        claimed = self.call('/v1/claim', {'node': 'standby', 'gpu_render': self.contract()}, node=True)[1]
+        self.assertEqual(job, claimed['job']['job_id'])
+
+    def test_health_exposes_configured_routing_priority(self):
+        self.relay.PRIORITY_NODES = {'fast-b', 'fast-a'}
+        self.heartbeat('fast-a')
+        with mock.patch.object(self.relay, '_upstream', return_value=(200, b'{"ok":true,"templates":22}')):
+            with urllib.request.urlopen(f'http://127.0.0.1:{self.server.server_port}/health', timeout=5) as response:
+                body = json.load(response)
+        self.assertEqual(['fast-a', 'fast-b'], body['priority_nodes'])
+        self.assertEqual(self.relay.PRIORITY_WINDOW, body['priority_window_seconds'])
+
     def test_preflight_rejects_before_submission(self):
         checked = json.dumps({"ok": True, "payload": {"template_id": "nine-grid-reveal"}}).encode()
         with mock.patch.object(self.relay, "_upstream", return_value=(200, checked)):

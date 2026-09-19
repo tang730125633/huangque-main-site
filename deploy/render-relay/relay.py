@@ -180,6 +180,9 @@ def _should_yield_to_idler(node, now, template=None, gpu_only=False):
             name for name, ts in list(_LAST_CLAIM.items())
             if now - ts <= NODE_ONLINE_SECONDS and not _node_blocked(name, now)
             and (not (REQUIRE_GPU or gpu_only) or _gpu_capable(name, template, now))
+            # A primary must balance against its own tier, not wait for an idle
+            # standby which the priority gate intentionally prevents from claiming.
+            and (node not in PRIORITY_NODES or name in PRIORITY_NODES)
         ]
         if len(online) < 2:
             return False          # 只有自己在线，没什么可让的
@@ -466,6 +469,8 @@ class Handler(BaseHTTPRequestHandler):
             body = {
                 "ok": ok, "templates": templates,
                 "gpu_required": REQUIRE_GPU, "gpu_nodes_ready": gpu_nodes,
+                "priority_nodes": sorted(PRIORITY_NODES),
+                "priority_window_seconds": PRIORITY_WINDOW,
                 "nodes": nodes,
                 "nodes_online": sum(1 for v in nodes.values() if v["online"]),
                 "nodes_total": len(nodes),
