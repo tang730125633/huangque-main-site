@@ -1058,7 +1058,9 @@ def comments(platform, id_or_url, cursor=None, count=20, fresh=False):
         hit = _cache_get(key)
         if hit is not None: return hit
     r = _comments(platform, id_or_url, cursor=cursor, count=count)
-    _cache_set(key, r, 3600)
+    # 空结果不缓存：上游偶发抽风(错误信封/限流)返回空评论时，绝不能把它缓存成 1h 内的「零评论」事实。
+    if r.get("items") or r.get("has_more"):
+        _cache_set(key, r, 3600)
     return r
 
 
