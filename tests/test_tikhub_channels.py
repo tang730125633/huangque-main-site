@@ -127,6 +127,80 @@ class ChannelsDetailTest(unittest.TestCase):
         self.assertEqual(result["cover"], "https://wxapp.tc.qq.com/i1&token=t1")
         self.assertEqual(result["author"]["name"], "图文号")
 
+    def test_error_envelope_is_retried_immediately(self):
+        """TikHub 偶发返回 {debug_id,message} 错误信封，同参数立刻重试即可恢复（线上实测）。"""
+        envelope = {"debug_id": "x", "debug_info": "g", "message": "请求参数可能有误"}
+        good = {
+            "id": "img-obj",
+            "objectDesc": {
+                "mediaType": 2,
+                "description": "图文",
+                "media": [{"url": "https://wxapp.tc.qq.com/a", "urlToken": "&token=t1"}],
+            },
+        }
+
+        with patch.object(tikhub, "_p", side_effect=[envelope, good]) as request, \
+             patch.object(tikhub.time, "sleep") as sleep:
+            result = tikhub.ch_detail("https://weixin.qq.com/sph/Abc123")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(result["note_type"], "image")
+        self.assertEqual(result["images"], ["https://wxapp.tc.qq.com/a&token=t1"])
+
+    def test_error_envelope_exhaustion_returns_empty_detail(self):
+        """重试耗尽仍信封 → 空详情（gen_collect 报内容获取失败退点，用户重试），不再叠加视频重取。"""
+        envelope = {"debug_id": "x", "message": "请求参数可能有误"}
+
+        with patch.object(tikhub, "_p", side_effect=[envelope] * 3) as request, \
+             patch.object(tikhub.time, "sleep") as sleep:
+            result = tikhub.ch_detail("https://weixin.qq.com/sph/Abc123")
+
+        self.assertEqual(request.call_count, 3, "信封耗尽后不该再叠一轮视频重取（上游计费）")
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(result.get("title"), "")
+        self.assertIsNone(result.get("play_url"))
+
+    def test_user_videos_reads_object_key_and_marks_image_notes(self):
+        """raw=True 的作品列表在 object 键；图文条目按 mediaType 标 note_type=image。"""
+        raw = {
+            "nickname": "dy厌罪", "username": "u@finder",
+            "object": [{
+                "id": "vid-1",
+                "objectDesc": {
+                    "mediaType": 4, "description": "视频一条",
+                    "media": [{"url": "https://wxapp.tc.qq.com/v", "urlToken": "&token=tv", "decodeKey": "dk"}],
+                },
+            }, {
+                "id": "img-1",
+                "objectDesc": {
+                    "mediaType": 2, "description": "图文一条",
+                    "media": [{"url": "https://wxapp.tc.qq.com/i", "urlToken": "&token=ti"}],
+                },
+            }],
+        }
+
+        with patch.object(tikhub, "_p", return_value=raw):
+            result = tikhub.ch_user_videos("u@finder")
+
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual(result["items"][0]["note_type"], "video")
+        self.assertEqual(result["items"][0]["decode_key"], "dk")
+        self.assertEqual(result["items"][1]["note_type"], "image")
+        self.assertEqual(result["items"][1]["play_url"], "https://wxapp.tc.qq.com/i&token=ti")
+
+    def test_user_videos_retries_error_envelope(self):
+        envelope = {"debug_id": "x", "message": "请求参数可能有误"}
+        raw = {"nickname": "n", "username": "u", "object": []}
+
+        with patch.object(tikhub, "_p", side_effect=[envelope, raw]) as request, \
+             patch.object(tikhub.time, "sleep") as sleep:
+            result = tikhub.ch_user_videos("u@finder")
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(result["items"], [])
+
 
 class ChannelsTranscriptRecoveryTest(unittest.TestCase):
     def setUp(self):

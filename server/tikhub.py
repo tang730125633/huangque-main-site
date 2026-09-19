@@ -576,8 +576,45 @@ def ch_id_to_username(channel_id):
     d = _p(CH + "/fetch_channel_id_to_username", channel_id=channel_id, raw=False)
     return {"username": d.get("username"), "nickname": d.get("nickname"), "desc": d.get("desc")}
 
+_CH_ENVELOPE_GAPS = (1.0, 2.0)
+
+def _ch_is_envelope(d):
+    """TikHub 视频号详情接口的错误信封：{debug_id, debug_info, message}，不含 objectDesc/objects。"""
+    return (isinstance(d, dict) and bool(d.get("message"))
+            and d.get("objectDesc") is None and d.get("objects") is None)
+
+def _ch_detail_raw(loc, attempts=3):
+    """带错误信封重试的详情抓取。
+
+    TikHub 视频号接口偶发返回 {debug_id, debug_info, message} 错误信封（同参数立刻重试即可恢复，
+    09-17/09-20 多次实测），信封不含 objectDesc/objects 字段，据此识别。耗尽重试仍信封则原样
+    返回，由 gen_collect 报「内容获取失败」退点，用户重试。
+    """
+    last = None
+    for attempt in range(attempts):
+        d = _p(CH + "/fetch_video_detail", raw=True, **loc)
+        if not _ch_is_envelope(d):
+            return d
+        last = d
+        if attempt < attempts - 1:
+            time.sleep(_CH_ENVELOPE_GAPS[min(attempt, len(_CH_ENVELOPE_GAPS) - 1)])
+    return last
+
+def _ch_user_videos_raw(username, last_buffer="", attempts=3):
+    """fetch_user_videos 同样偶发错误信封，同参数重试（信封不含 object/videos 字段）。"""
+    last = None
+    for attempt in range(attempts):
+        d = _p(CH + "/fetch_user_videos", username=username, raw=True, last_buffer=last_buffer)
+        if not (isinstance(d, dict) and d.get("message")
+                and d.get("object") is None and d.get("videos") is None):
+            return d
+        last = d
+        if attempt < attempts - 1:
+            time.sleep(_CH_ENVELOPE_GAPS[min(attempt, len(_CH_ENVELOPE_GAPS) - 1)])
+    return last
+
 def ch_user_videos(username, last_buffer=""):
-    d = _p(CH + "/fetch_user_videos", username=username, raw=True, last_buffer=last_buffer)  # raw=False 裁掉 objectDesc.media(无播放地址/decodeKey)，视频号下载必须 raw=True
+    d = _ch_user_videos_raw(username, last_buffer=last_buffer)  # raw=False 裁掉 objectDesc.media(无播放地址/decodeKey)，视频号下载必须 raw=True
     items = []
     # raw=True 的作品列表在 object 键（原始 proto）；TikHub 偶发返回 raw=False 结构（videos 键），两种都要吃。
     for v in (d.get("videos") or d.get("object") or []):
@@ -756,7 +793,7 @@ def _ch_feed(d):
 def ch_detail(object_id):
     s = str(object_id)
     loc = {"share_url": s} if ("://" in s or "weixin" in s) else {"object_id": s}
-    d = _p(CH + "/fetch_video_detail", raw=True, **loc)  # raw=False 会裁掉 objectDesc.media(无播放地址)，视频号下载必须 raw=True
+    d = _ch_detail_raw(loc)  # raw=False 会裁掉 objectDesc.media(无播放地址)，视频号下载必须 raw=True
     feed = _ch_feed(d)
     obj = feed.get("objectDesc") or {}
     media = (obj.get("media") or [{}])[0] or {}  # 视频号真实字段都在 objectDesc.media[0]
@@ -781,8 +818,9 @@ def ch_detail(object_id):
         }
     play = _ch_play_url(media)
     # ponytail: TikHub 偶发返回缺播放地址或解密密钥的不完整 media，重取一次即可。
-    if not play or not media.get("decodeKey"):
-        d = _p(CH + "/fetch_video_detail", raw=True, **loc)
+    # 错误信封(拿不到任何字段)不触发该重取——上游计费，且信封重试已在上层做过。
+    if not _ch_is_envelope(d) and (not play or not media.get("decodeKey")):
+        d = _ch_detail_raw(loc)
         feed = _ch_feed(d)
         obj = feed.get("objectDesc") or {}
         media = (obj.get("media") or [{}])[0] or {}
