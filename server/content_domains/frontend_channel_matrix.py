@@ -317,6 +317,9 @@ def _route_for_mode(product, mode, workspace, credentials, probes, now):
     return {
         'operation_id': op_id, 'capability': _capability_name(product['name'], mode.get('name')),
         'control_state': state, 'primary': primary, 'backup': backup,
+        # Retain original metadata for configuration and manual restoration,
+        # without adding it to managed automatic failover.
+        'original': legacy,
         'candidate': candidate, 'admitted': admitted,
         'reason': ('管理员已暂停该操作' if state == 'paused' else
                    '主渠道未启用或不存在' if not admitted else ''),
@@ -486,6 +489,9 @@ def _video_route(operation_id, capability, model, dependency, provider,
     return {
         'operation_id': operation_id, 'capability': capability,
         'control_state': state, 'primary': primary, 'backup': backup,
+        # Retain original metadata for configuration and manual restoration,
+        # without adding it to managed automatic failover.
+        'original': legacy,
         'candidate': candidate, 'admitted': admitted,
         'reason': ('管理员已暂停该操作' if state == 'paused' else
                    '主渠道未配置、未启用或不存在' if not admitted else ''),

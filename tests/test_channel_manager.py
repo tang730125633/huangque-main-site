@@ -45,6 +45,28 @@ class ChannelTests(unittest.TestCase):
         connection.commit()
         return connection
 
+    def test_original_display_order_survives_restore_and_rollback(self):
+        cid = self.ch['id']
+        first = cm.save_operation_mapping('admin', {
+            'operation_id': 'image.banana.nb2.text', 'state': 'managed',
+            'channels': [cid], 'display_order': [cid, '@original'], 'expected_revision': 0})
+        self.assertEqual(first['display_order'], [cid, '@original'])
+        self.assertEqual(first['channels'], [cid])
+        restored = cm.save_operation_mapping('admin', {
+            'operation_id': 'image.banana.nb2.text', 'state': 'legacy',
+            'channels': [], 'display_order': ['@original', cid], 'expected_revision': 1})
+        self.assertEqual(cm.operation_mapping('image.banana.nb2.text')['display_order'], ['@original', cid])
+        self.assertEqual(restored['channels'], [])
+        self.assertIsNone(cm.operation_mapping('image.banana.nb2.reference'))
+        self.assertEqual(cm.version(cid, 1, True)['secret'], 'private-secret')
+        rollback = cm.rollback_operation_mapping('admin', {
+            'operation_id': 'image.banana.nb2.text', 'target_revision': 1, 'expected_revision': 2})
+        self.assertEqual(rollback['display_order'], [cid, '@original'])
+        with self.assertRaisesRegex(ValueError, '第一项'):
+            cm.save_operation_mapping('admin', {
+                'operation_id': 'image.banana.nb2.text', 'state': 'legacy',
+                'channels': [], 'display_order': [cid, '@original'], 'expected_revision': 3})
+
     def test_vault_and_public_redaction(self):
         self.assertNotIn(b'private-secret',Path(self.tmp.name+'/channels.db').read_bytes())
         self.assertNotIn('private-secret',json.dumps(cm.overview()))

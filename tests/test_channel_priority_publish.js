@@ -5,13 +5,13 @@ function harness(mode='managed'){
   const calls=[],messages=[],status={};
   // 每条渠道各自持有自己的实际模型 ID：不再靠「同名」通过比较。
   const item=id=>({id,enabled:true,adapter:'ad-image',model:'model-'+id});
-  const ctx={priorityErrors:{},priorityRequest:null,priorityBusy:false,priorityUncertain:false,priorityDrafts:{op:{state:mode,revision:4,channels:['b','a']}},
+  const ctx={unique:values=>[...new Set(values.filter(Boolean))],priorityErrors:{},priorityRequest:null,priorityBusy:false,priorityUncertain:false,priorityDrafts:{op:{state:mode,revision:4,channels:['b','a']}},
     data:{items:['a','b','c'].map(item),
       operations:[{operation_id:'op',channel_kind:'image'}],
       adapters:{'ad-image':{kind:'image'},'ad-video':{kind:'video'}}},
     matrixPages:()=>[{products:[{models:[{routes:[{operation_id:'op',primary:{model:'model-a'}}]}]}]}],
     mappingForOperation:()=>mapping,mappingChannels:m=>[...m.channels],refreshPriority(){},toast:m=>messages.push(m),
-    root:{querySelector:()=>status},api:async(url,opts)=>{const body=JSON.parse(opts.body);calls.push(body);mapping={state:body.state,revision:5,channels:body.channels}},env:{refresh:async()=>{}}};
+    root:{querySelector:()=>status},api:async(url,opts)=>{const body=JSON.parse(opts.body);calls.push(body);mapping={state:body.state,revision:mapping.revision+1,channels:body.channels,...(body.display_order?{display_order:body.display_order}:{})}},env:{refresh:async()=>{}}};
   vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf('    async function publishPriority('),source.indexOf('    function movePriority(')),ctx);
   return {ctx,calls,messages,status};
 }
@@ -66,4 +66,46 @@ test('lost response after commit is recovered by readback without resubmission',
 test('未发布的停用渠道不阻塞已发布顺序的重排',async()=>{
  const h=harness();h.ctx.data.items.push({id:'disabled',enabled:false,adapter:'ad-image',model:'model-a'});h.ctx.priorityDrafts.op.channels.push('disabled');await h.ctx.publishPriority('op',true);
  assert.deepEqual(h.calls[0].channels,['b','a']);
+});
+
+
+test('切回原厂只发布 legacy 状态和版本，不复制凭据或修改其他模式',async()=>{
+  const h=harness();
+  h.ctx.matrixPages=()=>[{products:[{models:[{routes:[{operation_id:'op',original:{enabled:true,configured:true}}]}]}]}];
+  await h.ctx.restoreOriginal('op');
+  assert.deepEqual(h.calls,[{operation_id:'op',state:'legacy',channels:[],expected_revision:4}]);
+  assert.match(h.messages.at(-1),/已切回原厂线路/);
+});
+
+test('切回原厂响应丢失时读回确认，不能重复提交',async()=>{
+  const h=harness(),save=h.ctx.api;
+  h.ctx.matrixPages=()=>[{products:[{models:[{routes:[{operation_id:'op',original:{enabled:true,configured:true}}]}]}]}];
+  h.ctx.api=async(...args)=>{await save(...args);throw Error('lost')};
+  await h.ctx.restoreOriginal('op');
+  assert.equal(h.calls.length,1);
+  assert.match(h.messages.at(-1),/已读回确认切回原厂线路/);
+});
+
+test('原厂凭据缺失、未启用或结果未知时不提交切回',async()=>{
+  for(const original of [undefined,{enabled:false,configured:true},{enabled:true,configured:false}]){
+    const h=harness();h.ctx.matrixPages=()=>[{products:[{models:[{routes:[{operation_id:'op',original}]}]}]}];
+    await h.ctx.restoreOriginal('op');assert.equal(h.calls.length,0);
+  }
+  const h=harness();h.ctx.priorityUncertain=true;await h.ctx.restoreOriginal('op');assert.equal(h.calls.length,0);
+});
+
+
+test('统一排序往返切换：保留原厂为第二条且不加入自动候补链',async()=>{
+  const h=harness();
+  h.ctx.matrixPages=()=>[{products:[{models:[{routes:[{operation_id:'op',original:{enabled:true,configured:true}}]}]}]}];
+  await h.ctx.selectPriority('op',['b','@original','a']);
+  assert.deepEqual(h.calls[0].display_order,['b','@original','a']);
+  assert.deepEqual(h.calls[0].channels,['b','a']);
+  assert.match(h.messages.at(-1),/已切换/);
+  h.ctx.priorityDrafts.op={channels:['b','a'],order:['b','@original','a'],state:'managed',revision:5};
+  await h.ctx.selectPriority('op',['@original','b','a']);
+  assert.equal(h.calls[1].state,'legacy');
+  assert.deepEqual(h.calls[1].channels,[]);
+  assert.deepEqual(h.calls[1].display_order,['@original','b','a']);
+  assert.match(h.messages.at(-1),/已切回原厂线路/);
 });

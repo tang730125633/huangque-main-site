@@ -456,6 +456,9 @@ def save_operation_mapping(actor, body):
                 'kind': contract['channel_kind'], 'label': contract['name'],
                 'channel': cid, 'backup': backup, 'channels': channels,
             }
+            display_order = mgr._display_order(body, state, channels)
+            if display_order is not None:
+                config['display_order'] = display_order
             current = conn.execute(
                 'SELECT revision FROM routing.operation_mappings WHERE operation_id=%s',
                 (operation_id,),
@@ -501,6 +504,7 @@ def rollback_operation_mapping(actor, body):
     return save_operation_mapping(actor, {
         'operation_id': operation_id, 'state': old['state'],
         'channels': _mgr().mapping_channel_ids(old),
+        'display_order': old.get('display_order'),
         'expected_revision': body.get('expected_revision'),
     })
 
