@@ -929,12 +929,12 @@
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
 <script src="/admin/channel-parameters.js?v=a2c62bdb"></script>
 <script src="/admin/channel-catalog.js?v=ee10b62c"></script>
-<link rel="stylesheet" href="/admin/channel-simple.css?v=2d3c7baf">
+<link rel="stylesheet" href="/admin/channel-simple.css?v=0b27fd37">
 <script src="/admin/channel-priority-drag.js?v=20260919a"></script>
-<script src="/admin/channel-workspace.js?v=c3fcaba3"></script>
+<script src="/admin/channel-workspace.js?v=1328a037"></script>
 <script src="/admin/channel-request.js"></script>
-<script src="/admin/channel-manager.js?v=5eea2bff"></script>
-<script src="/admin/channel-provider-config.js?v=6f4e89e1"></script>
+<script src="/admin/channel-manager.js?v=fc6e6ea8"></script>
+<script src="/admin/channel-provider-config.js?v=d5d84414"></script>
 <script>
 (function(){
   var token = '__cookie__';
@@ -2623,7 +2623,7 @@
     if(!el('providerKeyEditor').hidden&&!confirm('当前 API Key / Base URL 表单尚未提交，切换线路会清空已填写内容。确认继续吗？'))return false;
     clearSecretWindows();restoreProviderEditor();document.querySelector('[data-module="channels"]').appendChild(el('heygenOAuthBox'));return true;
   }
-  var loadManagedChannels=window.initChannelManager({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'},legacy:channelLegacyCatalog,detail:channelLegacyDetail,closeLegacy:closeChannelLegacy,
+  var loadManagedChannels=window.initChannelManager({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'},legacy:channelLegacyCatalog,detail:channelLegacyDetail,closeLegacy:closeChannelLegacy,openProviderConfig:function(target,context){return loadProviderConfig.open(target,context)},
     task:function(id){el('reqSearch').value=id;state.reqPage=1;switchModule('logs')},
     journey:function(key){var ctx=findOperationContext(key);if(ctx){state.operationsPage=ctx.page.key;state.operationsMode=key;switchModule('operations')}}});
   var loadProviderConfig=window.initChannelProviderConfig?window.initChannelProviderConfig({api:api,esc:esc,el:el,toast:toast,active:function(){return state.module==='managedChannels'}}):null;
