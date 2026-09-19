@@ -8,6 +8,7 @@
 .cm-view-tools{position:relative;margin:0;border:0;padding:0}.cm-view-tools>button{margin-top:8px}
 .cm-selected-model .cm-priority-info code{display:none}
 .cm-call-example pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:14px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);font-size:12px;max-height:320px;overflow:auto}
+.cm-live-primary{border-color:var(--gold)!important}.cm-live-label{color:var(--gold)!important}.cm-live-status{padding:12px;border:1px solid var(--line);border-radius:8px}
 #cmForm[data-compact] .cm-fields{grid-template-columns:1fr}
 .cm-row-tools{display:inline-block}.cm-row-tools>summary{cursor:pointer;color:var(--muted);font-size:11px;padding:6px}.cm-row-tools[open]{display:flex;gap:5px}
 .cm-selected-model .cm-priority-health{display:none}
