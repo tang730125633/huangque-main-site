@@ -342,6 +342,20 @@ class RelayLoadBalanceTests(unittest.TestCase):
         self.assertFalse(self.relay._should_yield_to_idler("tang", now),
                          "均衡坏了也不能把派活搞停")
 
+    def test_primary_fairness_ignores_idle_standby_but_keeps_primary_balance(self):
+        now = self.relay._now()
+        self.relay.PRIORITY_NODES = {'tang', 'yuelei'}
+        self.relay._LAST_CLAIM.update({'tang': now, 'yuelei': now, 'standby': now})
+        self._running('tang', 1); self._running('yuelei', 1)
+        self.assertFalse(self.relay._should_yield_to_idler('tang', now))
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute("INSERT INTO jobs VALUES('tang-extra','running','tang')")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertTrue(self.relay._should_yield_to_idler('tang', now))
+
 
 if __name__ == "__main__":
     unittest.main()
