@@ -82,3 +82,7 @@ server/content.env
 
 # Local browser screenshot acceptance artifacts
 .qa/
+
+# 渠道运行时落盘的 HeyGen MCP 凭据（按渠道 ID 命名），绝不入库
+server/heygen_credentials/
+heygen_credentials/
