@@ -6,7 +6,7 @@
   <meta name="description" content="黄雀 AI：从 IP12、Agent 与无限画布，到图文音视频生产和 HQ CLI。">
   <title>黄雀 AI · 会持续生长的内容系统</title>
   <link rel="icon" href="/assets/logo_sparrow.png">
-  <link rel="stylesheet" href="/homepage.css?v=ee7286e3">
+  <link rel="stylesheet" href="/homepage.css?v=1fee1ece">
   <script src="/assets/home/orbit-gallery.js?v=53db89b7" defer></script>
 </head>
 <body>
@@ -515,6 +515,17 @@
     try { savedLanguage = localStorage.getItem('huangque-language') || 'zh-CN'; } catch {}
     setLanguage(savedLanguage);
 
+    document.addEventListener('pointerdown', event => {
+      if (languageSwitcher && languageSwitcher.hasAttribute('open') && !languageSwitcher.contains(event.target)) {
+        languageSwitcher.removeAttribute('open');
+      }
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && languageSwitcher?.hasAttribute('open')) {
+        languageSwitcher.removeAttribute('open');
+      }
+    });
+
     window.__homepageCheck = () => steps.length === 4
       && steps.every(step => panels.some(panel => panel.dataset.panel === step.dataset.story))
       && capabilityBranches.length === 6
@@ -710,6 +721,9 @@
 
       const setOpenNav = name => {
         openNav = name || '';
+        if (openNav && languageSwitcher?.hasAttribute('open')) {
+          languageSwitcher.removeAttribute('open');
+        }
         moveNavSlider(openNav || selectedNav);
         navTriggers.forEach(trigger => trigger.setAttribute('aria-expanded', String(trigger.dataset.navTrigger === openNav)));
         navPanels.forEach(panel => {
@@ -727,6 +741,11 @@
           selectedNav = trigger.dataset.navTrigger;
           setOpenNav(trigger.dataset.navTrigger);
         });
+      });
+      const navActions = navCluster.querySelector('.nav-actions');
+      navActions?.addEventListener('pointerenter', () => setOpenNav(''));
+      languageSwitcher?.addEventListener('toggle', () => {
+        if (languageSwitcher.hasAttribute('open')) setOpenNav('');
       });
       navCluster.addEventListener('pointerenter', () => clearTimeout(navCloseTimer));
       navCluster.addEventListener('pointerleave', () => {

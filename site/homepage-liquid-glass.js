@@ -3,15 +3,26 @@
   const reducedMotion=matchMedia('(prefers-reduced-motion:reduce)');
   if(!videos.length||reducedMotion.matches)return;
 
-  const vertexSource='attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
-  const fragmentSource=`
+  const vertexSource = 'attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
+  const fragmentSource = `
     precision highp float;
     uniform sampler2D image;
     uniform vec2 resolution,videoSize,mouse;
-    uniform vec4 shape;
-    uniform float radius,dpr;
+    uniform vec4 shape1,shape2;
+    uniform float radius1,radius2,shapeCount,dpr;
     float roundedBox(vec2 p,vec2 halfSize,float r){vec2 q=abs(p)-halfSize+r;return min(max(q.x,q.y),0.0)+length(max(q,0.0))-r;}
-    float lensDistance(vec2 p){float edgeInset=2.0;return roundedBox(p-shape.xy,max(shape.zw-vec2(edgeInset),vec2(1.0)),max(radius-edgeInset,1.0));}
+    float lensDistance(vec2 p){float edgeInset=2.0;
+      float d1=roundedBox(p-shape1.xy,max(shape1.zw-vec2(edgeInset),vec2(1.0)),max(radius1-edgeInset,1.0));
+      if(shapeCount<1.5)return d1;
+      float d2=roundedBox(p-shape2.xy,max(shape2.zw-vec2(edgeInset),vec2(1.0)),max(radius2-edgeInset,1.0));
+      return min(d1,d2);
+    }
+    vec4 getActiveShape(vec2 p){float edgeInset=2.0;
+      if(shapeCount<1.5)return shape1;
+      float d1=roundedBox(p-shape1.xy,max(shape1.zw-vec2(edgeInset),vec2(1.0)),max(radius1-edgeInset,1.0));
+      float d2=roundedBox(p-shape2.xy,max(shape2.zw-vec2(edgeInset),vec2(1.0)),max(radius2-edgeInset,1.0));
+      return (d1<=d2)?shape1:shape2;
+    }
     float field(vec2 p){float d=lensDistance(p);float h=clamp(-d/24.0,0.0,1.0);return h*h*(3.0-2.0*h);}
     vec2 coverUV(vec2 p){
       vec2 uv=p/resolution;float screenAspect=resolution.x/resolution.y;float sourceAspect=videoSize.x/videoSize.y;
@@ -21,6 +32,7 @@
     vec3 backdrop(vec2 p){vec3 color=texture2D(image,coverUV(p)).rgb;float luma=dot(color,vec3(.2126,.7152,.0722));color=mix(vec3(luma),color,.78);return ((color-.5)*1.05+.5)*.55+vec3(.03,.05,.08);}
     void main(){
       vec2 p=gl_FragCoord.xy/dpr;float d=lensDistance(p);if(d>1.5)discard;
+      vec4 shape=getActiveShape(p);
       float depth=-d;float e=1.25;
       vec2 gradient=vec2(field(p+vec2(e,0.0))-field(p-vec2(e,0.0)),field(p+vec2(0.0,e))-field(p-vec2(0.0,e)))/(2.0*e);
       vec2 n=normalize(gradient+vec2(.0001));vec3 N=normalize(vec3(-gradient*13.0,1.0));
@@ -35,47 +47,58 @@
       color+=outer*(vec3(.08,.22,.34)*max(n.x,0.0)+vec3(.34,.07,.015)*max(-n.x,0.0));float alpha=smoothstep(1.5,-1.5,d);gl_FragColor=vec4(color*alpha,alpha);
     }`;
 
-  const pointer={x:innerWidth*.35,y:innerHeight*.7};
-  let visible=true;
-  const hero=document.querySelector('.hero');
-  let navOverHero=true;
-  const syncNavBackdrop=()=>{
-    navOverHero=(hero?.getBoundingClientRect().bottom||0)>(document.querySelector('.site-header')?.offsetHeight||0);
-    document.documentElement.classList.toggle('nav-current-backdrop',!navOverHero);
+  const pointer = { x: innerWidth * .35, y: innerHeight * .7 };
+  let visible = true;
+  const hero = document.querySelector('.hero');
+  let navOverHero = true;
+  const syncNavBackdrop = () => {
+    navOverHero = (hero?.getBoundingClientRect().bottom || 0) > (document.querySelector('.site-header')?.offsetHeight || 0);
+    document.documentElement.classList.toggle('nav-current-backdrop', !navOverHero);
   };
-  addEventListener('pointermove',event=>{pointer.x=event.clientX;pointer.y=event.clientY;},{passive:true});
-  addEventListener('scroll',syncNavBackdrop,{passive:true});addEventListener('resize',syncNavBackdrop);syncNavBackdrop();
-  document.addEventListener('visibilitychange',()=>{visible=!document.hidden;});
-  const status=window.__homepageLiquidGlassStatus={supported:true,hero:false,nav:false,active:false};
+  addEventListener('pointermove', event => { pointer.x = event.clientX; pointer.y = event.clientY; }, { passive: true });
+  addEventListener('scroll', syncNavBackdrop, { passive: true }); addEventListener('resize', syncNavBackdrop); syncNavBackdrop();
+  document.addEventListener('visibilitychange', () => { visible = !document.hidden; });
+  const status = window.__homepageLiquidGlassStatus = { supported: true, hero: false, nav: false, active: false };
 
-  function createLens(canvas,target,key,readyClass,maxDpr){
-    const gl=canvas?.getContext('webgl',{alpha:true,antialias:false,premultipliedAlpha:true});
-    if(!canvas||!target||!gl){status.supported=false;return;}
-    const compile=(type,source)=>{const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);return gl.getShaderParameter(shader,gl.COMPILE_STATUS)?shader:null;};
-    const vertex=compile(gl.VERTEX_SHADER,vertexSource),fragment=compile(gl.FRAGMENT_SHADER,fragmentSource);if(!vertex||!fragment){status.supported=false;return;}
-    const program=gl.createProgram();gl.attachShader(program,vertex);gl.attachShader(program,fragment);gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS)){status.supported=false;return;}gl.useProgram(program);
-    const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
-    const position=gl.getAttribLocation(program,'p');gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,2,gl.FLOAT,false,0,0);
-    const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
-    const uniform=Object.fromEntries(['dpr','radius','resolution','videoSize','mouse','shape'].map(name=>[name,gl.getUniformLocation(program,name)]));
-    function render(){
-      const video=document.querySelector('.hero-media video.is-active');const canvasRect=canvas.getBoundingClientRect();const targetRect=target.getBoundingClientRect();const ratio=Math.min(devicePixelRatio||1,maxDpr);
-      const width=Math.round(canvasRect.width*ratio),height=Math.round(canvasRect.height*ratio);if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;gl.viewport(0,0,width,height);}
-      gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);
+  function createLens(canvas, target, key, readyClass, maxDpr) {
+    const gl = canvas?.getContext('webgl', { alpha: true, antialias: false, premultipliedAlpha: true });
+    const targetList = (Array.isArray(target) ? target : [target]).filter(Boolean);
+    if (!canvas || !targetList.length || !gl) { status.supported = false; return; }
+    const compile = (type, source) => { const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader); return gl.getShaderParameter(shader, gl.COMPILE_STATUS) ? shader : null; };
+    const vertex = compile(gl.VERTEX_SHADER, vertexSource), fragment = compile(gl.FRAGMENT_SHADER, fragmentSource); if (!vertex || !fragment) { status.supported = false; return; }
+    const program = gl.createProgram(); gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program); if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { status.supported = false; return; } gl.useProgram(program);
+    const buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    const position = gl.getAttribLocation(program, 'p'); gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    const texture = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texture); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    const uniform = Object.fromEntries(['dpr', 'radius1', 'radius2', 'shapeCount', 'resolution', 'videoSize', 'mouse', 'shape1', 'shape2'].map(name => [name, gl.getUniformLocation(program, name)]));
+    function render() {
+      const video = document.querySelector('.hero-media video.is-active'); const canvasRect = canvas.getBoundingClientRect(); const ratio = Math.min(devicePixelRatio || 1, maxDpr);
+      const width = Math.round(canvasRect.width * ratio), height = Math.round(canvasRect.height * ratio); if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; gl.viewport(0, 0, width, height); }
+      gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
       if(key==='nav'&&!navOverHero){status.navBackdrop='current';requestAnimationFrame(render);return;}
-      if(visible&&video?.readyState>=2&&video.videoWidth&&width&&height){
-        if(key==='nav')status.navBackdrop='video';
-        gl.uniform1f(uniform.dpr,ratio);gl.uniform1f(uniform.radius,targetRect.height/2);gl.uniform2f(uniform.resolution,canvasRect.width,canvasRect.height);gl.uniform2f(uniform.videoSize,video.videoWidth,video.videoHeight);
-        gl.uniform2f(uniform.mouse,pointer.x-canvasRect.left,canvasRect.bottom-pointer.y);gl.uniform4f(uniform.shape,targetRect.left-canvasRect.left+targetRect.width/2,canvasRect.bottom-targetRect.top-targetRect.height/2,targetRect.width/2,targetRect.height/2);
-        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);gl.drawArrays(gl.TRIANGLES,0,6);
-        if(!status[key]){status[key]=true;document.documentElement.classList.add(readyClass);status.active=status.hero&&status.nav;}
+      if (visible && video?.readyState >= 2 && video.videoWidth && width && height) {
+        if (key === 'nav') status.navBackdrop = 'video';
+        const targetRect1 = targetList[0].getBoundingClientRect();
+        const hasSecond = targetList.length > 1 && targetList[1].offsetParent !== null;
+        const targetRect2 = hasSecond ? targetList[1].getBoundingClientRect() : targetRect1;
+        gl.uniform1f(uniform.dpr, ratio);
+        gl.uniform1f(uniform.shapeCount, hasSecond ? 2.0 : 1.0);
+        gl.uniform1f(uniform.radius1, targetRect1.height / 2);
+        gl.uniform4f(uniform.shape1, targetRect1.left - canvasRect.left + targetRect1.width / 2, canvasRect.bottom - targetRect1.top - targetRect1.height / 2, targetRect1.width / 2, targetRect1.height / 2);
+        gl.uniform1f(uniform.radius2, targetRect2.height / 2);
+        gl.uniform4f(uniform.shape2, targetRect2.left - canvasRect.left + targetRect2.width / 2, canvasRect.bottom - targetRect2.top - targetRect2.height / 2, targetRect2.width / 2, targetRect2.height / 2);
+        gl.uniform2f(uniform.resolution, canvasRect.width, canvasRect.height);
+        gl.uniform2f(uniform.videoSize, video.videoWidth, video.videoHeight);
+        gl.uniform2f(uniform.mouse, pointer.x - canvasRect.left, canvasRect.bottom - pointer.y);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video); gl.drawArrays(gl.TRIANGLES, 0, 6);
+        if (!status[key]) { status[key] = true; document.documentElement.classList.add(readyClass); status.active = status.hero && status.nav; }
       }
       requestAnimationFrame(render);
     }
     requestAnimationFrame(render);
   }
 
-  createLens(document.querySelector('[data-hero-liquid-glass]'),document.querySelector('.hero .button-primary'),'hero','hero-liquid-glass-ready',1.5);
-  createLens(document.querySelector('[data-nav-liquid-glass]'),document.querySelector('.nav-shell'),'nav','nav-liquid-glass-ready',1.25);
-  window.__homepageLiquidGlassCheck=()=>status.active&&document.querySelector('[data-hero-liquid-glass]')?.width>0&&document.querySelector('[data-nav-liquid-glass]')?.width>0;
+  createLens(document.querySelector('[data-hero-liquid-glass]'), [document.querySelector('.hero .button-primary'), document.querySelector('.hero .button-secondary')], 'hero', 'hero-liquid-glass-ready', 1.5);
+  createLens(document.querySelector('[data-nav-liquid-glass]'), document.querySelector('.nav-shell'), 'nav', 'nav-liquid-glass-ready', 1.25);
+  window.__homepageLiquidGlassCheck = () => status.active && document.querySelector('[data-hero-liquid-glass]')?.width > 0 && document.querySelector('[data-nav-liquid-glass]')?.width > 0;
 })();
