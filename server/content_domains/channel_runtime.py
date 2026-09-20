@@ -600,6 +600,10 @@ def _generate_sora(cfg, payload, rid, job_id, metadata, refs):
             'invocation_source': binding.get('invocation_source')}
 
 
+# 有专用执行器的适配器：请求体由各自的 _generate_* 构造，不走通用 build_generation_request。
+_BESPOKE_ADAPTERS = ('sora_video', 'wavespeed_tryon', 'cosyvoice_tts')
+
+
 def generate(cfg, payload, rid, job_id):
     from .channel_parameters import apply, image_request
     try:
@@ -610,8 +614,15 @@ def generate(cfg, payload, rid, job_id):
         is_lechuang = adapter in ('lechuang_image', 'lechuang_video')
         metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
                         transport='proxy' if cfg.get('proxy') else 'direct')
-        path,body,files=build_generation_request(cfg,payload)
-    except ValueError as exc:
+        # 复用原厂执行器的适配器自己构造请求（Sora→video_openai、换装→wavespeed、配音→cosyvoice），
+        # 不能先走通用 HTTP 路径的 build_generation_request —— 那条按图片/视频契约读
+        # payload['prompt']，而配音根本没有 prompt 字段，会在提交前抛 KeyError。
+        path=body=files=None
+        if adapter not in _BESPOKE_ADAPTERS:
+            path,body,files=build_generation_request(cfg,payload)
+    except (ValueError, KeyError) as exc:
+        # KeyError 同属「提交前的载荷缺陷」：供应商未被调用，必须按可安全切换处理，
+        # 而不是让它逃到外层被记成 failed（那会误报成渠道故障）。
         raise PreSubmissionFailure(str(exc)[:200]) from None
     trace.record(job_id,'route','recorded',**metadata)
     store.finish(rid,'running','提交供应商')
@@ -868,12 +879,12 @@ def execute(rid, payload=None):
                 # 记账被拒（状态不允许等）：收敛成明确终态，别让裸 ValueError 逃出去把任务卡死。
                 store.finish(rid, 'failed', detail)
                 _notify(row, 'failed')
-                raise RuntimeError(detail) from None
+                raise RuntimeError(detail) from exc
             _notify(row, 'failed')
             raise SafeChannelFailover(detail) from None
         store.finish(rid,state,detail)
         _notify(row,state)
-        raise RuntimeError(detail) from None
+        raise RuntimeError(detail) from exc
 
 
 def _notify(row,state):
