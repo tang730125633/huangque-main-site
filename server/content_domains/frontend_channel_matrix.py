@@ -8,7 +8,7 @@ import time
 import urllib.parse
 
 from . import banana_provider
-from .function_registry import IMAGE_FUNCTIONS, VIDEO_FUNCTIONS
+from .function_registry import AUDIO_FUNCTIONS, IMAGE_FUNCTIONS, VIDEO_FUNCTIONS
 from .image_model_catalog import OPENAI_IMAGE_MODEL, SEEDREAM_MODELS, XIAOLE_IMAGE_MODEL
 
 
@@ -50,6 +50,18 @@ _VIDEO_LEGACY_HOSTS = {
     'heygen': 'api.heygen.com', 'runninghub': 'www.runninghub.cn',
     'wavespeed': 'api.wavespeed.ai',
 }
+# 音频页：配音（CosyVoice）。此前 AUDIO_FUNCTIONS 已在注册表里，但从未接进
+# 前台功能矩阵，导致后台「音频与配音」页没有任何配音功能 —— 渠道建好了也
+# 找不到切换入口。这里补齐，与视频页同一套结构。
+_AUDIO_MODELS = {
+    'tts': [
+        {'key': 'public', 'label': '公共音色配音', 'model': 'CosyVoice 公共音色',
+         'dependency': 'cosyvoice', 'operations': ['audio.tts.public']},
+        {'key': 'personal', 'label': '个人音色配音', 'model': 'CosyVoice 复刻音色',
+         'dependency': 'cosyvoice', 'operations': ['audio.tts.personal']},
+    ],
+}
+
 _VIDEO_MODELS = {
     'digital_ip': [
         {'key': 'default', 'label': 'HeyGen 数字人口播',
@@ -598,6 +610,39 @@ def _video_matrix(workspace, credentials, probes, pool_keys, layout_state,
     }
 
 
+def _audio_matrix(workspace, credentials, probes, layout_state, features, now):
+    """音频页：目前只有「AI 配音」一个产品，其下按音色范围分公共/个人两条路由。"""
+    entries = {x.get('key'): x for x in (layout_state.get('entries', {}).get('audio') or [])}
+    products = []
+    for product in AUDIO_FUNCTIONS:
+        specs = _AUDIO_MODELS.get(product['key'])
+        if not specs:
+            continue
+        entry = entries.get(product['key'], {})
+        # 音频没有历史布局条目：没有条目时按可见处理，避免整页消失。
+        enabled = features.get('audio', True)
+        models = [
+            _video_model(product, spec, workspace, credentials, probes, [],
+                         enabled, now,
+                         '功能开关未开启' if not enabled else '前台运行时当前未开放')
+            for spec in specs
+        ]
+        products.append({
+            'key': product['key'],
+            'label': entry.get('label') or product['name'],
+            'description': product.get('desc') or '',
+            'visible': entry.get('visible', True),
+            'visibility_reason': entry.get('reason') or '',
+            'admitted': any(x['admitted'] for x in models),
+            'attention': any(x['attention'] for x in models),
+            'models': models, 'warning': '',
+        })
+    return {
+        'page': 'audio', 'label': '音频与配音', 'read_only': True,
+        'summary': _summary('audio', products), 'products': products,
+    }
+
+
 def build(workspace, key_rows, probes, layout_state, feature_rows, now=None,
           provider_key_rows=None, runtime_health=None):
     """Return one secret-free operator matrix spanning the image and video workbenches."""
@@ -611,6 +656,7 @@ def build(workspace, key_rows, probes, layout_state, feature_rows, now=None,
     )
     # Keep the original image fields at the top level for clients deployed before
     # the multi-page view, while the admin UI consumes the explicit pages list.
+    audio = _audio_matrix(workspace, credentials, probes or {}, layout_state, features, now)
     result = dict(image)
-    result['pages'] = [image, video]
+    result['pages'] = [image, video, audio]
     return result
