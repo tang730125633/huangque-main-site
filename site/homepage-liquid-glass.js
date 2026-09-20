@@ -18,7 +18,7 @@
       if(sourceAspect>screenAspect)uv.x=(uv.x-.5)*screenAspect/sourceAspect+.5;else uv.y=(uv.y-.5)*sourceAspect/screenAspect+.5;
       return clamp(uv,vec2(.003),vec2(.997));
     }
-    vec3 backdrop(vec2 p){vec3 color=texture2D(image,coverUV(p)).rgb;float luma=dot(color,vec3(.2126,.7152,.0722));color=mix(vec3(luma),color,.78);return ((color-.5)*1.05+.5)*.8;}
+    vec3 backdrop(vec2 p){vec3 color=texture2D(image,coverUV(p)).rgb;float luma=dot(color,vec3(.2126,.7152,.0722));color=mix(vec3(luma),color,.78);return ((color-.5)*1.05+.5)*.55+vec3(.03,.05,.08);}
     void main(){
       vec2 p=gl_FragCoord.xy/dpr;float d=lensDistance(p);if(d>1.5)discard;
       float depth=-d;float e=1.25;
@@ -26,7 +26,7 @@
       vec2 n=normalize(gradient+vec2(.0001));vec3 N=normalize(vec3(-gradient*13.0,1.0));
       float outer=1.0-smoothstep(0.0,4.5,depth);float inner=smoothstep(2.0,9.0,depth)*(1.0-smoothstep(16.0,29.0,depth));
       float bevel=1.0-smoothstep(0.0,26.0,depth);float cavity=smoothstep(3.0,9.0,depth)*(1.0-smoothstep(14.0,25.0,depth));
-      vec2 facePoint=shape.xy+(p-shape.xy)*.965;vec2 refractedPoint=facePoint-n*(14.0+48.0*inner);vec2 outsidePoint=p+n*(10.0+18.0*outer);vec2 dispersion=n*(2.2+2.4*inner);
+      vec2 facePoint=shape.xy+(p-shape.xy)*.985;vec2 refractedPoint=facePoint-n*(2.0+6.0*inner);vec2 outsidePoint=p+n*(3.0+5.0*outer);vec2 dispersion=n*(0.3+0.4*inner);
       vec3 refracted=vec3(backdrop(refractedPoint+dispersion).r,backdrop(refractedPoint).g,backdrop(refractedPoint-dispersion).b);
       vec3 color=mix(backdrop(facePoint),refracted,inner*.98);color=mix(color,backdrop(outsidePoint),outer*.84);
       vec3 lightDir=normalize(vec3((mouse-shape.xy)/resolution*2.2,.72));float spec=pow(max(dot(N,lightDir),0.0),13.0)*bevel;float fresnel=pow(1.0-max(N.z,0.0),1.8)*bevel;

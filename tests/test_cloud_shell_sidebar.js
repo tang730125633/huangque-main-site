@@ -204,3 +204,20 @@ test('image video and audio workspaces fill the shell without breaking narrow la
   assert.match(video, /@media \(max-width:1100px\)\{\.gVid\{height:auto/);
   assert.match(audio, /@media \(max-width:1100px\)\{\.gAud\{height:auto/);
 });
+
+test('sidebar provides draggable resizer with min 200px and max 380px thresholds', () => {
+  assert.match(shell, /function bindSidebarResizer\(aside\)/);
+  assert.match(shell, /className='hq-sidebar-resizer'/);
+  assert.match(shell, /\.hq-sidebar-resizer\{position:absolute;/);
+  assert.match(shell, /minWidth = 200/);
+  assert.match(shell, /maxWidth = 380/);
+  assert.match(shell, /localStorage\.setItem\('hq_sidebar_width'/);
+  assert.match(shell, /body\.hq-sidebar-resizing \.hq-aside\{transition:none!important\}/);
+});
+
+test('admin portal entry displays in sidebar when admin role is active', () => {
+  assert.match(shell, /var ADMIN_NAV=\[\s*\{k:'admin',l:'管理后台',i:'shield',admin:true,href:'\.\.\/admin\/index\.html'\}\s*\];/);
+  assert.match(shell, /function syncNavAdminVisibility\(aside\)/);
+  assert.match(shell, /syncNavAdminVisibility\(\)/);
+});
+
