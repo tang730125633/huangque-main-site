@@ -76,13 +76,15 @@ class ChannelCapabilityTests(unittest.TestCase):
         self.assertIn('xiaole_video', caps.switchable_kinds())
         self.assertIn('tryon', caps.switchable_kinds())
         self.assertIn('audio', caps.switchable_kinds())
+        self.assertIn('video', caps.switchable_kinds())
+        self.assertIn('cinematic', caps.switchable_kinds())
         self.assertTrue(registry.operation('image.banana.nb2.text')['channel_eligible'])
         self.assertTrue(registry.operation('video.grok.text')['channel_eligible'])
 
     def test_known_supplier_functions_are_blocked_with_specific_reasons(self):
         """还没接通执行器的，必须明确说明缺什么，而不是含糊的「不支持」。"""
         for operation_id, keyword in (
-            ('video.digital_ip.text.single', 'HeyGen'),
+            ('video.tryon.classic', 'RunningHub'),
             ('video.tryon.classic', 'RunningHub'),
             ('assets.audio.clone_vip', 'CosyVoice'),
         ):

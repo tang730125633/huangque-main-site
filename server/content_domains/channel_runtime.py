@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import os
+import pathlib
 import time
 import threading
 import urllib.parse
@@ -53,7 +54,8 @@ def validate_payload(cfg, payload):
     if any(k.startswith('_short_drama') for k in payload) or payload.get('short_drama_binding'):
         raise ValueError('短剧绑定任务不支持通用渠道映射，请使用专用渠道配置')
     # 换装/换背景按图像素材工作，没有提示词；提示词规则只对文本驱动型协议生效。
-    if cfg['adapter'] not in ('wavespeed_tryon', 'cosyvoice_tts'):
+    if cfg['adapter'] not in ('wavespeed_tryon', 'cosyvoice_tts',
+                               'heygen_mcp_video', 'heygen_mcp_cinematic'):
         if not str(payload.get('prompt') or '').strip():
             raise ValueError('提示词不能为空')
         if len(str(payload['prompt'])) > 7000:
@@ -134,6 +136,24 @@ def validate_payload(cfg, payload):
             raise ValueError('音量需在 -50~100 之间')
         if refs:
             raise ValueError('配音不需要参考图')
+        return
+    if cfg['adapter'] in ('heygen_mcp_video', 'heygen_mcp_cinematic'):
+        # HeyGen 专用流程：文案或音频 + 形象绑定，与图片/视频的 prompt 契约不同。
+        # 凭据不在这里校验：capture 阶段的 cfg 不含密钥（密钥在保险箱，执行时才注入），
+        # 真正读取凭据时（_heygen_credential_file）才检查并给出明确报错。
+        if cfg['adapter'] == 'heygen_mcp_cinematic':
+            cine_mode = str(payload.get('cine_mode') or '').strip().lower()
+            if cine_mode and cine_mode not in ('motion', 'open'):
+                raise ValueError('电影化身只支持 motion / open 两种模式')
+        else:
+            mode = str(payload.get('mode') or 'text').strip().lower()
+            if mode not in ('text', 'audio', 'lipsync'):
+                raise ValueError('数字人口播只支持 text / audio / lipsync 三种模式')
+            if mode in ('text', 'audio') and not str(
+                    payload.get('script') or payload.get('text') or '').strip():
+                raise ValueError('数字人口播需要文案或音频')
+        if refs:
+            raise ValueError('HeyGen 流程不接受通用参考图参数，请使用形象/素材绑定')
         return
     if cfg['adapter'] == 'sora_video':
         from . import video as video_domain
@@ -417,6 +437,73 @@ def _tryon_material_resolver(local_rel):
     return wavespeed._material_url(local_rel)
 
 
+def _heygen_credential_file(cfg):
+    """把渠道的 MCP 凭据落到渠道专属文件，供 video.heygen_credential_scope 读取。
+
+    支持两种写法：直接给凭据 JSON，或给一个已存在的凭据文件路径。
+    文件必须是 600（原厂读取时会校验），且按渠道 ID 固定路径 —— OAuth 刷新后
+    原厂会回写同一个文件，因此下一次任务能直接用新 token。
+    """
+    from . import core
+    raw = str(cfg.get('secret') or '').strip()
+    if not raw:
+        raise PreSubmissionFailure('HeyGen 渠道缺少 MCP 凭据')
+    base = core.OUT_DIR.parent / 'heygen_credentials'
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / (str(cfg['id']) + '.json')
+    if raw.lstrip().startswith('{'):
+        try:
+            cred = json.loads(raw)
+        except ValueError as exc:
+            raise PreSubmissionFailure('HeyGen MCP 凭据不是合法 JSON') from exc
+        path.write_text(json.dumps(cred, ensure_ascii=False), encoding='utf-8')
+    else:
+        src = pathlib.Path(raw)
+        if not src.is_file():
+            raise PreSubmissionFailure('HeyGen MCP 凭据既不是 JSON 也不是可读文件')
+        path.write_text(src.read_text(encoding='utf-8'), encoding='utf-8')
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def _generate_heygen(cfg, payload, rid, job_id, metadata):
+    """托管 HeyGen：复用原厂 gen_video / gen_cinematic，只换凭据。
+
+    原厂那一整条链路（形象绑定、素材上传、轮询、下载、成品核验）完全不动；
+    渠道差异只有「用哪个 MCP 账号」，通过 heygen_credential_scope 注入。
+    """
+    from . import video as video_domain, core as core_domain
+    kind = 'cinematic' if cfg['adapter'] == 'heygen_mcp_cinematic' else 'video'
+    handler = video_domain.HANDLERS.get(kind)
+    if not handler:
+        raise PreSubmissionFailure('HeyGen 原厂入口不可用：%s' % kind)
+    cred = _heygen_credential_file(cfg)
+    store.finish(rid, 'running', '提交 HeyGen')
+    scoped = dict(payload)
+    scoped['_job_id'] = scoped.get('_job_id') or job_id
+    with video_domain.heygen_credential_scope(str(cred)):
+        result = trace.call(job_id, 'provider_submit',
+                            lambda: handler(scoped), **metadata)
+    if not isinstance(result, dict) or not (result.get('video_file') or result.get('file')):
+        raise ProviderError('HeyGen 未返回成品')
+    trace.record(job_id, 'artifact', 'passed', **metadata)
+    binding = payload.get('_channel_binding') or {}
+    out = dict(result)
+    out.setdefault('type', 'video')
+    out.setdefault('file', out.get('video_file'))
+    out.update({
+        'provider': cfg['name'], 'model': cfg['model'],
+        'channel_id': cfg['id'], 'channel_version': cfg['version'],
+        'operation_id': binding.get('operation_id'),
+        'mapping_revision': binding.get('mapping_revision'),
+        'invocation_source': binding.get('invocation_source'),
+    })
+    return out
+
+
 def _generate_tts(cfg, payload, rid, job_id, metadata):
     """托管配音：复用原厂 cosyvoice.synth，只把渠道自己的 Key 与接入点注入进去。
 
@@ -601,7 +688,8 @@ def _generate_sora(cfg, payload, rid, job_id, metadata, refs):
 
 
 # 有专用执行器的适配器：请求体由各自的 _generate_* 构造，不走通用 build_generation_request。
-_BESPOKE_ADAPTERS = ('sora_video', 'wavespeed_tryon', 'cosyvoice_tts')
+_BESPOKE_ADAPTERS = ('sora_video', 'wavespeed_tryon', 'cosyvoice_tts',
+                     'heygen_mcp_video', 'heygen_mcp_cinematic')
 
 
 def generate(cfg, payload, rid, job_id):
@@ -633,6 +721,8 @@ def generate(cfg, payload, rid, job_id):
         return _generate_tryon_ws(cfg, payload, rid, job_id, metadata)
     if cfg['adapter'] == 'cosyvoice_tts':
         return _generate_tts(cfg, payload, rid, job_id, metadata)
+    if cfg['adapter'] in ('heygen_mcp_video', 'heygen_mcp_cinematic'):
+        return _generate_heygen(cfg, payload, rid, job_id, metadata)
     # 乐创付费创建请求要求 8-128 字符幂等键；run id 为 32 位 hex，天然幂等。
     extra_headers = {'Idempotency-Key': str(rid)} if is_lechuang else None
     result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body,extra_headers=extra_headers,files=files),**metadata)

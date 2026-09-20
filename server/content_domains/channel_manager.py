@@ -41,6 +41,12 @@ ADAPTERS = {
     # 配音：复用原厂 audio.py 的 CosyVoice 链路。一个渠道 = 一套 DashScope 凭据 + 接入点，
     # 拖动即切换不同的配音账号；音色仍由任务参数决定。
     'cosyvoice_tts': {'name': '阿里百炼 CosyVoice 配音', 'kind': 'audio', 'references': False},
+    # HeyGen：渠道的 secret 是一份完整的 MCP OAuth 凭据 JSON（access/refresh token）。
+    # 落到渠道专属文件后由 video.heygen_credential_scope 注入，原厂那 ~11 处 MCP 调用
+    # 自动改用渠道自己的账号；拖动即切换不同的 MCP 账号。
+    # 数字人与电影化身走不同的原厂入口，因此各占一条适配器。
+    'heygen_mcp_video': {'name': 'HeyGen MCP（数字人口播）', 'kind': 'video', 'references': True},
+    'heygen_mcp_cinematic': {'name': 'HeyGen MCP（电影化身）', 'kind': 'cinematic', 'references': True},
 }
 
 
