@@ -1,4 +1,7 @@
-"""Bounded managed-channel execution and tests; never retry a generation POST.
+"""Bounded managed-channel execution and tests.
+
+付费 POST 仍然不重发：只有供应商**明确未受理**（提交前失败，或明确拒绝受理）时才按优先级
+切换到下一候选渠道；超时、限流、5xx、结果未知以及已受理之后的失败一律收敛为终态、不重发。
 
 存储层：执行记录与调度排期统一经 ``channel_manager`` / ``channel_store`` 分发；
 ``HQ_CHANNEL_STORE=postgres`` 时本模块的读写走 ``channel_store``（routing schema），
@@ -7,6 +10,7 @@ SQLite 路径与行为逐字节不变。本模块不再直连 ``channel_manager.
 import base64
 import io
 import json
+import os
 import time
 import threading
 import urllib.parse
@@ -28,13 +32,32 @@ class ProviderError(RuntimeError):
     definitive_rejection = True
 
 
+class SafeChannelFailover(RuntimeError):
+    """A paid provider request is known not to have been accepted."""
+
+
+class PreSubmissionFailure(SafeChannelFailover):
+    pass
+
+
+class SubmissionRejected(SafeChannelFailover, ProviderError):
+    pass
+
+
+SAFE_POST_REJECTION_STATUSES = {400, 401, 402, 403, 404, 405, 413, 415, 422}
+# Gemini 原生协议同步返回 inlineData 图片，2K/4K 的 base64 体量远超 safe_http 的 8MB 默认上限。
+GEMINI_RESPONSE_MAX_BYTES = 24 * 1024 * 1024
+
+
 def validate_payload(cfg, payload):
     if any(k.startswith('_short_drama') for k in payload) or payload.get('short_drama_binding'):
         raise ValueError('短剧绑定任务不支持通用渠道映射，请使用专用渠道配置')
-    if not str(payload.get('prompt') or '').strip():
-        raise ValueError('提示词不能为空')
-    if len(str(payload['prompt'])) > 7000:
-        raise ValueError('提示词不得超过7000字')
+    # 换装/换背景按图像素材工作，没有提示词；提示词规则只对文本驱动型协议生效。
+    if cfg['adapter'] != 'wavespeed_tryon':
+        if not str(payload.get('prompt') or '').strip():
+            raise ValueError('提示词不能为空')
+        if len(str(payload['prompt'])) > 7000:
+            raise ValueError('提示词不得超过7000字')
     if int(payload.get('n') or payload.get('count') or 1) != 1:
         raise ValueError('受管理渠道当前每个任务只生成一个产物')
     if payload.get('operation') not in {None,'','generate'}:
@@ -55,6 +78,45 @@ def validate_payload(cfg, payload):
                 raise ValueError('此渠道未启用局部修图（蒙版）')
             if len(refs) != 1:
                 raise ValueError('局部修图需要恰好 1 张参考图')
+    if cfg['adapter'] == 'gemini_image':
+        from .banana_provider import MAX_REFERENCE_IMAGES, MAX_TOTAL_REFERENCE_BYTES, RATIOS
+        if payload.get('video') or payload.get('reference_videos') or payload.get('mask'):
+            raise ValueError('Gemini 官方生图不支持视频参考或蒙版')
+        if len(refs) > MAX_REFERENCE_IMAGES:
+            raise ValueError('Gemini 官方生图参考图最多 14 张')
+        normalized = _gemini_references(refs)
+        if sum(item['bytes'] for item in normalized) > MAX_TOTAL_REFERENCE_BYTES:
+            raise ValueError('Gemini 官方生图参考图总大小超过 48MB')
+        if str(payload.get('ratio') or '1:1') not in RATIOS:
+            raise ValueError('Gemini 官方生图不支持该画面比例')
+    if cfg['adapter'] == 'wavespeed_tryon':
+        # 线路二换装：人物图 + 衣服图，不支持换背景（与 validate_tryon_payload 同一套规则）。
+        from . import video as video_domain
+        person = str(payload.get('person_image_data') or payload.get('image_data') or '').strip()
+        clothes = str(payload.get('clothes_data') or '').strip()
+        if not person or not video_domain._is_valid_data_url(person, video_domain.VALID_IMAGE_MIMES):
+            raise ValueError('线路二换装请上传有效的人物照片')
+        if not clothes or not video_domain._is_valid_data_url(clothes, video_domain.VALID_IMAGE_MIMES):
+            raise ValueError('请上传衣服图')
+        if str(payload.get('background_data') or '').strip():
+            raise ValueError('线路二不支持换背景，请改用线路一')
+        if payload.get('person_video_data'):
+            raise ValueError('线路二换装不接受人物视频，请改用线路一')
+        seconds = video_domain._tryon_seconds(payload, '2')
+        if not 5 <= seconds <= 15:
+            raise ValueError('线路二换装时长须为5～15秒')
+    if cfg['adapter'] == 'sora_video':
+        from . import video as video_domain
+        if len(refs) > 1:
+            raise ValueError('Sora 适配器只支持 1 张首帧参考图')
+        if payload.get('operation') not in {None, '', 'generate'}:
+            raise ValueError('Sora 适配器不支持视频编辑操作')
+        ratio = str(payload.get('ratio') or '9:16')
+        if ratio not in video_domain.SORA_RATIOS:
+            raise ValueError('Sora 适配器支持'+'、'.join(sorted(video_domain.SORA_RATIOS))+'比例')
+        duration = int(payload.get('duration') or payload.get('seconds') or 4)
+        if duration not in video_domain.SORA_SECONDS:
+            raise ValueError('Sora 时长只能是'+'、'.join(str(x) for x in sorted(video_domain.SORA_SECONDS))+'秒')
     if cfg['adapter'] == 'minimax_h3':
         from .video_minimax_h3 import build_request
         build_request(payload['prompt'], refs, payload.get('ratio') or '9:16', payload.get('duration') or 5, payload.get('resolution') or '2K')
@@ -97,9 +159,16 @@ def validate_payload(cfg, payload):
 
 
 def request(cfg, method, path, body=None, extra_headers=None, files=None):
-    headers = {'Authorization': 'Bearer ' + cfg['secret']}
+    headers = (
+        {'x-goog-api-key': cfg['secret']}
+        if cfg['adapter'] == 'gemini_image'
+        else {'Authorization': 'Bearer ' + cfg['secret']}
+    )
     if extra_headers:
         headers.update(extra_headers)
+    # Gemini 原生协议把图片塞在 inlineData 里返回：2K/4K 的 base64 远超 safe_http 的 8MB 默认上限，
+    # 用默认值会把已计费的成品判成「供应商 HTTP 200」丢掉。给这个适配器单独放宽到 24MB。
+    headroom = {'max_bytes': GEMINI_RESPONSE_MAX_BYTES} if cfg['adapter'] == 'gemini_image' else {}
     try:
         url = cfg['base_url']+'/'+path.lstrip('/')
         if files is not None:
@@ -112,10 +181,13 @@ def request(cfg, method, path, body=None, extra_headers=None, files=None):
             method, url, body=body,
             headers=headers,
             timeout=cfg['timeout'], proxy=cfg.get('proxy') or '',
+            **headroom,
         )
     except safe_http.SafeHttpError as exc:
-        if method == 'POST' and (exc.status in {0,408,429} or exc.status>=500):
+        if method == 'POST' and (exc.status in {0,408,409,425,429} or exc.status>=500):
             raise OutcomeUnknown('提交结果未知，禁止自动重发') from None
+        if method == 'POST' and exc.status in SAFE_POST_REJECTION_STATUSES:
+            raise SubmissionRejected('供应商明确拒绝提交：HTTP %s' % exc.status) from None
         if exc.status:
             raise ProviderError('供应商 HTTP %s' % exc.status) from None
         if method == 'POST':
@@ -198,6 +270,24 @@ def _decode_data_url(value, field):
     return raw
 
 
+def _gemini_references(refs):
+    """Normalize references with the shared Nano Banana validator."""
+    from .banana_provider import _validated_reference
+    return [_validated_reference(value, index) for index, value in enumerate(refs)]
+
+
+def _gemini_image_bytes(response):
+    parts = ((response.get('candidates') or [{}])[0].get('content') or {}).get('parts') or []
+    inline = next((part.get('inlineData') for part in parts if part.get('inlineData')), None)
+    if not inline or not inline.get('data'):
+        detail = (response.get('error') or {}).get('message') or '供应商未返回图片'
+        raise ValueError('Gemini 未返回图片：' + str(detail)[:180])
+    try:
+        return base64.b64decode(inline['data'], validate=True)
+    except Exception:
+        raise ValueError('Gemini 返回的图片数据无效') from None
+
+
 def _edits_parts(cfg, payload, refs, placeholder=False):
     spec = cfg.get('parameters') or {}
     fields = {'prompt': str(payload.get('prompt') or ''), 'size': str(payload.get('size') or '1024x1024'), 'n': '1'}
@@ -226,6 +316,21 @@ def build_generation_request(cfg, payload, preview=False):
             body, files = _edits_parts(cfg, payload, refs, placeholder=preview)
             return '/images/edits', body, files
         return '/images/generations', image_request(cfg,payload), None
+    if adapter == 'gemini_image':
+        from .banana_provider import IMAGE_SIZES, MODELS, build_request_body
+        from .channel_parameters import SIZES
+        references = _gemini_references(refs)
+        ratio = str(payload.get('ratio') or SIZES.get(str(payload.get('size') or ''), '1:1'))
+        quality = str(payload.get('quality') or 'std').lower()
+        if quality not in {'std','hd'}:
+            raise ValueError('Gemini 官方生图清晰度仅支持 std/hd')
+        model_key = next((key for key,value in MODELS.items() if value == cfg['model']), '')
+        if not model_key:
+            raise ValueError('Gemini 官方生图仅支持已登记的 Nano Banana 模型')
+        image_size = IMAGE_SIZES[model_key][quality]
+        body = build_request_body(payload['prompt'], ratio, references, image_size)
+        path = '/v1beta/models/' + urllib.parse.quote(cfg['model'], safe='.-_') + ':generateContent'
+        return path, body, None
     if adapter == 'minimax_h3':
         from .video_minimax_h3 import build_request
         body = build_request(payload['prompt'], refs, payload.get('ratio') or '9:16',payload.get('duration') or 5,payload.get('resolution') or '2K')
@@ -258,24 +363,186 @@ def build_generation_request(cfg, payload, preview=False):
         if refs:
             video_input['reference_images'] = _lechuang_refs(refs)
         return '/generations', {'model': cfg['model'], 'input': video_input}, None
+    if adapter == 'sora_video':
+        # 预览/日志用：真实请求由 _generate_sora → video_openai 构造（与原厂一致）。
+        size = payload.get('size') or _sora_size(cfg, payload)
+        body = {'model': cfg['model'], 'prompt': payload['prompt'],
+                'seconds': int(payload.get('duration') or payload.get('seconds') or 4),
+                'size': size}
+        if refs:
+            body['input_reference'] = '<上传的首帧图片>'
+        return '/videos', body, None
     body = {'model':cfg['model'],'prompt':payload['prompt'],'duration':int(payload.get('duration') or 5),'aspect_ratio':payload.get('ratio') or '9:16','resolution':str(payload.get('resolution') or '720p')}
     if refs:
         body['image'] = {'url':refs[0]}
     return '/videos/generations', body, None
 
 
+def _tryon_material_resolver(local_rel):
+    """素材转公网直链：生产走 COS；隔离测试可用环境变量替换（生产不设该变量）。"""
+    base = os.environ.get('HQ_TRYON_MATERIAL_BASE')
+    if base:
+        return base.rstrip('/') + '/' + str(local_rel).replace('/', '-')
+    from . import wavespeed
+    return wavespeed._material_url(local_rel)
+
+
+def _generate_tryon_ws(cfg, payload, rid, job_id, metadata):
+    """托管换装（线路二）：复用原厂 wavespeed.generate_tryon。
+
+    两次素材上传与提交/轮询/下载全部由原厂模块完成，这里只把渠道自己的
+    Key 与线路注入进去（wavespeed 已支持 credential / base_url）。
+    """
+    from . import video as video_domain, wavespeed, core
+    person = video_domain._save_data_file(
+        payload.get('person_image_data') or payload.get('image_data'),
+        'tryon_person_img', ['.jpg', '.jpeg', '.png', '.webp'])
+    if not person:
+        raise PreSubmissionFailure('线路二换装请上传人物照片')
+    clothes = video_domain._save_data_file(
+        payload.get('clothes_data'), 'tryon_cloth', ['.jpg', '.jpeg', '.png', '.webp'])
+    if not clothes:
+        raise PreSubmissionFailure('请上传衣服图')
+    seconds = video_domain._tryon_seconds(payload, '2')
+    store.finish(rid, 'running', '提交换装供应商')
+    wres = trace.call(
+        job_id, 'provider_submit',
+        lambda: wavespeed.generate_tryon(
+            person, clothes, seconds, job_id=job_id,
+            credential=cfg['secret'], base_url=cfg['base_url'],
+            material_resolver=_tryon_material_resolver),
+        **metadata)
+    provider_id = str((wres or {}).get('provider_video_id') or '')
+    video_file = (wres or {}).get('video_file')
+    if not video_file:
+        raise ProviderError('换装未返回成品文件')
+    target = core.OUT_DIR / video_file
+    if not target.is_file():
+        raise ProviderError('换装成品文件不存在：%s' % str(video_file)[:120])
+    try:
+        import subprocess
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-count_frames',
+             '-show_entries', 'stream=codec_type,width,height,nb_read_frames',
+             '-of', 'json', str(target)],
+            capture_output=True, timeout=120, check=True)
+        streams = json.loads(probe.stdout).get('streams', [])
+        ok = any(s.get('codec_type') == 'video' and int(s.get('width') or 0) > 0
+                 and int(s.get('height') or 0) > 0
+                 and str(s.get('nb_read_frames') or '').isdigit()
+                 and int(s['nb_read_frames']) > 0 for s in streams)
+        if probe.stderr or not ok:
+            raise ValueError('成品帧解码未通过，不能判定视频有效')
+    except Exception:
+        raise
+    trace.record(job_id, 'artifact', 'passed', provider_task_id=provider_id, **metadata)
+    url = core.public_url(video_file, 'video/mp4')
+    binding = payload.get('_channel_binding') or {}
+    return {'type': 'video', 'status': 'done', 'mode': 'tryon', 'tryon_mode': 'clothes_only',
+            'file': video_file, 'video_file': video_file, 'url': url, 'video_url': url,
+            'files': [video_file], 'urls': [url], 'count': 1,
+            'person_image_file': person, 'clothes_file': clothes,
+            'provider': cfg['name'], 'model': cfg['model'], 'request_id': provider_id,
+            'channel_id': cfg['id'], 'channel_version': cfg['version'],
+            'operation_id': binding.get('operation_id'),
+            'mapping_revision': binding.get('mapping_revision'),
+            'invocation_source': binding.get('invocation_source')}
+
+
+def _sora_size(cfg, payload):
+    """按原厂同一张 SORA_SIZE_MAP 推导尺寸，保证与原线路行为一致。"""
+    from . import video as video_domain
+    model = str(payload.get('model') or cfg['model'])
+    ratio = str(payload.get('ratio') or '9:16')
+    resolution = str(payload.get('resolution') or '720p')
+    return str(payload.get('size') or video_domain.SORA_SIZE_MAP.get((model, resolution, ratio)) or '')
+
+
+def _generate_sora(cfg, payload, rid, job_id, metadata, refs):
+    """托管 Sora 任务：复用原厂 video_openai 客户端，不重写提交/轮询/下载。
+
+    video_openai.generate / download_content / resume 都已接受注入的 api_key 与 api_base，
+    因此渠道自己的凭据与线路直接生效；非幂等 POST 仍只发一次。
+    """
+    from . import video as video_domain, video_openai, core
+    model = str(payload.get('model') or cfg['model'])
+    seconds = int(payload.get('duration') or payload.get('seconds') or 4)
+    size = _sora_size(cfg, payload)
+    if not size:
+        raise PreSubmissionFailure('Sora 无法根据模型/分辨率/比例确定尺寸')
+    input_reference = None
+    if refs:
+        try:
+            input_reference = video_domain._prepare_sora_input_reference(refs[0], size)
+        except ValueError as exc:
+            raise PreSubmissionFailure(str(exc)[:200]) from None
+    store.finish(rid, 'running', '提交 Sora')
+    rendered = trace.call(
+        job_id, 'provider_submit',
+        lambda: video_openai.generate(
+            model, str(payload.get('provider_prompt') or payload['prompt']), seconds, size,
+            job_id=job_id, api_key=cfg['secret'], api_base=cfg['base_url'],
+            input_reference=input_reference),
+        **metadata)
+    provider_id = str((rendered or {}).get('video_id') or '').strip()
+    if not provider_id:
+        raise ProviderError('Sora 已完成但缺少 video_id')
+    store.finish(rid, 'running', '下载生成视频', provider_id)
+    filename = 'channel_' + uuid.uuid4().hex + '.mp4'
+    target = core.OUT_DIR / filename
+    trace.call(job_id, 'download',
+               lambda: video_openai.download_content(
+                   provider_id, target, api_key=cfg['secret'], api_base=cfg['base_url']),
+               provider_task_id=provider_id, **metadata)
+    try:
+        import subprocess
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-count_frames',
+             '-show_entries', 'stream=codec_type,width,height,nb_read_frames',
+             '-of', 'json', str(target)],
+            capture_output=True, timeout=120, check=True)
+        streams = json.loads(probe.stdout).get('streams', [])
+        ok = any(s.get('codec_type') == 'video' and int(s.get('width') or 0) > 0
+                 and int(s.get('height') or 0) > 0
+                 and str(s.get('nb_read_frames') or '').isdigit()
+                 and int(s['nb_read_frames']) > 0 for s in streams)
+        if probe.stderr or not ok:
+            raise ValueError('成品帧解码未通过，不能判定视频有效')
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    trace.record(job_id, 'artifact', 'passed', provider_task_id=provider_id, **metadata)
+    url = core.public_url(filename, 'video/mp4')
+    binding = payload.get('_channel_binding') or {}
+    return {'type': 'video', 'file': filename, 'url': url, 'files': [filename],
+            'urls': [url], 'count': 1, 'mode': 'generate',
+            'provider': cfg['name'], 'model': cfg['model'], 'request_id': provider_id,
+            'channel_id': cfg['id'], 'channel_version': cfg['version'],
+            'operation_id': binding.get('operation_id'),
+            'mapping_revision': binding.get('mapping_revision'),
+            'invocation_source': binding.get('invocation_source')}
+
+
 def generate(cfg, payload, rid, job_id):
     from .channel_parameters import apply, image_request
-    payload,_=apply(cfg,payload,required=False)
-    validate_payload(cfg, payload)
-    refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
-    adapter = cfg['adapter']
-    is_lechuang = adapter in ('lechuang_image', 'lechuang_video')
-    metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
-                    transport='proxy' if cfg.get('proxy') else 'direct')
-    path,body,files=build_generation_request(cfg,payload)
+    try:
+        payload,_=apply(cfg,payload,required=False)
+        validate_payload(cfg, payload)
+        refs = payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
+        adapter = cfg['adapter']
+        is_lechuang = adapter in ('lechuang_image', 'lechuang_video')
+        metadata = dict(provider=cfg['name'],model=cfg['model'],host=urllib.parse.urlsplit(cfg['base_url']).hostname,
+                        transport='proxy' if cfg.get('proxy') else 'direct')
+        path,body,files=build_generation_request(cfg,payload)
+    except ValueError as exc:
+        raise PreSubmissionFailure(str(exc)[:200]) from None
     trace.record(job_id,'route','recorded',**metadata)
     store.finish(rid,'running','提交供应商')
+    # Sora 走原厂 video_openai（已支持注入 Key/base）；换装走原厂 wavespeed；其余走通用 HTTP 路径。
+    if cfg['adapter'] == 'sora_video':
+        return _generate_sora(cfg, payload, rid, job_id, metadata, refs)
+    if cfg['adapter'] == 'wavespeed_tryon':
+        return _generate_tryon_ws(cfg, payload, rid, job_id, metadata)
     # 乐创付费创建请求要求 8-128 字符幂等键；run id 为 32 位 hex，天然幂等。
     extra_headers = {'Idempotency-Key': str(rid)} if is_lechuang else None
     result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body,extra_headers=extra_headers,files=files),**metadata)
@@ -327,7 +594,7 @@ def generate(cfg, payload, rid, job_id):
                 raise RuntimeError('乐创视频缺少下载地址')
             store.finish(rid,'running','下载生成视频',provider_id)
             raw = trace.call(job_id,'download',lambda:_download_lechuang(cfg,content),**metadata)
-    elif adapter != 'openai_image':
+    elif adapter not in ('openai_image', 'gemini_image'):
         if not provider_id:
             raise OutcomeUnknown('供应商未返回工单号，禁止自动重发')
         store.finish(rid,'running','供应商已接单',provider_id)
@@ -354,13 +621,15 @@ def generate(cfg, payload, rid, job_id):
         url = (task.get('content') or {}).get('url') if adapter=='minimax_h3' else (task.get('video') or {}).get('url')
         store.finish(rid,'running','下载生成视频',provider_id)
         raw = trace.call(job_id,'download',lambda:_download(cfg,url),**metadata)
+    elif adapter == 'gemini_image':
+        raw = _gemini_image_bytes(result)
     else:
         data = result.get('data') or []
         if not data:
             raise RuntimeError('供应商返回空产物')
         raw = base64.b64decode(data[0]['b64_json'],validate=True) if data[0].get('b64_json') else _download(cfg,data[0].get('url'))
     from . import core
-    media = 'image' if adapter in ('openai_image','lechuang_image') else 'video'
+    media = 'image' if adapter in ('openai_image','gemini_image','lechuang_image') else 'video'
     output_format=payload.get('output_format','png') if cfg.get('parameters') else 'png'
     filename = 'channel_'+uuid.uuid4().hex+('.'+output_format if media=='image' else '.mp4')
     target = core.OUT_DIR / filename
@@ -459,7 +728,7 @@ def execute(rid, payload=None):
                         break
                     c.commit()
             if time.monotonic()-start>120:
-                raise RuntimeError('渠道并发或限流等待超时，尚未提交供应商')
+                raise PreSubmissionFailure('渠道并发或限流等待超时，尚未提交供应商')
             time.sleep(1)
         _termination_check()       # 拿到闸门后再确认一次，避免终止后仍提交付费请求
         if row['kind']=='connection':
@@ -476,13 +745,13 @@ def execute(rid, payload=None):
             if cfg['adapter']=='minimax_h3':
                 # A nonexistent resource cannot prove valid credentials.
                 raise CheckUnsupported('此协议未提供可靠的独立鉴权证明，请运行完整生成测试')
-            result = request(cfg,'GET','/models')
-            data = result.get('data')
+            result = request(cfg,'GET','/v1beta/models' if cfg['adapter']=='gemini_image' else '/models')
+            data = result.get('models') if cfg['adapter']=='gemini_image' else result.get('data')
             if isinstance(data, dict):
                 # 乐创统一协议：{code,message,data:{list:[{id,...}]}}
                 models = [m.get('id') for m in (data.get('list') or []) if isinstance(m, dict)]
             elif isinstance(data, list):
-                models = [m.get('id') for m in data if isinstance(m, dict)]
+                models = [m.get('id') or str(m.get('name') or '').removeprefix('models/') for m in data if isinstance(m, dict)]
             else:
                 models = []
             if not models or cfg['model'] not in models:
@@ -507,11 +776,22 @@ def execute(rid, payload=None):
         else:
             with closing(store.db()) as c:
                 phase = c.execute('SELECT detail FROM runs WHERE id=?',(rid,)).fetchone()[0]
-        detail = phase+'：'+str(exc)[:200] if isinstance(exc,(ValueError,OutcomeUnknown,ProviderError)) else (
+        # SafeChannelFailover 的文案是「为何判定未受理」的唯一证据，必须原样落库给后台看。
+        detail = phase+'：'+str(exc)[:200] if isinstance(exc,(ValueError,OutcomeUnknown,ProviderError,SafeChannelFailover)) else (
             phase+'：SafeHttpError HTTP '+str(exc.status) if isinstance(exc, safe_http.SafeHttpError)
             else phase+'：'+type(exc).__name__)
         if cfg.get('secret'):
             detail = detail.replace(cfg['secret'],'[隐藏]')
+        if row['kind'] == 'task' and isinstance(exc, SafeChannelFailover):
+            try:
+                store.finish_task_failover_safe(rid, detail)
+            except ValueError:
+                # 记账被拒（状态不允许等）：收敛成明确终态，别让裸 ValueError 逃出去把任务卡死。
+                store.finish(rid, 'failed', detail)
+                _notify(row, 'failed')
+                raise RuntimeError(detail) from None
+            _notify(row, 'failed')
+            raise SafeChannelFailover(detail) from None
         store.finish(rid,state,detail)
         _notify(row,state)
         raise RuntimeError(detail) from None
@@ -540,18 +820,66 @@ def _notify(row,state):
 
 def run_task(binding,payload,job_id,job_db=None):
     """托管渠道任务入口；带上任务库句柄后，管理员终止可以在执行循环里安全停手。"""
-    cfg = store.version(binding['id'],binding['version'])
-    rid = store.reserve(cfg['id'],'task',str(job_id),cfg,execution_snapshot=binding)
-    if job_db is None:
-        return execute(rid,payload)
-    from . import task_termination
-    try:
-        with task_termination.scope(int(job_id), job_db):
+    evidence = store.task_evidence(job_id)
+    snapshot = evidence.get('execution_snapshot') or {}
+    if (evidence.get('state') == 'queued'
+            and snapshot.get('operation_id') == binding.get('operation_id')
+            and int(snapshot.get('mapping_revision') or 0)
+            == int(binding.get('mapping_revision') or 0)):
+        binding = dict(binding, **snapshot)
+    # 候选清单必须取【合并持久化快照之后】的那一份：切换过的任务只有快照里才记着新渠道。
+    candidates = list(binding.get('route_candidates') or [{
+        key: binding.get(key) for key in store.ROUTE_CANDIDATE_FIELDS
+    }])
+    current_id = binding.get('id')
+    start_index = next((index for index, item in enumerate(candidates)
+                        if item.get('id') == current_id), None)
+    # 排队中的持久化记录若指向另一个渠道（典型：切换后进程挂掉，而映射已改版导致快照合不进来），
+    # reserve 会以「该任务已有渠道执行记录」拒绝，任务就在排队与重排之间空转、既不出图也不退款。
+    # 这种不一致必须当场收敛成终态：它从未提交供应商，退款是对的。
+    durable_queued = (evidence.get('kind') == 'task' and evidence.get('state') == 'queued'
+                      and bool(evidence.get('id')))
+    stranded = start_index is None or (
+        durable_queued and (
+            str(evidence.get('channel') or '') != str(candidates[start_index].get('id') or '')
+            or int(evidence.get('version') or 0)
+            != int(candidates[start_index].get('version') or 0)))
+    if stranded:
+        if durable_queued:
+            store.finish(evidence['id'], 'failed', '已固化渠道与候选清单不一致，请人工核查')
+        raise RuntimeError('任务的已固化渠道不在候选清单中，请人工核查')
+    cfg = store.version(candidates[start_index]['id'], candidates[start_index]['version'])
+    attempt_binding = dict(binding, **candidates[start_index], route_attempt=start_index + 1)
+    rid = store.reserve(cfg['id'],'task',str(job_id),cfg,execution_snapshot=attempt_binding)
+
+    def run_once():
+        if job_db is None:
             return execute(rid,payload)
-    except task_termination.TaskTerminated:
-        # 进入执行前就被终止（例如排队期间）：把运行记录收敛为终止态，别让它占着队列额度。
-        _mark_terminated(rid)
-        raise
+        from . import task_termination
+        try:
+            with task_termination.scope(int(job_id), job_db):
+                return execute(rid,payload)
+        except task_termination.TaskTerminated:
+            _mark_terminated(rid)
+            raise
+
+    reason = ''
+    skipped = ''
+    for index in range(start_index, len(candidates)):
+        if index > start_index:
+            try:
+                store.prepare_task_failover(rid, candidates[index], reason)
+            except ValueError as exc:
+                # 这一跳被跳过（候选不可用）：不覆盖「为什么离开上一渠道」的原因，
+                # 只在全部候选都不可用时作为兜底文案。
+                skipped = str(exc)
+                continue
+        try:
+            return run_once()
+        except SafeChannelFailover as exc:
+            reason = str(exc)
+            continue
+    raise RuntimeError(reason or skipped or '所有候选渠道均无法安全接单')
 
 
 def start_test(actor,body):

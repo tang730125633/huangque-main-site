@@ -12,6 +12,7 @@ from .points import _auth_points_request
 from . import cosyvoice, cos
 from . import points as points_domain
 from . import pricing
+from . import feature_flags
 
 VOICE_SLOT_COST = 50
 VOICE_SLOT_MAX_PER_USER = 5
@@ -110,6 +111,10 @@ def count_user_audio_voice_slots(username):
 
 
 def _membership_voice_slot_entitlement(username):
+    # 内测免费化（2026-09-12 老板拍板：取消所有付费、全部免费开放）：
+    # 计费关闭时全员自动享有免费音色槽位，跳过会员权益判定；计费恢复后回到会员判定。
+    if not feature_flags.points_billing_enabled():
+        return True
     q = urllib.parse.quote(str(username or ""), safe="")
     res = _auth_points_request(
         "/api/auth/membership/voice-slot-entitlement?username=" + q,

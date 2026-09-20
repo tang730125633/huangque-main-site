@@ -257,7 +257,7 @@ def grok_video_is_open():
     """Return whether the configured Grok path can accept new work."""
     try:
         if GROK_VIDEO_PROVIDER == "xiaole":
-            return bool(XIAOLEVIDEO_API_KEY)
+            return bool(str(xiaole_credentials().get("credential") or "").strip())
         from . import video_xai
         return bool(video_xai.available())
     except Exception:
@@ -5630,7 +5630,7 @@ def generate_heygen_video_subscription(image_file, audio_file, resolution, ratio
                                         job_id=None, image_asset_id=None):
     """Generate through OAuth/MCP only, billing the web plan and never the API wallet."""
     existing = get_resumable_heygen_talking_request(job_id)
-    image_asset_id = str((existing or {}).get("image_asset_id") or image_asset_id or "").strip()
+    image_asset_id = str((existing or {}).get("image_asset_id") or "").strip()
     if existing:
         video_id = existing["request_id"]
     else:
@@ -6266,8 +6266,8 @@ def gen_video(payload):
         avatar = get_video_avatar((payload.get("_username") or "").strip(), avatar_id)
         image_file = avatar.get("image_file")
         image_asset_id = str(avatar.get("provider_image_asset_id") or "").strip()
-        if _heygen_subscription_mode() and not image_asset_id:
-            raise ValueError("该数字人形象缺少 HeyGen 图片素材编号，请重新创建形象后再生成")
+        # 订阅(MCP)账户资产空间与 API 钱包不互通，provider_image_asset_id 不可复用；
+        # 生成时改为用本地 image_file 重传（见 generate_heygen_video_subscription）。
     else:
         image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
         image_asset_id = ""
@@ -6512,16 +6512,19 @@ def _ensure_tryon_audio(person_fp):
     return with_audio
 
 
-def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
+def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None, config_ref=None):
     """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
     try:
         from runninghub_sdk import RunningHubClient  # 服务器 pip 装；本地/CI 不触发 import
     except ImportError:
         raise RuntimeError("服务器未安装 runninghub_sdk")
     API_KEY = os.environ.get("RUNNINGHUB_API_KEY", "")
+    from . import provider_config
+    config = provider_config.job_credentials("video.tryon.classic", config_ref, API_KEY, "https://www.runninghub.cn")
+    API_KEY = config["credential"]
     if not API_KEY:
         raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
-    client = RunningHubClient(API_KEY, base_url="https://www.runninghub.cn", timeout=120)
+    client = RunningHubClient(API_KEY, base_url=config["url"], timeout=120)
 
     person_fp = _resolve_out_file(person_video_file)
     if not person_fp:
@@ -6630,7 +6633,7 @@ def gen_tryon(payload):
     if _tline == "2":
         # 线路二 WaveSpeed：人物图 + 衣服图 → 换装展示视频（区别于线路一"给人物视频换装保留原动作"）
         from . import wavespeed
-        if not wavespeed.available():
+        if not wavespeed.available(payload.get("_provider_config")):
             raise ValueError("线路二(WaveSpeed)未配置，请用线路一或联系管理员")
         person_image_file = _save_data_file(payload.get("person_image_data") or payload.get("image_data"),
                                             "tryon_person_img", [".jpg", ".jpeg", ".png", ".webp"])
@@ -6641,7 +6644,8 @@ def gen_tryon(payload):
             raise ValueError("请上传衣服图")
         update_video_asset_phase(job_id, "queued", mode="tryon", text="换装",
                                  image_file=person_image_file, tryon_mode="clothes_only")
-        wres = wavespeed.generate_tryon(person_image_file, clothes2, seconds, job_id=job_id)
+        wres = wavespeed.generate_tryon(person_image_file, clothes2, seconds, job_id=job_id,
+                                       config_ref=payload.get("_provider_config"))
         return {
             "type": "video", "status": "done", "mode": "tryon", "tryon_mode": "clothes_only",
             "person_image_file": person_image_file, "clothes_file": clothes2,
@@ -6670,7 +6674,7 @@ def gen_tryon(payload):
                              reference_video_file=person_video_file, image_file=cover_file,
                              background_file=background_file, tryon_mode=tryon_mode)
     video_result = generate_tryon_video(person_video_file, clothes_file, background_file, seconds,
-                                        job_id=job_id, username=username)
+                                        job_id=job_id, username=username, config_ref=payload.get("_provider_config"))
     return {
         "type": "video", "status": "done", "mode": "tryon",
         "tryon_mode": tryon_mode,
@@ -6690,11 +6694,26 @@ def gen_tryon(payload):
         "message": "换装换背景视频生成完成"
     }
 
+def xiaole_credentials():
+    """xiaolevideo 凭据统一入口：后台覆盖优先、环境变量兜底。
+
+    未开启 ``HQ_PROVIDER_CONFIG_WIRING`` 时原样返回进程启动常量（行为零变化）；
+    开启后若已发布后台配置则使用后台版本，且存储/解密失败一律抛错、不回退。
+    果肉生图与视频共用本入口（_xiaole_request 是唯一咽喉）。
+    """
+    from . import provider_config
+    return provider_config.credentials_for(
+        "xiaolevideo", XIAOLEVIDEO_API_KEY, XIAOLEVIDEO_API_BASE)
+
+
 def _xiaole_request(method, path, body=None, timeout=90, retry_deadline=None):
-    if not XIAOLEVIDEO_API_KEY:
+    creds = xiaole_credentials()
+    api_key = str(creds.get("credential") or "").strip()
+    api_base = str(creds.get("url") or XIAOLEVIDEO_API_BASE).rstrip("/")
+    if not api_key:
         raise ValueError("视频生成服务未配置（XIAOLEVIDEO_API_KEY）")
-    url = path if path.startswith("http") else (XIAOLEVIDEO_API_BASE + path)
-    headers = {"Authorization": "Bearer " + XIAOLEVIDEO_API_KEY, "User-Agent": "huangque-content/1.0"}
+    url = path if path.startswith("http") else (api_base + path)
+    headers = {"Authorization": "Bearer " + api_key, "User-Agent": "huangque-content/1.0"}
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -7654,6 +7673,7 @@ def gen_xiaole_video(payload):
                 job_id=job_id,
                 on_submitted=persist_upscale_id,
                 heartbeat=upscale_heartbeat,
+                config_ref=payload.get("_provider_config"),
             )
             upscale_id = upscaled["prediction_id"]
             upscale_source_url = upscaled["source_video_url"]

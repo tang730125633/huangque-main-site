@@ -7,6 +7,8 @@ import re
 import sqlite3
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 import uuid
 from contextlib import closing, contextmanager
@@ -529,6 +531,63 @@ class PostgresModeTest(_ChannelFixture):
         self.assertEqual(rolled["revision"], revision + 1)
         self.assertEqual(revision, self.revision_max + 1)
 
+    def test_original_order_roundtrip_and_rollback_postgres(self):
+        channel_manager.save('admin', self.body)
+        rev = self.operation_before['revision'] if self.operation_before else 0
+        first = channel_manager.save_operation_mapping('admin', {
+            'operation_id': self.operation_id, 'state': 'managed', 'channels': [self.cid],
+            'display_order': [self.cid, '@original'], 'expected_revision': rev})
+        second = channel_manager.save_operation_mapping('admin', {
+            'operation_id': self.operation_id, 'state': 'legacy', 'channels': [],
+            'display_order': ['@original', self.cid], 'expected_revision': first['revision']})
+        self.assertEqual(channel_manager.operation_mapping(self.operation_id)['display_order'], ['@original', self.cid])
+        self.assertEqual(second['channels'], [])
+        restored = channel_manager.rollback_operation_mapping('admin', {
+            'operation_id': self.operation_id, 'target_revision': first['revision'],
+            'expected_revision': second['revision']})
+        self.assertEqual(restored['display_order'], [self.cid, '@original'])
+        self.assertEqual(channel_manager.version(self.cid, 1, True)['secret'], 'private-secret')
+
+    def test_priority_accepts_cross_model_postgres(self):
+        """PG 路径：手动切换允许两侧模型 ID 不同；自动候补链仍然只收同契约渠道。"""
+        channel_manager.save('m3c-test', self.body)
+        other = 'm3c-other-' + uuid.uuid4().hex[:8]
+        channel_manager.save('m3c-test', dict(self.body, id=other, model='different-model'))
+        published = channel_manager.save_operation_mapping('m3c-test', {
+            'operation_id': 'image.xiaole.text', 'state': 'managed',
+            'channels': [other, self.cid], 'expected_revision': 0,
+        })
+        self.assertEqual([other, self.cid], published['channels'])
+        self.assertEqual(other, published['channel'])
+        # 每条渠道各自保留自己的实际模型 ID，没有为了通过比较而被改写成同一个字符串
+        self.assertEqual('different-model', channel_manager.version(other)['model'])
+        self.assertEqual(self.body['model'], channel_manager.version(self.cid)['model'])
+        # 自动故障切换本次不放宽：不同模型的渠道不进入同一条自动重试链
+        from content_domains.function_registry import operation
+        _, candidates, skipped = channel_manager._managed_image_route(
+            {'channels': [other, self.cid]}, operation('image.xiaole.text'))
+        self.assertEqual([other], [c['id'] for c in candidates])
+        self.assertEqual([self.cid], [s['id'] for s in skipped])
+
+    def test_acceptance_holds_mapping_lock_until_job_commit(self):
+        started = threading.Event()
+        def publish():
+            started.set()
+            return channel_manager.save_operation_mapping('m3c-test', {
+                'operation_id': self.operation_id, 'state': 'paused',
+                'expected_revision': int((self.operation_before or {}).get('revision') or 0),
+            })
+        payload = {'_channel_binding': {'operation_id': self.operation_id}}
+        # Isolate acceptance's lock lifetime; actual publisher uses another PG connection.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.object(channel_store, '_confirm_acceptance', return_value=True):
+                with channel_store.acceptance_guard([payload]):
+                    future = executor.submit(publish)
+                    self.assertTrue(started.wait(2))
+                    with self.assertRaises(TimeoutError):
+                        future.result(timeout=.2)
+                self.assertEqual('paused', future.result(timeout=5)['state'])
+
     def test_notification_settings_roundtrip(self):
         settings = channel_manager.notification_settings()
         self.assertIn("enabled", settings)
@@ -559,6 +618,76 @@ class PostgresModeTest(_ChannelFixture):
         self.assertEqual(second["updated"], 0)
         self.assertEqual(channel_manager.version(self.cid, 1)["model"], "test-model")
         backfill.postgres.close_pool()  # 回填器用的池，测试结束即关
+
+    def test_task_failover_bookkeeping_matches_sqlite_semantics(self):
+        """PG 路径：未提交（排队中）的任务也能安全切换，且一个任务只保留一条运行记录。"""
+        channel_manager.save("admin", self.body)
+        backup_id = "m3c-bk-" + uuid.uuid4().hex[:8]
+        channel_manager.save("admin", dict(self.body, id=backup_id, name="备用图片渠道"))
+        ready = channel_manager.reserve(backup_id, "full")   # 切换目标必须有 24 小时完整测试证据
+        channel_manager.finish(ready, "passed", "artifact checked")
+        candidates = [
+            {"id": self.cid, "version": 1, "adapter": "openai_image", "model": "test-model"},
+            {"id": backup_id, "version": 1, "adapter": "openai_image", "model": "test-model"},
+        ]
+        binding = dict(
+            operation_id="image.xiaole.text", mapping_revision=1, **candidates[0],
+            front="", invocation_source="web", route_order=[self.cid, backup_id],
+            route_attempt=1, route_candidates=candidates)
+        rid = channel_manager.reserve(self.cid, "task", self.job_id,
+                                      channel_manager.version(self.cid),
+                                      execution_snapshot=binding)
+        # 并发/限流排队超时的任务从未提交供应商：queued 也必须允许记账，否则任务卡死在排队。
+        channel_manager.finish_task_failover_safe(
+            rid, "等待执行：渠道并发或限流等待超时，尚未提交供应商")
+        snapshot = channel_manager.prepare_task_failover(
+            rid, candidates[1], "渠道并发或限流等待超时，尚未提交供应商")
+        self.assertEqual(backup_id, snapshot["id"])
+        self.assertEqual(2, snapshot["route_attempt"])
+        self.assertEqual(self.cid, snapshot["attempts"][0]["channel"])
+        self.assertEqual("failed", snapshot["attempts"][0]["state"])
+        evidence = channel_manager.task_evidence(self.job_id)
+        self.assertEqual(backup_id, evidence["channel"])
+        self.assertEqual("queued", evidence["state"])
+        self.assertEqual("task", evidence["kind"])
+        self.assertTrue(evidence["id"])
+        with self._conn() as conn:
+            rows = conn.execute("SELECT id,state,detail FROM routing.runs WHERE job_id=%s",
+                                (self.job_id,)).fetchall()
+        self.assertEqual(1, len(rows))
+        self.assertEqual("queued", rows[0]["state"])
+        self.assertIn("安全切换到下一渠道", rows[0]["detail"])
+        # 没有新的失败就不允许再次切换（防止同一个失败被重复消费）
+        with self.assertRaises(ValueError):
+            channel_manager.prepare_task_failover(rid, candidates[0], "重复切换")
+
+    def test_failover_rejects_candidate_without_recent_full_test(self):
+        """PG 路径：采集后失去最近 24 小时完整测试证据的候选不能再接单。"""
+        channel_manager.save("admin", self.body)
+        backup_id = "m3c-nr-" + uuid.uuid4().hex[:8]
+        channel_manager.save("admin", dict(self.body, id=backup_id, name="备用-无证据"))
+        candidates = [
+            {"id": self.cid, "version": 1, "adapter": "openai_image", "model": "test-model"},
+            {"id": backup_id, "version": 1, "adapter": "openai_image", "model": "test-model"},
+        ]
+        binding = dict(
+            operation_id="image.xiaole.text", mapping_revision=1, **candidates[0],
+            front="", invocation_source="web", route_order=[self.cid, backup_id],
+            route_attempt=1, route_candidates=candidates)
+        rid = channel_manager.reserve(self.cid, "task", self.job_id,
+                                      channel_manager.version(self.cid),
+                                      execution_snapshot=binding)
+        channel_manager.finish(rid, "running", "提交供应商")
+        channel_manager.finish_task_failover_safe(rid, "供应商明确拒绝提交：HTTP 401")
+        with self.assertRaises(ValueError) as raised:
+            channel_manager.prepare_task_failover(rid, candidates[1], "供应商明确拒绝提交：HTTP 401")
+        self.assertIn("候选渠道缺少最近24小时通过的完整生成测试", str(raised.exception))
+        # 切换被拒后运行记录仍是 failed（不会半途改成 queued）
+        with self._conn() as conn:
+            state = conn.execute("SELECT state,channel FROM routing.runs WHERE id=%s",
+                                 (rid,)).fetchone()
+        self.assertEqual("failed", state["state"])
+        self.assertEqual(self.cid, state["channel"])
 
     def test_db_is_fail_closed_when_switched(self):
         with self.assertRaises(RuntimeError):

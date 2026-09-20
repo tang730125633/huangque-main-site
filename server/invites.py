@@ -871,9 +871,11 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
         JOIN users ie ON ie.id=rr.invitee_user_id
         WHERE %s""" % clause
     total = conn.execute("SELECT COUNT(*)" + base, args).fetchone()[0]
+    # 两个聚合列必须起别名：PostgreSQL 下未命名列都叫 coalesce，dict_row 会同名覆盖，
+    # 导致 sums[1] 越界（sqlite3.Row 位置索引才不会暴露这个问题）。
     sums = conn.execute(
-        "SELECT COALESCE(SUM(CASE WHEN rr.status='recorded' THEN rr.reward_points ELSE 0 END),0),"
-        "COALESCE(SUM(CASE WHEN rr.status='voided' THEN rr.reward_points ELSE 0 END),0)" + base,
+        "SELECT COALESCE(SUM(CASE WHEN rr.status='recorded' THEN rr.reward_points ELSE 0 END),0) AS recorded_points,"
+        "COALESCE(SUM(CASE WHEN rr.status='voided' THEN rr.reward_points ELSE 0 END),0) AS voided_points" + base,
         args,
     ).fetchone()
     rows = conn.execute(
@@ -886,7 +888,8 @@ def admin_reward_points(conn, filters=None, limit=100, offset=0):
                    "inviter_level_name": MEMBERSHIP_NAMES.get(row["inviter_level_snapshot"], ""),
                    "invitee_level_name": MEMBERSHIP_NAMES.get(row["invitee_level"], "")}
                   for row in rows],
-        "total": int(total), "recorded_points": int(sums[0]), "voided_points": int(sums[1]),
+        "total": int(total), "recorded_points": int(sums["recorded_points"]),
+        "voided_points": int(sums["voided_points"]),
         "limit": limit, "offset": offset,
     }
 

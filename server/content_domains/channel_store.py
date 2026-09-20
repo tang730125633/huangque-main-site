@@ -257,14 +257,14 @@ def save(actor, body):
                     config['parameters'] = validate(config, old_config['parameters'])
                 for mapping_row in conn.execute('SELECT config FROM routing.mappings').fetchall():
                     mapping = json.loads(mapping_row['config'])
-                    if (mapping.get('enabled') and cid in {mapping.get('channel'), mapping.get('backup')}
+                    if (mapping.get('enabled') and cid in mgr.mapping_channel_ids(mapping)
                             and mapping.get('kind') != mgr.ADAPTERS[config['adapter']]['kind']):
                         raise ValueError('该渠道仍被已启用映射使用，不能更改为不兼容协议；请先调整映射')
                 for mapping_row in conn.execute(
                         'SELECT operation_id,state,config FROM routing.operation_mappings').fetchall():
                     mapping = json.loads(mapping_row['config'])
                     if (mapping_row['state'] in {'shadow', 'managed'}
-                            and cid in {mapping.get('channel'), mapping.get('backup')}):
+                            and cid in mgr.mapping_channel_ids(mapping)):
                         from .function_registry import operation
                         try:
                             mgr._validate_operation_config(config, operation(mapping_row['operation_id']))
@@ -332,9 +332,11 @@ def _fetch_operation_mapping(conn, operation_id, revision=None):
             ).fetchone()
     if not row:
         return None
-    return dict(json.loads(row['config']), operation_id=row['operation_id'],
-                revision=row['revision'], state=row['state'], actor=row['actor'],
-                updated=row['updated'])
+    result = dict(json.loads(row['config']), operation_id=row['operation_id'],
+                  revision=row['revision'], state=row['state'], actor=row['actor'],
+                  updated=row['updated'])
+    result['channels'] = _mgr().mapping_channel_ids(result)
+    return result
 
 
 def operation_mapping(operation_id, revision=None, connection=None):
@@ -345,7 +347,12 @@ def operation_mapping(operation_id, revision=None, connection=None):
     return _fetch_operation_mapping(connection, operation_id, revision)
 
 
-def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None):
+def _mapping_channel(cid, contract_or_kind, require_enabled=False, connection=None):
+    """解析渠道当前配置并校验能否接该功能（PG）。
+
+    ``require_enabled=True`` 只额外要求渠道启用；完整生成测试的 24 小时时效不再是接单门槛，
+    仅保留在 ``_ready_candidate()``（自动故障切换前的复核）。
+    """
     mgr = _mgr()
     contract = contract_or_kind if isinstance(contract_or_kind, dict) else None
     kind = contract['channel_kind'] if contract else str(contract_or_kind)
@@ -376,16 +383,46 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
             mgr._validate_operation_config(cfg, contract)
         elif mgr.ADAPTERS[cfg['adapter']]['kind'] != kind:
             raise ValueError('功能与渠道能力不兼容')
-        if require_ready:
-            if not current['enabled']:
-                raise ValueError('主渠道尚未启用，不能发布为托管状态')
-            latest = conn.execute(_LATEST_FULL, (cid, current['version'])).fetchone()
-            if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
-                raise ValueError('发布托管前，当前渠道版本必须有最近24小时内通过的完整生成测试')
+        if require_enabled and not current['enabled']:
+            raise ValueError('渠道尚未启用，不能接单或发布为托管状态')
     finally:
         if owns_connection:
             _pool_instance().putconn(conn)
     return cfg
+
+
+def _ready_candidate(cid, connection=None):
+    """自动故障切换前的候选复核（PG）：存在、未回收、仍启用、且有最近 24 小时完整生成测试。
+
+    刻意不跟着手动切换放宽：自动切换在无人值守下把任务交给另一个渠道，仍然要求
+    最近 24 小时内有通过的完整生成测试。
+    """
+    mgr = _mgr()
+    cid = str(cid or '').strip()
+    if not cid:
+        raise ValueError('候选渠道无效')
+    owns_connection = connection is None
+    conn = connection or _pool_instance().getconn()
+    try:
+        current = conn.execute('SELECT version,enabled FROM routing.channels WHERE id=%s', (cid,)
+                               ).fetchone()
+        if not current:
+            raise ValueError('候选渠道不存在')
+        row = conn.execute('SELECT config FROM routing.versions WHERE channel=%s AND version=%s',
+                           (cid, current['version'])).fetchone()
+        if not row:
+            raise ValueError('候选渠道版本不存在')
+        if json.loads(row['config']).get('_lifecycle', {}).get('deleted'):
+            raise ValueError('候选渠道在回收站')
+        if not current['enabled']:
+            raise ValueError('候选渠道已停用')
+        latest = conn.execute(_LATEST_FULL, (cid, current['version'])).fetchone()
+        if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
+            raise ValueError('候选渠道缺少最近24小时通过的完整生成测试')
+    finally:
+        if owns_connection:
+            _pool_instance().putconn(conn)
+    return True
 
 
 def save_operation_mapping(actor, body):
@@ -399,23 +436,29 @@ def save_operation_mapping(actor, body):
     state = str(body.get('state') or 'legacy').strip().lower()
     if state not in mgr.MAPPING_STATES:
         raise ValueError('映射状态必须为 legacy、shadow、managed 或 paused')
-    cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
+    channels = mgr._requested_mapping_channels(body)
     now = time.time()
     with _pool_instance().connection() as conn:
         with conn.transaction():
             _lock(conn, 'routing.operation_mapping:' + operation_id)
             if state in {'shadow', 'managed'}:
-                _mapping_channel(cid, contract, require_ready=state == 'managed', connection=conn)
-                if backup:
-                    if backup == cid:
-                        raise ValueError('备用渠道必须与主渠道不同')
-                    _mapping_channel(backup, contract, connection=conn)
+                if not channels:
+                    raise ValueError('请选择主渠道')
+                # 手动切换只看渠道自身能否接这个功能（存在 / 未回收 / 已启用 / 能力匹配），
+                # 不再要求候补与主渠道同名同协议同参数；每条渠道保留自己的模型 ID。
+                for target in channels:
+                    _mapping_channel(target, contract, require_enabled=True, connection=conn)
             else:
-                cid, backup = '', ''
+                channels = []
+            cid = channels[0] if channels else ''
+            backup = channels[1] if len(channels) > 1 else ''
             config = {
                 'kind': contract['channel_kind'], 'label': contract['name'],
-                'channel': cid, 'backup': backup,
+                'channel': cid, 'backup': backup, 'channels': channels,
             }
+            display_order = mgr._display_order(body, state, channels)
+            if display_order is not None:
+                config['display_order'] = display_order
             current = conn.execute(
                 'SELECT revision FROM routing.operation_mappings WHERE operation_id=%s',
                 (operation_id,),
@@ -460,7 +503,8 @@ def rollback_operation_mapping(actor, body):
         raise ValueError('历史映射版本不存在')
     return save_operation_mapping(actor, {
         'operation_id': operation_id, 'state': old['state'],
-        'channel': old.get('channel') or '', 'backup': old.get('backup') or '',
+        'channels': _mgr().mapping_channel_ids(old),
+        'display_order': old.get('display_order'),
         'expected_revision': body.get('expected_revision'),
     })
 
@@ -603,9 +647,17 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
             })
         return _legacy_capture(kind, clean, preparation)
     from .function_registry import operation
-    cfg = _mapping_channel(cid, operation(operation_id) or mapping['kind'], require_ready=True)
+    contract = operation(operation_id) or mapping['kind']
+    route_candidates, route_skipped, pricing = [], [], None
+    if kind == 'image':
+        pricing, route_candidates, route_skipped = mgr._managed_image_route(
+            mapping, contract)
+        cfg = version(route_candidates[0]['id'], route_candidates[0]['version'])
+    else:
+        cfg = _mapping_channel(cid, contract, require_enabled=True)
+        pricing = cfg
     from .channel_parameters import apply
-    clean, _ = apply(cfg, clean, required=not preparation)
+    clean, _ = apply(pricing, clean, required=not preparation)
     from .channel_runtime import validate_payload
     validate_payload(cfg, clean)
     clean['_channel_binding'] = {
@@ -614,10 +666,18 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
         'model': cfg['model'], 'front': mgr._front(kind, clean),
         'invocation_source': source,
     }
+    if route_candidates:
+        clean['_channel_binding'].update({
+            'pricing_id': pricing['id'], 'pricing_version': pricing['version'],
+            'route_order': mgr.mapping_channel_ids(mapping),
+            'route_candidates': route_candidates, 'route_skipped': route_skipped,
+            'route_attempt': 1, 'attempts': [],
+        })
     return clean
 
 
 def _confirm_acceptance(connection, payload):
+    mgr = _mgr()
     binding = payload.get('_channel_binding') if isinstance(payload, dict) else None
     if not isinstance(binding, dict) or not binding.get('operation_id'):
         return True
@@ -625,15 +685,27 @@ def _confirm_acceptance(connection, payload):
     from .function_registry import operation
     contract = operation(operation_id)
     mapping = operation_mapping(operation_id, connection=connection)
+    route_order = [str(item) for item in binding.get('route_order', []) if str(item or '')]
+    candidates = binding.get('route_candidates') or []
     if (not mapping or mapping.get('state') != 'managed'
             or int(mapping.get('revision') or 0) != int(binding.get('mapping_revision') or 0)
-            or mapping.get('channel') != binding.get('id')):
+            or (route_order and mgr.mapping_channel_ids(mapping) != route_order)
+            or (not route_order and mapping.get('channel') != binding.get('id'))):
         raise ValueError('功能映射已变化，请刷新后重新提交')
-    cfg = _mapping_channel(binding.get('id'), contract, require_ready=True, connection=connection)
-    if (int(cfg['version']) != int(binding.get('version') or 0)
-            or cfg.get('adapter') != binding.get('adapter')
-            or cfg.get('model') != binding.get('model')):
-        raise ValueError('渠道版本已变化，请刷新后重新提交')
+    snapshots = candidates or [mgr._route_candidate(binding)]
+    if candidates:
+        pricing = _mapping_channel(
+            binding.get('pricing_id') or route_order[0], contract, connection=connection)
+        if int(pricing['version']) != int(binding.get('pricing_version') or 0):
+            raise ValueError('渠道版本已变化，请刷新后重新提交')
+    for snapshot in snapshots:
+        try:
+            cfg = _mapping_channel(
+                snapshot.get('id'), contract, require_enabled=True, connection=connection)
+        except ValueError:
+            raise ValueError('渠道版本已变化，请刷新后重新提交') from None
+        if any(cfg.get(key) != snapshot.get(key) for key in mgr.ROUTE_CANDIDATE_FIELDS):
+            raise ValueError('渠道版本已变化，请刷新后重新提交')
     return True
 
 
@@ -655,6 +727,10 @@ def acceptance_guard(payloads):
         return
     conn = _pool_instance().getconn()
     try:
+        # Serialize mapping publication with acceptance until the job commits.
+        # Sorted acquisition also prevents inverted-order multi-job deadlocks.
+        for operation_id in sorted({str(p['_channel_binding']['operation_id']) for p in managed}):
+            _lock(conn, 'routing.operation_mapping:' + operation_id)
         for payload in managed:
             _confirm_acceptance(conn, payload)
         yield
@@ -753,12 +829,12 @@ def mutate(actor, body):
             mappings.extend(json.loads(r['config']) for r in conn.execute(
                 "SELECT config FROM routing.operation_mappings WHERE state IN ('shadow','managed')")
                 .fetchall())
-            references = [m for m in mappings if cid in {m.get('channel'), m.get('backup')}]
+            references = [m for m in mappings if cid in mgr.mapping_channel_ids(m)]
             if action == 'delete':
                 if row['enabled']:
                     raise ValueError('请先停用渠道，再移入回收站')
                 if references:
-                    raise ValueError('渠道仍被主/备用映射引用，请先切换或删除关联映射')
+                    raise ValueError('渠道仍被渠道优先级映射引用，请先切换或删除关联映射')
                 if conn.execute(
                         "SELECT 1 FROM routing.runs WHERE channel=%s AND state IN "
                         "('queued','running','unknown') LIMIT 1", (cid,)).fetchone():
@@ -849,9 +925,13 @@ def overview():
                 'WHERE operation_id=%s ORDER BY revision DESC LIMIT 20',
                 (mapping['operation_id'],)).fetchall()]
         runs = [dict(r) for r in conn.execute(
-            'SELECT r.*,s.operation_id,s.mapping_revision,s.invocation_source '
+            'SELECT r.*,s.operation_id,s.mapping_revision,s.invocation_source,s.snapshot '
             'FROM routing.runs r LEFT JOIN routing.run_snapshots s ON s.run_id=r.id '
             'ORDER BY r.started DESC LIMIT 100').fetchall()]
+        for run in runs:
+            raw_snapshot = run.pop('snapshot', None)
+            if raw_snapshot:
+                run['execution_snapshot'] = json.loads(raw_snapshot)
         events = [dict(r) for r in conn.execute(
             'SELECT * FROM routing.events ORDER BY created DESC LIMIT 30').fetchall()]
         for channel in channels:
@@ -895,11 +975,14 @@ def overview():
                     channel['checks'].append(dict(check_row))
     from .function_registry import operation_catalog
     operations = operation_catalog(channel_eligible=True)
+    # 与 SQLite 路径一致：全量目录（含不可切换的）用于后台展示不可切换原因。
+    all_operations = operation_catalog()
     current = {item['operation_id']: item for item in operation_mappings}
     for item in operations:
         item['mapping'] = current.get(item['operation_id'])
     return {'items': channels, 'mappings': mappings, 'operation_mappings': operation_mappings,
-            'operations': operations, 'runs': runs, 'events': events, 'adapters': mgr.ADAPTERS,
+            'operations': operations, 'all_operations': all_operations,
+            'runs': runs, 'events': events, 'adapters': mgr.ADAPTERS,
             'legacy_controls': _legacy_states(), 'legacy_scopes': LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone': 'Asia/Shanghai',
             'stats_window': '最近24小时'}
@@ -952,10 +1035,7 @@ def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
             )
             binding = execution_snapshot if isinstance(execution_snapshot, dict) else {}
             if binding:
-                public_snapshot = {key: binding.get(key) for key in (
-                    'operation_id', 'mapping_revision', 'id', 'version', 'adapter',
-                    'model', 'front', 'invocation_source',
-                ) if binding.get(key) not in (None, '')}
+                public_snapshot = mgr.public_execution_snapshot(binding)
                 conn.execute(
                     'INSERT INTO routing.run_snapshots'
                     '(run_id,operation_id,mapping_revision,invocation_source,snapshot) '
@@ -978,6 +1058,91 @@ def finish(rid, state, detail, provider_id=''):
             )
 
 
+def finish_task_failover_safe(rid, detail):
+    now = time.time()
+    with _pool_instance().connection() as conn:
+        with conn.transaction():
+            row = conn.execute(
+                "SELECT r.kind,r.state,r.provider_id,s.snapshot FROM routing.runs r "
+                "JOIN routing.run_snapshots s ON s.run_id=r.id WHERE r.id=%s FOR UPDATE",
+                (rid,),
+            ).fetchone()
+            if (not row or row['kind'] != 'task'
+                    or row['state'] not in {'queued', 'running'} or row['provider_id']):
+                # queued 也在允许范围内：并发/限流排队超时的任务从未提交供应商，同样是「未受理」。
+                raise ValueError('当前任务状态不允许自动切换渠道')
+            snapshot = json.loads(row['snapshot'])
+            snapshot['failover_safe'] = True
+            snapshot['failure_reason'] = str(detail or '')[:300]
+            conn.execute(
+                "UPDATE routing.runs SET state='failed',detail=%s,updated=%s,"
+                "duration=%s-started WHERE id=%s",
+                (str(detail or '')[:300], now, now, rid),
+            )
+            conn.execute(
+                'UPDATE routing.run_snapshots SET snapshot=%s WHERE run_id=%s',
+                (json.dumps(snapshot, ensure_ascii=False), rid),
+            )
+
+
+def prepare_task_failover(rid, candidate, reason=''):
+    mgr = _mgr()
+    candidate = mgr._route_candidate(candidate if isinstance(candidate, dict) else {})
+    if not candidate.get('id') or not candidate.get('version'):
+        raise ValueError('候选渠道快照无效')
+    now = time.time()
+    with _pool_instance().connection() as conn:
+        with conn.transaction():
+            row = conn.execute(
+                "SELECT r.*,s.snapshot FROM routing.runs r "
+                "JOIN routing.run_snapshots s ON s.run_id=r.id WHERE r.id=%s FOR UPDATE",
+                (rid,),
+            ).fetchone()
+            if (not row or row['kind'] != 'task' or row['state'] != 'failed'
+                    or row['provider_id']):
+                raise ValueError('当前任务状态不允许自动切换渠道')
+            snapshot = json.loads(row['snapshot'])
+            if not snapshot.get('failover_safe'):
+                raise ValueError('上一渠道结果未确认，禁止自动切换')
+            expected = next((item for item in snapshot.get('route_candidates', [])
+                             if item.get('id') == candidate['id']), None)
+            if not expected or any(expected.get(key) != candidate.get(key)
+                                   for key in mgr.ROUTE_CANDIDATE_FIELDS):
+                raise ValueError('候选渠道不在任务受理快照中')
+            cfg = _fetch_version(conn, candidate['id'], candidate['version'],
+                                 missing_revision_message='候选渠道版本不存在')
+            _ready_candidate(candidate['id'], connection=conn)   # 采集后被停用/回收/证据过期的候选不再接单
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM routing.runs WHERE channel=%s "
+                "AND state='queued' AND id!=%s", (candidate['id'], rid),
+            ).fetchone()['n']
+            if pending >= max(1, cfg['queue_limit']):
+                raise ValueError('候选渠道等待队列已满')
+            attempts = list(snapshot.get('attempts') or [])
+            attempts.append({
+                'attempt': int(snapshot.get('route_attempt') or len(attempts) + 1),
+                'channel': row['channel'], 'version': row['version'],
+                'state': 'failed', 'detail': str(row['detail'] or '')[:300],
+            })
+            snapshot.update(candidate)
+            snapshot['route_attempt'] = len(attempts) + 1
+            snapshot['switch_reason'] = str(
+                reason or snapshot.get('failure_reason') or '')[:300]
+            snapshot['attempts'] = attempts[:mgr.MAX_MAPPING_CHANNELS]
+            snapshot.pop('failover_safe', None)
+            snapshot.pop('failure_reason', None)
+            conn.execute(
+                "UPDATE routing.runs SET channel=%s,version=%s,state='queued',detail=%s,"
+                "updated=%s,duration=NULL,provider_id='' WHERE id=%s",
+                (candidate['id'], candidate['version'], '安全切换到下一渠道', now, rid),
+            )
+            conn.execute(
+                'UPDATE routing.run_snapshots SET snapshot=%s WHERE run_id=%s',
+                (json.dumps(snapshot, ensure_ascii=False), rid),
+            )
+    return snapshot
+
+
 # --------------------------------------------------------------------------- #
 # 任务证据与恢复态（读不到证据绝不等于失败）
 # --------------------------------------------------------------------------- #
@@ -985,7 +1150,8 @@ def finish(rid, state, detail, provider_id=''):
 def task_evidence(job_id):
     with _pool_instance().connection() as conn:
         row = conn.execute(
-            "SELECT r.channel,r.version,r.state,r.provider_id,s.operation_id,s.mapping_revision,"
+            "SELECT r.id,r.kind,r.channel,r.version,r.state,r.provider_id,"
+            "s.operation_id,s.mapping_revision,"
             "s.invocation_source,s.snapshot FROM routing.runs r "
             "LEFT JOIN routing.run_snapshots s ON s.run_id=r.id "
             "WHERE r.kind IN ('task','shadow') AND r.job_id=%s "

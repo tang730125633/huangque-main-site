@@ -4042,6 +4042,8 @@ def accept_character_reference_attempt(db_factory, prepared, username):
         if existing:
             conn.rollback()
             return _character_reference_attempt_dict(existing)
+        from . import provider_config
+        frozen_payload = provider_config.prepare_job_payload("image", prepared["payload"], username)
         project = conn.execute(
             "SELECT revision,stage,point_budget FROM short_drama_projects "
             "WHERE id=? AND username=? AND deleted=0",
@@ -4101,7 +4103,7 @@ def accept_character_reference_attempt(db_factory, prepared, username):
                 prepared["idempotency_key"], request["project_id"],
                 request["character_key"], request["revision"],
                 prepared["snapshot_hash"], int(prepared["cost"]),
-                json.dumps(prepared["payload"], ensure_ascii=False), now, now,
+                json.dumps(frozen_payload, ensure_ascii=False), now, now,
             ),
         )
         conn.commit()

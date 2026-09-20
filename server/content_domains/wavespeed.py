@@ -56,8 +56,16 @@ class WaveSpeedProviderFailed(RuntimeError):
     """已有 prediction id，但供应商返回明确失败终态。"""
 
 
-def available():
-    return bool(WAVESPEED_KEY)
+def _credentials(config_ref=None):
+    from . import provider_config
+    return provider_config.job_credentials("video.tryon.fast", config_ref, WAVESPEED_KEY, WS_API)
+
+
+def available(config_ref=None):
+    if config_ref:
+        return bool(_credentials(config_ref)["credential"])
+    from . import provider_config
+    return bool(provider_config.credentials_for("video.tryon.fast", WAVESPEED_KEY, WS_API)["credential"])
 
 
 def _safe_text(value, limit=200):
@@ -125,8 +133,9 @@ def _opener():
     return urllib.request.build_opener()
 
 
-def _ws_req(method, url, body=None, timeout=60, classify_paid=False):
-    headers = {"Authorization": "Bearer " + WAVESPEED_KEY}
+def _ws_req(method, url, body=None, timeout=60, classify_paid=False, credential=None):
+    secret = WAVESPEED_KEY if credential is None else credential
+    headers = {"Authorization": "Bearer " + secret}
     data = None
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -137,8 +146,8 @@ def _ws_req(method, url, body=None, timeout=60, classify_paid=False):
             raw = r.read()
     except urllib.error.HTTPError as e:
         detail = (e.read() or b"").decode("utf-8", "replace")[:300]
-        if WAVESPEED_KEY:
-            detail = detail.replace(WAVESPEED_KEY, "***")
+        if secret:
+            detail = detail.replace(secret, "***")
         if classify_paid and method == "POST":
             error = WaveSpeedCreateOutcomeUnknown if e.code in TRANSIENT_HTTP_CODES - {429} else WaveSpeedRejected
             raise error("WaveSpeed超分提交失败: HTTP %s %s" % (e.code, detail)) from e
@@ -185,8 +194,19 @@ def _material_url(local_rel, private=False):
     return cos.upload(str(fp), key, private=private)
 
 
-def _run_and_wait(model_path, body, job_id=None):
-    r = _ws_req("POST", WS_API + model_path, body)
+def _run_and_wait(model_path, body, job_id=None, config_ref=None, credential=None, base_url=None):
+    # 托管渠道注入：直接用渠道自己的 Key 与线路，不再查 provider_config。
+    # 提交 / 轮询 / 产出解析完全复用下面同一段代码。
+    if credential is not None or base_url:
+        config = {"credential": credential,
+                  "url": (base_url or WS_API).rstrip("/"),
+                  "wired": credential is not None}
+    else:
+        config = _credentials(config_ref)
+    from functools import partial
+    request = partial(_ws_req, credential=config["credential"]) if config["wired"] else _ws_req
+    base = config["url"]
+    r = request("POST", base + model_path, body)
     if r.get("code") != 200:
         raise RuntimeError("WaveSpeed提交失败: %s" % json.dumps(r, ensure_ascii=False)[:200])
     data = r.get("data") or {}
@@ -194,12 +214,12 @@ def _run_and_wait(model_path, body, job_id=None):
     if not pid:
         raise RuntimeError("WaveSpeed未返回任务id: %s" % json.dumps(r, ensure_ascii=False)[:200])
     _phase(job_id, "ws_running", provider_video_id=pid)
-    poll_url = (data.get("urls") or {}).get("get") or (WS_API + "/predictions/%s/result" % pid)
+    poll_url = base + "/predictions/%s/result" % urllib.parse.quote(str(pid), safe="")
     deadline = time.time() + WS_DEADLINE
     while time.time() < deadline:
         time.sleep(WS_POLL_INTERVAL)
         _phase(job_id, "ws_running")  # 心跳
-        res = (_ws_req("GET", poll_url) or {}).get("data") or {}
+        res = (request("GET", poll_url) or {}).get("data") or {}
         status = str(res.get("status") or "").lower()
         if status == "completed":
             outs = res.get("outputs") or []
@@ -219,9 +239,14 @@ def run_seedvr2(
     heartbeat=None,
     now=None,
     sleep=None,
+    config_ref=None,
 ):
     """创建一次或恢复同一条 SeedVR2 prediction；恢复路径永不 POST。"""
-    if not WAVESPEED_KEY:
+    from functools import partial
+    config = _credentials(config_ref)
+    request = partial(_ws_req, credential=config["credential"]) if config["wired"] else _ws_req
+    base = config["url"]
+    if not config["credential"]:
         raise ValueError("WaveSpeed 超分未配置（WAVESPEED_API_KEY）")
     now = now or time.time
     sleep = sleep or time.sleep
@@ -230,9 +255,9 @@ def run_seedvr2(
         video_url = str(video_url or "").strip()
         if not video_url.startswith(("http://", "https://")):
             raise ValueError("WaveSpeed 超分输入必须是公网视频 URL")
-        response = _ws_req(
+        response = request(
             "POST",
-            WS_API + WS_SEEDVR2,
+            base + WS_SEEDVR2,
             {"video": video_url, "target_resolution": "1080p"},
             timeout=120,
             classify_paid=True,
@@ -268,14 +293,14 @@ def run_seedvr2(
             on_submitted(pid)
 
     poll_url = (
-        WS_API + "/predictions/%s/result"
+        base + "/predictions/%s/result"
         % urllib.parse.quote(pid, safe="")
     )
     deadline = now() + WS_DEADLINE
     while now() < deadline:
         if heartbeat:
             heartbeat(job_id, "seedance_upscale_running")
-        response = _ws_req(
+        response = request(
             "GET", poll_url, timeout=60, classify_paid=True
         )
         if not isinstance(response, dict):
@@ -335,17 +360,26 @@ def _download_to_lib(url, prefix):
     return fn
 
 
-def generate_tryon(person_image_file, clothes_file, duration, job_id=None):
-    """线路二·换装：人物图 + 衣服图 → outfit-tryon。返回 {video_file, video_url, provider}。"""
+def generate_tryon(person_image_file, clothes_file, duration, job_id=None, config_ref=None,
+                   credential=None, base_url=None, material_resolver=None):
+    """线路二·换装：人物图 + 衣服图 → outfit-tryon。返回 {video_file, video_url, provider}。
+
+    ``credential`` / ``base_url`` 由托管渠道注入；
+    ``material_resolver`` 供隔离测试替换素材上传（生产不传）。
+    """
     _phase(job_id, "ws_uploading")
-    person_url = _material_url(person_image_file)
-    clothes_url = _material_url(clothes_file)
+    resolve = material_resolver or _material_url
+    person_url = resolve(person_image_file)
+    clothes_url = resolve(clothes_file)
     dur = max(5, min(15, int(duration or 5)))
     _phase(job_id, "ws_running")
     generated = _run_and_wait(
         WS_TRYON,
         {"image": person_url, "clothes_images": [clothes_url], "duration": dur},
         job_id=job_id,
+        config_ref=config_ref,
+        credential=credential,
+        base_url=base_url,
     )
     out_url = generated["output_url"]
     _phase(job_id, "downloading")

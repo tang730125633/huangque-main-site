@@ -911,13 +911,16 @@ def validate_payload(
         trusted_frozen=trusted_frozen_execution,
         video_only=video_only,
     )
+    # 素材策略（2026-09-12 生产实锤 #8482 + #8629 合并定稿）：
+    # 带本人素材 -> owned_public：渲染端只在该策略下接受本人素材（ref-* 最多 3 份、
+    # 1~2 份 Pexels 补齐）；带素材仍判 shared 会先过 preflight 再被 /v1/jobs 拒
+    # （「需要 5 个」，#8482）。
+    # 无本人素材 -> shared：一律走本地素材库，绝不绕去 Pexels 公网（#8629 因此
+    # 偶发失败；老板定调「不要再让他走公网了，我们优先走素材库」）。
     material_policy = (
-        MATERIAL_POLICY_SHARED if allow_shared_materials is not False
-        else MATERIAL_POLICY_OWNED_PUBLIC
+        MATERIAL_POLICY_OWNED_PUBLIC if user_materials
+        else MATERIAL_POLICY_SHARED
     )
-    if material_policy == MATERIAL_POLICY_OWNED_PUBLIC and template.get("bgm_mode") != "bound":
-        bgm = False
-        bgm_volume = None
     candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
@@ -927,6 +930,9 @@ def validate_payload(
     # 素材范围（2026-09-17）：受限账号（一次性邀请码注册）只允许公网素材；
     # 标记只在受限时出现，其余账号的候选载荷与历史逐字节一致。
     if public_only_materials:
+        # 2026-09-17 临时硬闸（主 Agent）：渲染节点侧的公网过滤尚未全量部署，实测受限账号
+        # 仍会拿到公司素材（job 9303 实锤）。节点全部升级前，受限账号在入口直接明确报错，绝不生成。
+        raise ValueError("当前可用公共素材不足，暂时无法生成，请稍后重试")
         candidate["material_scope"] = MATERIAL_SCOPE_PUBLIC_ONLY
     if user_materials:
         candidate["user_materials"] = user_materials
@@ -1043,7 +1049,7 @@ def validate_payload(
                 )
             candidate["semantic_layout"] = semantic_layout
         except MatrixTemplateHTTPError as exc:
-            if exc.status == 400:
+            if exc.status in (400, 409):
                 raise ValueError(str(exc)) from exc
             raise feature_flags.FeatureDisabled(
                 "模板成片服务暂不可用，请稍后重试"
@@ -1066,7 +1072,7 @@ def validate_payload(
         try:
             response = _request("POST", "/v1/preflight", candidate, timeout=10)
         except MatrixTemplateHTTPError as exc:
-            if exc.status == 400:
+            if exc.status in (400, 409):
                 raise ValueError(str(exc)) from exc
             raise feature_flags.FeatureDisabled(
                 "模板成片服务暂不可用，请稍后重试"
@@ -1129,7 +1135,7 @@ def _media_probe(path, timeout=30):
         completed = run_process(
             [
                 "ffprobe", "-v", "error", "-show_entries",
-                "format=duration:stream=codec_type,codec_name,width,height",
+                "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,color_primaries,color_transfer,color_space,color_range",
                 "-of", "json", str(path),
             ],
             check=True, capture_output=True, text=True,
@@ -1274,6 +1280,15 @@ def _prepare_voiceover_audio(job_id, username, voiceover, batch_id, deadline_at)
     return prepared
 
 
+def _valid_template_video_codec(stream):
+    if stream.get("color_transfer") in {"arib-std-b67", "smpte2084"}:
+        return (stream.get("codec_name") == "hevc"
+                and stream.get("pix_fmt") == "yuv420p10le"
+                and stream.get("color_primaries") == "bt2020"
+                and stream.get("color_space") == "bt2020nc")
+    return stream.get("codec_name") == "h264"
+
+
 def _mux_voiceover(
         video_file, voiceover, deadline_at, *, bgm=False,
         bgm_volume=DEFAULT_VOICEOVER_BGM_VOLUME):
@@ -1282,15 +1297,16 @@ def _mux_voiceover(
     duration = float(voiceover["duration"])
     temporary = video.with_name(video.stem + ".voiceover.part.mp4")
     temporary.unlink(missing_ok=True)
+    source_streams, _ = _media_probe(video, timeout=_remaining_budget(deadline_at))
+    source_video = next((s for s in source_streams if s.get("codec_type") == "video"), {})
+    if not _valid_template_video_codec(source_video):
+        raise MatrixTemplateProviderFailed("模板成片视频色彩格式无效")
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-stream_loop", "-1", "-i", str(video), "-i", str(audio),
     ]
     if bgm:
         volume = _normalize_bgm_volume(bgm_volume)
-        source_streams, _ = _media_probe(
-            video, timeout=_remaining_budget(deadline_at),
-        )
         if not any(item.get("codec_type") == "audio" for item in source_streams):
             raise MatrixTemplateProviderFailed("模板成片背景音乐音轨缺失")
         command.extend([
@@ -1328,7 +1344,11 @@ def _mux_voiceover(
         output_size = temporary.stat().st_size
         if (
             len(video_streams) != 1 or len(audio_streams) != 1
-            or video_streams[0].get("codec_name") != "h264"
+            or not _valid_template_video_codec(video_streams[0])
+            or any(video_streams[0].get(key) != source_video.get(key) for key in (
+                "codec_name", "pix_fmt", "color_primaries", "color_transfer",
+                "color_space", "color_range",
+            ))
             or audio_streams[0].get("codec_name") != "aac"
             or (video_streams[0].get("width"), video_streams[0].get("height"))
                 != (1080, 1920)
@@ -1753,6 +1773,8 @@ def _generate(payload):
                 "file_size": file_size,
                 "material_manifest": result.get("material_manifest") or [],
             }
+            if isinstance(result.get("color_profile"), dict):
+                response["color_profile"] = dict(result["color_profile"])
             if voiceover:
                 response["voiceover"] = {
                     "enabled": True,

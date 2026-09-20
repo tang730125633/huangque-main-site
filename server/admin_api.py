@@ -57,10 +57,13 @@ channel_parameters = import_module(_DOMAIN_PACKAGE + ".channel_parameters")
 frontend_channel_matrix = import_module(_DOMAIN_PACKAGE + ".frontend_channel_matrix")
 task_termination = import_module(_DOMAIN_PACKAGE + ".task_termination")
 channel_runtime = import_module(_DOMAIN_PACKAGE + ".channel_runtime")
+channel_latency = import_module(_DOMAIN_PACKAGE + ".channel_latency")
 egress = import_module(_DOMAIN_PACKAGE + ".egress")
 feature_flags = import_module(_DOMAIN_PACKAGE + ".feature_flags")
 function_registry = import_module(_DOMAIN_PACKAGE + ".function_registry")
 provider_keys = import_module(_DOMAIN_PACKAGE + ".provider_keys")
+# 环境变量型线路的「后台覆盖配置」：版本化存储 + 统一解析入口（PR #1608）。
+provider_config = import_module(_DOMAIN_PACKAGE + ".provider_config")
 # M3D：admin_config.db 的 PostgreSQL 存储层。默认 HQ_ADMIN_CONFIG_STORE=sqlite，
 # 所有 SQLite 路径逐字节保留；只有下面明确标注的表在 postgres 模式下改走本模块。
 admin_config_store = import_module(_DOMAIN_PACKAGE + ".admin_config_store")
@@ -213,8 +216,8 @@ SERVICES = [
         "name": "小探深采服务(抖音下载/ASR)",
         "port": 8501,
         "service_file": "服务器 systemd: xiaotan(docker)",
-        # 只监听 docker 网桥 172.17.0.1,探 127.0.0.1 会误报离线(hq-monitor 的老坑)
-        "health_url": "http://172.17.0.1:8501/docs",
+        # 2026-09-19 起监听 127.0.0.1（config.yaml Host_IP），探 127.0.0.1 正确
+        "health_url": "http://127.0.0.1:8501/docs",
     },
 ]
 
@@ -1106,6 +1109,8 @@ def init_db():
     pricing.init_db()
     if provider_keys is not None:
         provider_keys.init_db()
+    if provider_config is not None and provider_config.wiring_enabled():
+        provider_config.init_db()
     if short_drama_lipsync_rollout is not None:
         short_drama_lipsync_rollout.init_db(lipsync_db)
     if short_drama_lipsync_observability is not None:
@@ -2082,6 +2087,78 @@ def _conv_scan_sessions():
     _CONV_SCAN_CACHE["ts"] = now
     _CONV_SCAN_CACHE["payload"] = payload
     return payload
+
+
+_IP12_SID_RE = re.compile(r"^[0-9a-fA-F]{8,64}$")
+IP12_SESSION_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _ip12_session_path(sid):
+    """把会话号解析成会话文件路径；只接受十六进制号，并确认解析后未跳出会话目录。"""
+    sid = str(sid or "").strip()
+    if not _IP12_SID_RE.match(sid):
+        raise ValueError("会话号不合法")
+    root = IP12_SESSION_DIR.resolve()
+    candidate = (IP12_SESSION_DIR / ("v4-%s.json" % sid))
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        raise ValueError("会话号不合法")
+    if resolved.parent != root:
+        raise ValueError("会话号不合法")
+    if not resolved.is_file():
+        raise ValueError("会话不存在")
+    if resolved.stat().st_size > IP12_SESSION_MAX_BYTES:
+        raise ValueError("会话文件过大，已拒绝读取")
+    return resolved
+
+
+def conversation_session(sid, include_system=False, limit=2000):
+    """只读导出单个 IP12 会话的对话内容（role / content / created_at）。
+
+    默认跳过 system 消息（那是 20KB 的内部提示词，不是对话内容）。
+    """
+    path = _ip12_session_path(sid)
+    with open(path, "r", encoding="utf-8") as handle:
+        doc = json.load(handle)
+    if not isinstance(doc, dict):
+        raise ValueError("会话文件格式异常")
+    main = doc.get("main") or []
+    meta = doc.get("main_meta") or []
+    owner = doc.get("owner") or {}
+    messages = []
+    for index, item in enumerate(main):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        if role == "system" and not include_system:
+            continue
+        created = None
+        if index < len(meta) and isinstance(meta[index], dict):
+            created = meta[index].get("created_at")
+        messages.append({
+            "seq": len(messages) + 1,
+            "role": role,
+            "content": str(item.get("content") or ""),
+            "created_at": int(created) if created else None,
+        })
+    total = len(messages)
+    truncated = False
+    try:
+        cap = int(limit)
+    except (TypeError, ValueError):
+        cap = 2000
+    if cap > 0 and total > cap:
+        messages = messages[:cap]
+        truncated = True
+    return {
+        "sid": str(sid),
+        "username": str(owner.get("username") or ""),
+        "total_messages": total,
+        "returned_messages": len(messages),
+        "truncated": truncated,
+        "messages": messages,
+    }
 
 
 def conversation_stats(days=7, user=""):
@@ -3165,6 +3242,87 @@ def channel_workspace_overview():
     return result
 
 
+def provider_config_admin_snapshot():
+    """后台读取：每个目标线路的配置来源、版本、密钥是否配置（不含明文）+ 生效状态。"""
+    items = []
+    for spec in provider_config.targets():
+        target_id = spec["target_id"]
+        try:
+            st = provider_config.status(target_id)
+            eff = provider_config.effective_status(target_id)
+        except provider_config.ProviderConfigUnavailable as exc:
+            items.append({**spec, "available": False, "editable": False, "reason": str(exc)})
+            continue
+        items.append({
+            **spec,
+            "available": True,
+            "editable": spec["editable"] and provider_config.wiring_enabled(target_id),
+            "reason": spec.get("deprecated_reason") or ("" if provider_config.wiring_enabled(target_id) else "此服务尚未启用该线路的在线配置"),
+            "source": st["source"],
+            "version": st["version"],
+            "url": st["url"],
+            "url_default": st["url_default"],
+            "key_present": st["key_present"],
+            "key_last4": st["key_last4"],
+            "effective": eff,
+        })
+    return {"ok": True, "items": items, "vault_ready": provider_config.vault_ready()}
+
+
+def provider_config_save_draft(actor, body):
+    return provider_config.save_draft(
+        body.get("target_id"),
+        url=body.get("url"),
+        secret=body.get("secret"),
+        actor=actor,
+        reason=body.get("reason") or "",
+    )
+
+
+def provider_config_validate(actor, body):
+    return provider_config.validate_draft(
+        body.get("target_id"), int(body.get("version") or 0), actor=actor)
+
+
+def provider_config_publish(actor, body):
+    return provider_config.publish(
+        body.get("target_id"),
+        int(body.get("version") or 0),
+        expected_seq=body.get("expected_version"),
+        op_id=body.get("op_id"),
+        actor=actor,
+    )
+
+
+def provider_config_rollback(actor, body):
+    return provider_config.rollback(
+        body.get("target_id"),
+        expected_seq=body.get("expected_version"),
+        op_id=body.get("op_id"),
+        actor=actor,
+        to_seq=body.get("to_version"),
+    )
+
+
+def provider_config_runtime(actor, body):
+    return provider_config.effective_status(body.get("target_id"))
+
+
+def provider_config_reveal(actor, body):
+    """查看指定版本明文；写审计，不返回给未经确认的页面。"""
+    target_id = body.get("target_id")
+    version = int(body.get("version") or 0)
+    out = provider_config.reveal(target_id, version, actor=actor)
+    try:
+        admin_config_store.write_audit(
+            actor, "provider_config.reveal", "%s#%s" % (target_id, version),
+            "{}", int(__import__("time").time()),
+        ) if admin_config_store.enabled() else None
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def reveal_channel_secret(actor, body):
     """管理员按需查看渠道密钥明文；每次调用必写审计，前端 5 秒后自行隐藏。"""
     cid = str(body.get('id') or '').strip()
@@ -3379,8 +3537,11 @@ def _tail_lines(path, max_bytes=2 * 1024 * 1024):
     return lines
 
 
-def _collect_request_entries(limit, status="", q="", include_noise=False):
-    """采集 nginx /api/ 请求 → (按时间倒序的 [(排序键, item)], 错误提示)。已做用户/功能反查。"""
+def _collect_request_entries(limit, status="", q="", include_noise=False, since=None):
+    """采集 nginx /api/ 请求 → (按时间倒序的 [(排序键, item)], 错误提示)。已做用户/功能反查。
+
+    since 非空时只保留该时间戳之后的请求；日常调用不传（HTTP 行按日志尾部“最近一段”呈现）。
+    """
     entries, message = [], None
     existing = [p for p in NGINX_ACCESS_LOGS if p.exists()]
     if not existing:
@@ -3417,6 +3578,11 @@ def _collect_request_entries(limit, status="", q="", include_noise=False):
             if q and q not in path and q not in request_id and q not in hq_code:
                 continue
             sort_key, disp = _parse_log_time(m.group("time"))
+            if since is not None and sort_key != (0, 0, 0, 0, 0, 0):
+                # nginx 日志时间与服务器同区；“今日”等窗口必须同样约束 HTTP 行，
+                # 否则改范围只有任务在变、请求不变。
+                if int(time.mktime(tuple(sort_key) + (0, 0, -1))) < int(since):
+                    continue
             jid_match = JOB_PATH_RE.match(path)
             entries.append(
                 (
@@ -3494,11 +3660,13 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False, user=""):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0, attributed=False, user="", kinds=""):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
     source:   '' | job | http
+    kinds:    逗号分隔的功能键（与看板 high_failure 的 kind 同一口径，经 _operation_feature_key 映射），
+              非空时只保留命中的任务行（HTTP 行没有功能键，会被排除）
     """
     limit = max(1, min(int(limit or 200), 100))
     offset = max(0, int(offset or 0))
@@ -3508,11 +3676,21 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
     merged, message = [], None
     source_limit = None
     user = str(user or "").strip()
+    kind_filter = {k.strip().lower() for k in str(kinds or "").split(",") if k.strip()}
+    since = _activity_since(days)
+    try:
+        raw_days = int(days)
+    except (TypeError, ValueError):
+        raw_days = 7
+    # HTTP 行取自 nginx 日志尾部，天然只有最近一段；只有明确要求“今日”(days<=0) 时才
+    # 再按窗口裁剪。其余情况保持既有的 7/30 天口径不变（HTTP 行不受 days 约束）。
+    http_since = since if raw_days <= 0 else None
 
-    if source in ("", "http") and category != "running":
-        # 成功/失败下推到采集层，避免"失败行被截断挤掉"
+    if source in ("", "http") and category != "running" and not kind_filter:
+        # 成功/失败下推到采集层，避免“失败行被截断挤掉”
         entries, message = _collect_request_entries(
-            source_limit, status=category if category in ("ok", "fail") else "", include_noise=include_noise
+            source_limit, status=category if category in ("ok", "fail") else "",
+            include_noise=include_noise, since=http_since,
         )
         for key, it in entries:
             cat = "ok" if it["status"] < 400 else "fail"
@@ -3602,6 +3780,19 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             continue
         if attributed and it.get("user") in (None, "", "-"):
             continue
+        if kind_filter:
+            # 与看板 high_failure 同口径：普通任务走 _operation_feature_key（含 xiaole_video
+            # 按渠道归并）；短剧 provider 镜头在库里 kind 固定为 short_drama_provider_video，
+            # 看板是按 provider 归并的，这里必须走 _provider_feature_key，否则两边对不上。
+            detail = it.get("_detail") or {}
+            if it.get("source") != "job":
+                continue
+            if str(detail.get("kind") or "").lower() == "short_drama_provider_video":
+                feature = _provider_feature_key(detail.get("provider"))
+            else:
+                feature = _operation_feature_key(detail.get("kind"), detail.get("channel"))
+            if str(feature).lower() not in kind_filter:
+                continue
         direct_match = not q or any(
             q.lower() in str(it.get(field) or "").lower()
             for field in (
@@ -3684,6 +3875,20 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             "done": sum(item.get("cat") == "ok" for item in matching),
             "failed": sum(item.get("cat") == "fail" for item in matching),
             "running": sum(item.get("cat") == "running" for item in matching),
+            # 失败不一定“仍需处理”：按结算状态区分，避免把已退款的历史失败当成待办
+            # refunded: 0=未退款 1=已退款 2=退款待确认（见 _job_evidence 的 billing_state）
+            "refunded": sum(
+                item.get("source") == "job" and item.get("refunded") == 1
+                for item in matching
+            ),
+            "refund_pending": sum(
+                item.get("source") == "job" and item.get("refunded") == 2
+                for item in matching
+            ),
+            "unrefunded": sum(
+                item.get("source") == "job" and not item.get("refunded")
+                for item in matching
+            ),
             "evidence_gaps": sum(
                 item.get("source") == "job"
                 and item.get("evidence_tone") in {"warn", "neutral"}
@@ -7814,6 +8019,8 @@ def dashboard_stats(days=7):
         "high_failure": [],
     }
     if not JOB_DB.exists():
+        # 不能静默返回全零：前端必须能区分“真的为 0”和“根本没读到”
+        out["error"] = "任务库不存在，无法统计"
         return out
     try:
         with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as connection:
@@ -7847,7 +8054,9 @@ def dashboard_stats(days=7):
                     (since, *running_states),
                 ).fetchall()
             provider_refund_ids = _provider_refund_pending_ids(connection)
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        # 同上：读失败要显式告知，否则前端只能当“真的为 0”而误判为正常
+        out["error"] = "任务库读取失败：%s" % str(exc)[:120]
         return out
     by_kind = {}
     generic_rows = {
@@ -8403,13 +8612,39 @@ def _short_drama_provider_call_logs(conn, since, limit, defer_evidence=False):
     return items
 
 
+def _activity_window_days(days, default=7, cap=90):
+    """把 days 归一化成可展示的天数；days<=0 代表“今日”，记作 1 天。"""
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        value = default
+    if value <= 0:
+        return 1
+    return max(1, min(value, cap))
+
+
+def _activity_since(days, now=None):
+    """days<=0 → 服务器本地当天零点（“今日”）；否则向前滚动 N 天。"""
+    stamp = int(time.time() if now is None else now)
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        value = 7
+    if value <= 0:
+        local = time.localtime(stamp)
+        return int(time.mktime((
+            local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1,
+        )))
+    return stamp - min(value, 90) * 86400
+
+
 def call_logs(days=7, limit=200, user="", defer_evidence=False):
     unlimited = limit is None
-    days = max(1, min(int(days or 7), 90))
+    since = _activity_since(days)
+    days = _activity_window_days(days)
     limit = -1 if unlimited else max(1, min(int(limit or 200), 500))
     if not JOB_DB.exists():
         return {"days": days, "limit": limit, "items": [], "message": "content_jobs.db not found"}
-    since = int(time.time()) - days * 86400
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
         columns = {row["name"] for row in c.execute("PRAGMA table_info(jobs)")}
@@ -8823,6 +9058,14 @@ class H(BaseHTTPRequestHandler):
             return
         if path == "/api/admin/health":
             return self._send(200, {"ok": True, "service": "huangque-admin"})
+        if path == "/api/admin/conversation-session":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(200, conversation_session((query.get("sid") or [""])[0]))
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(503, {"detail": "会话内容暂时不可用：%s" % str(exc)[:120]})
         if path == "/api/admin/conversation-stats":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
@@ -8837,6 +9080,13 @@ class H(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._send(503, {"detail": "对话统计暂时不可用：%s" % exc})
 
+        if path == "/api/admin/provider-config":
+            try:
+                return self._send(200, provider_config_admin_snapshot())
+            except provider_config.ProviderConfigUnavailable as exc:
+                return self._send(503, {"detail": str(exc)})
+            except Exception:
+                return self._send(503, {"detail": "配置存储不可用"})
         if path == "/api/admin/channel-manager":
             try:
                 return self._send(200, channel_workspace_overview())
@@ -9029,6 +9279,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("offset") or ["0"])[0],
                         (q.get("attributed") or ["0"])[0] in ("1", "true"),
                         (q.get("user") or [""])[0],
+                        (q.get("kind") or [""])[0],
                     ),
                 )
             except Exception as e:
@@ -9455,6 +9706,37 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "保存失败"})
             return self._send(200, {"ok": True, "channel": item})
+        if path.startswith('/api/admin/provider-config/'):
+            action = path.rsplit('/', 1)[-1]
+            actor = user.get('username') or 'admin'
+            try:
+                body = self._body()
+            except Exception:
+                body = {}
+            try:
+                if action == 'draft':
+                    return self._send(200, provider_config_save_draft(actor, body))
+                if action == 'validate':
+                    return self._send(200, provider_config_validate(actor, body))
+                if action == 'publish':
+                    return self._send(200, provider_config_publish(actor, body))
+                if action == 'rollback':
+                    return self._send(200, provider_config_rollback(actor, body))
+                if action == 'runtime':
+                    return self._send(200, provider_config_runtime(actor, body))
+                if action == 'reveal':
+                    return self._send(200, provider_config_reveal(actor, body))
+                return self._send(404, {'detail': '未知配置操作'})
+            except provider_config.VersionConflict as exc:
+                return self._send(409, {'detail': str(exc)})
+            except provider_config.NotVerified as exc:
+                return self._send(409, {'detail': str(exc)})
+            except ValueError as exc:
+                return self._send(400, {'detail': str(exc)[:240]})
+            except provider_config.ProviderConfigUnavailable as exc:
+                return self._send(503, {'detail': str(exc)})
+            except Exception:
+                return self._send(503, {'detail': '配置操作未完成，请检查密钥保险箱与存储配置'})
         if path.startswith('/api/admin/channel-manager/'):
             if int(self.headers.get('Content-Length') or 0) > 12*1024*1024:
                 return self._send(413, {'detail':'渠道配置与素材总大小不得超过12MB'})
@@ -9470,7 +9752,8 @@ class H(BaseHTTPRequestHandler):
                        'parameter-state':lambda actor,body:channel_parameters.admin_state(str(body.get('id') or ''),body.get('profile')),
                        'layout-state':lambda actor,body:channel_parameters.admin_layout_state(),
                        'layout-save':channel_parameters.layout_save,
-                       'secret-reveal':reveal_channel_secret}
+                       'secret-reveal':reveal_channel_secret,
+                       'latency':lambda actor,body:channel_latency.measure(actor,body,key_status)}
             action = actions.get(path.rsplit('/',1)[-1])
             if not action:
                 return self._send(404, {'detail':'未知渠道操作'})

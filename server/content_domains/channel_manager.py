@@ -25,11 +25,19 @@ from . import channel_store
 
 ADAPTERS = {
     'openai_image': {'name': 'OpenAI 兼容文生图', 'kind': 'image', 'references': False},
+    'gemini_image': {'name': 'Google Gemini 官方生图', 'kind': 'image', 'references': True},
     'minimax_h3': {'name': 'MiniMax H3 视频协议', 'kind': 'xiaole_video', 'references': True},
     'xai_video': {'name': 'Grok 视频协议', 'kind': 'xiaole_video', 'references': True},
     # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
     'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True},
     'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True},
+    # Sora：复用原厂 video_openai 客户端（已支持注入 api_key / api_base），
+    # kind 用任务类型 sora_video，与 function_registry 的 task_match.kind 一致。
+    'sora_video': {'name': 'OpenAI Sora 协议', 'kind': 'sora_video', 'references': True},
+    # 换装两条线路是不同供应商、不同输入（线路二=人物图+衣服图；线路一=人物视频），
+    # 各占一个适配器，由任务类型契约的 line 区分匹配。
+    'wavespeed_tryon': {'name': 'WaveSpeed 换装（线路二）', 'kind': 'tryon', 'references': True,
+                        'line': '2'},
 }
 
 
@@ -74,6 +82,11 @@ def db():
         ON operation_mapping_versions(operation_id,revision DESC);
     ''')
     return c
+
+
+def _begin_write(connection):
+    """Open the write transaction; SQLite serializes it, this module holds no lock itself."""
+    connection.execute('BEGIN IMMEDIATE')
 
 
 def _crypt(value, decrypt=False):
@@ -153,7 +166,7 @@ def save(actor, body):
         return channel_store.save(actor, body)
     cid, config = _channel_config(body)
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         old = c.execute('SELECT * FROM channels WHERE id=?', (cid,)).fetchone()
         if old and int(body.get('version', -1)) != old['version']:
             raise ValueError('配置已被修改，请刷新后重试')
@@ -168,13 +181,13 @@ def save(actor, body):
                 config['parameters']=validate(config,old_config['parameters'])
             for mapping_row in c.execute('SELECT config FROM mappings'):
                 mapping = json.loads(mapping_row['config'])
-                if (mapping.get('enabled') and cid in {mapping.get('channel'), mapping.get('backup')}
+                if (mapping.get('enabled') and cid in mapping_channel_ids(mapping)
                         and mapping.get('kind') != ADAPTERS[config['adapter']]['kind']):
                     raise ValueError('该渠道仍被已启用映射使用，不能更改为不兼容协议；请先调整映射')
             for mapping_row in c.execute('SELECT operation_id,state,config FROM operation_mappings'):
                 mapping = json.loads(mapping_row['config'])
                 if (mapping_row['state'] in {'shadow', 'managed'}
-                        and cid in {mapping.get('channel'), mapping.get('backup')}):
+                        and cid in mapping_channel_ids(mapping)):
                     from .function_registry import operation
                     try:
                         _validate_operation_config(config, operation(mapping_row['operation_id']))
@@ -232,6 +245,125 @@ def version(cid, rev=None, with_secret=False):
 
 
 MAPPING_STATES = {'legacy', 'shadow', 'managed', 'paused'}
+MAX_MAPPING_CHANNELS = 8
+ROUTE_CANDIDATE_FIELDS = ('id', 'version', 'adapter', 'model')
+
+
+def mapping_channel_ids(mapping):
+    """Return the ordered channel ids for old and new mapping payloads."""
+    if not isinstance(mapping, dict):
+        return []
+    raw = mapping.get('channels')
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item or '').strip()]
+    return list(dict.fromkeys(
+        str(mapping.get(key) or '').strip() for key in ('channel', 'backup')
+        if str(mapping.get(key) or '').strip()
+    ))
+
+
+def _requested_mapping_channels(body):
+    if 'channels' not in body:
+        return mapping_channel_ids(body)
+    raw = body.get('channels')
+    if not isinstance(raw, list):
+        raise ValueError('渠道优先级必须是有序列表')
+    channels = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError('渠道优先级包含无效渠道')
+        channels.append(item.strip())
+    if len(channels) > MAX_MAPPING_CHANNELS:
+        raise ValueError('单个功能最多配置 %d 个渠道优先级' % MAX_MAPPING_CHANNELS)
+    if len(set(channels)) != len(channels):
+        raise ValueError('渠道优先级不能包含重复渠道')
+    return channels
+
+
+def _display_order(body, state, channels):
+    """Persist UI order separately from the executable managed failover chain."""
+    order = body.get('display_order')
+    if order is None:
+        return None
+    if (not isinstance(order, list) or not order or len(order) > 200
+            or any(not isinstance(x, str) or not x.strip() or len(x) > 200 for x in order)
+            or len(set(order)) != len(order)):
+        raise ValueError('显示顺序必须是不重复的渠道列表')
+    expected = channels[0] if state == 'managed' and channels else '@original' if state == 'legacy' else None
+    if expected and order[0] != expected:
+        raise ValueError('显示顺序第一项必须是当前接单线路')
+    return list(order)
+
+
+def _route_candidate(cfg):
+    return {key: cfg.get(key) for key in ROUTE_CANDIDATE_FIELDS}
+
+
+def _same_parameter_contract(left, right):
+    return (left.get('model') == right.get('model')
+            and left.get('adapter') == right.get('adapter')
+            and (left.get('parameters') or None) == (right.get('parameters') or None))
+
+
+def _managed_image_route(mapping, contract, connection=None):
+    """Build a secret-free immutable route plan for one paid image job.
+
+    映射里的 ``channels`` 是管理员排的可选渠道列表（允许各自使用不同模型 ID）；
+    自动故障切换链在这里按需派生，两者职责分开，不额外建表：
+
+    * **主渠道** ``route_order[0]``：管理员明确指定的接单渠道。只要渠道自身可用
+      （存在、未回收、已启用、能承接该功能）就按它自己的模型 / 参数 / 凭据接单，
+      不再要求与其它渠道同名同参数，也不要求有最近 24 小时的完整生成测试。
+    * **候补链** ``route_candidates``：只收与主渠道同一模型 / 协议 / 参数契约的渠道。
+      自动故障切换只在等价渠道之间跳，异模型渠道只进 ``skipped`` 并说明原因。
+    """
+    route_order = mapping_channel_ids(mapping)
+    if not route_order:
+        raise ValueError('该功能没有可用渠道')
+    pricing = _mapping_channel(
+        route_order[0], contract, require_enabled=True, connection=connection)
+    candidates, skipped = [], []
+    for channel_id in route_order:
+        try:
+            cfg = _mapping_channel(
+                channel_id, contract, require_enabled=True, connection=connection)
+            if channel_id != pricing['id'] and not _same_parameter_contract(pricing, cfg):
+                raise ValueError('与主渠道模型或参数契约不一致，不进入自动故障切换链')
+            candidates.append(_route_candidate(cfg))
+        except ValueError as exc:
+            skipped.append({'id': channel_id, 'reason': str(exc)[:120]})
+    if not candidates:
+        raise ValueError('该功能没有可用渠道')
+    return pricing, candidates, skipped
+
+
+def public_execution_snapshot(binding):
+    """Keep routing evidence useful without persisting secrets or raw config."""
+    if not isinstance(binding, dict):
+        return {}
+    snapshot = {key: binding.get(key) for key in (
+        'operation_id', 'mapping_revision', 'id', 'version', 'adapter',
+        'model', 'front', 'invocation_source', 'pricing_id', 'pricing_version',
+        'route_attempt', 'switch_reason',
+    ) if binding.get(key) not in (None, '')}
+    snapshot['route_order'] = [str(item) for item in binding.get('route_order', [])
+                               if str(item or '')][:MAX_MAPPING_CHANNELS]
+    snapshot['route_candidates'] = [
+        {key: item.get(key) for key in ROUTE_CANDIDATE_FIELDS}
+        for item in binding.get('route_candidates', [])[:MAX_MAPPING_CHANNELS]
+        if isinstance(item, dict) and item.get('id')
+    ]
+    snapshot['route_skipped'] = [
+        {'id': str(item.get('id') or ''), 'reason': str(item.get('reason') or '')[:120]}
+        for item in binding.get('route_skipped', [])[:MAX_MAPPING_CHANNELS]
+        if isinstance(item, dict) and item.get('id')
+    ]
+    snapshot['attempts'] = [
+        {key: item.get(key) for key in ('attempt', 'channel', 'version', 'state', 'detail')}
+        for item in binding.get('attempts', [])[:MAX_MAPPING_CHANNELS]
+        if isinstance(item, dict) and item.get('channel')
+    ]
+    return snapshot
 
 
 def operation_mapping(operation_id, revision=None, connection=None):
@@ -257,14 +389,23 @@ def operation_mapping(operation_id, revision=None, connection=None):
             c.close()
     if not row:
         return None
-    return dict(json.loads(row['config']), operation_id=row['operation_id'],
-                revision=row['revision'], state=row['state'], actor=row['actor'],
-                updated=row['updated'])
+    result = dict(json.loads(row['config']), operation_id=row['operation_id'],
+                  revision=row['revision'], state=row['state'], actor=row['actor'],
+                  updated=row['updated'])
+    result['channels'] = mapping_channel_ids(result)
+    return result
 
 
 def _validate_operation_config(cfg, contract):
     if not contract or ADAPTERS[cfg['adapter']]['kind'] != contract['channel_kind']:
         raise ValueError('功能与渠道能力不兼容')
+    # 换装两条线路是不同供应商、不同输入（线路二=人物图+衣服图；线路一=人物视频），
+    # 用 task_match.line 做硬约束，避免把线路二渠道配到线路一功能上。
+    adapter_line = str(ADAPTERS[cfg['adapter']].get('line') or '')
+    contract_line = str((contract.get('task_match') or {}).get('line') or '')
+    if adapter_line and contract_line and adapter_line != contract_line:
+        raise ValueError('该渠道协议对应换装线路 %s，与功能的线路 %s 不一致' % (
+            adapter_line, contract_line))
     rule = contract.get('task_match') or {}
     needs_references = rule.get('reference_count') == '>0'
     supports_references = bool(
@@ -280,10 +421,16 @@ def _validate_operation_config(cfg, contract):
         raise ValueError('Grok 1.5 必须使用参考图，不能承接文生视频功能')
 
 
-def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None):
+def _mapping_channel(cid, contract_or_kind, require_enabled=False, connection=None):
+    """解析一个渠道的当前配置，并做「能不能接这个功能」的校验。
+
+    ``require_enabled=True`` 只额外要求渠道处于启用状态。
+    完整生成测试的 24 小时时效**不再**是接单门槛，只作为后台状态提示；
+    它仍然保留在 ``_ready_candidate()``（自动故障切换前的复核）里。
+    """
     if channel_store.enabled():
         return channel_store._mapping_channel(
-            cid, contract_or_kind, require_ready=require_ready, connection=connection)
+            cid, contract_or_kind, require_enabled=require_enabled, connection=connection)
     contract = contract_or_kind if isinstance(contract_or_kind, dict) else None
     kind = contract['channel_kind'] if contract else str(contract_or_kind)
     cid = str(cid or '').strip()
@@ -308,19 +455,50 @@ def _mapping_channel(cid, contract_or_kind, require_ready=False, connection=None
             _validate_operation_config(cfg, contract)
         elif ADAPTERS[cfg['adapter']]['kind'] != kind:
             raise ValueError('功能与渠道能力不兼容')
-        if require_ready:
-            if not current['enabled']:
-                raise ValueError('主渠道尚未启用，不能发布为托管状态')
-            latest = c.execute(
-                "SELECT state,updated FROM runs WHERE channel=? AND version=? AND kind='full' "
-                'ORDER BY started DESC,rowid DESC LIMIT 1', (cid, current['version']),
-            ).fetchone()
-            if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
-                raise ValueError('发布托管前，当前渠道版本必须有最近24小时内通过的完整生成测试')
+        if require_enabled and not current['enabled']:
+            raise ValueError('渠道尚未启用，不能接单或发布为托管状态')
     finally:
         if owns_connection:
             c.close()
     return cfg
+
+
+def _ready_candidate(cid, connection=None):
+    """自动故障切换前的候选复核：存在、不在回收站、仍启用、且有最近 24 小时完整生成测试。
+
+    这里刻意**不**跟着手动切换一起放宽：管理员手动指定主渠道只看「渠道可用」，
+    而自动切换会在无人值守的情况下把任务交给另一个渠道，因此仍然要求最近 24 小时
+    内有通过的完整生成测试。报错按「候补渠道」措辞，便于后台看懂为什么这一跳被跳过。
+    """
+    if channel_store.enabled():
+        return channel_store._ready_candidate(cid, connection=connection)
+    cid = str(cid or '').strip()
+    if not cid:
+        raise ValueError('候选渠道无效')
+    owns_connection = connection is None
+    c = connection or db()
+    try:
+        current = c.execute('SELECT version,enabled FROM channels WHERE id=?', (cid,)).fetchone()
+        if not current:
+            raise ValueError('候选渠道不存在')
+        row = c.execute('SELECT config FROM versions WHERE channel=? AND version=?',
+                        (cid, current['version'])).fetchone()
+        if not row:
+            raise ValueError('候选渠道版本不存在')
+        if json.loads(row['config']).get('_lifecycle', {}).get('deleted'):
+            raise ValueError('候选渠道在回收站')
+        if not current['enabled']:
+            raise ValueError('候选渠道已停用')
+        latest = c.execute(
+            "SELECT state,updated FROM runs WHERE channel=? AND version=? AND kind='full' "
+            'ORDER BY started DESC,rowid DESC LIMIT 1', (cid, current['version']),
+        ).fetchone()
+        if not latest or latest['state'] != 'passed' or time.time() - latest['updated'] > 86400:
+            raise ValueError('候选渠道缺少最近24小时通过的完整生成测试')
+    finally:
+        if owns_connection:
+            c.close()
+    return True
 
 
 def save_operation_mapping(actor, body):
@@ -335,23 +513,29 @@ def save_operation_mapping(actor, body):
     state = str(body.get('state') or 'legacy').strip().lower()
     if state not in MAPPING_STATES:
         raise ValueError('映射状态必须为 legacy、shadow、managed 或 paused')
-    cid, backup = str(body.get('channel') or ''), str(body.get('backup') or '')
+    channels = _requested_mapping_channels(body)
     now = time.time()
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         if state in {'shadow', 'managed'}:
-            _mapping_channel(
-                cid, contract, require_ready=state == 'managed', connection=c)
-            if backup:
-                if backup == cid:
-                    raise ValueError('备用渠道必须与主渠道不同')
-                _mapping_channel(backup, contract, connection=c)
+            if not channels:
+                raise ValueError('请选择主渠道')
+            # 手动切换只看「渠道自身能否接这个功能」：存在、未回收、已启用、能力匹配。
+            # 不再要求与其它渠道同名 / 同协议适配器 / 同参数配置——映射里的每条渠道
+            # 各自保留自己的模型 ID，由渠道快照带着走，不为了通过比较而改写模型名。
+            for target in channels:
+                _mapping_channel(target, contract, require_enabled=True, connection=c)
         else:
-            cid, backup = '', ''
+            channels = []
+        cid = channels[0] if channels else ''
+        backup = channels[1] if len(channels) > 1 else ''
         config = {
             'kind': contract['channel_kind'], 'label': contract['name'],
-            'channel': cid, 'backup': backup,
+            'channel': cid, 'backup': backup, 'channels': channels,
         }
+        display_order = _display_order(body, state, channels)
+        if display_order is not None:
+            config['display_order'] = display_order
         current = c.execute('SELECT revision FROM operation_mappings WHERE operation_id=?',
                             (operation_id,)).fetchone()
         expected = body.get('expected_revision')
@@ -386,7 +570,8 @@ def rollback_operation_mapping(actor, body):
         raise ValueError('历史映射版本不存在')
     return save_operation_mapping(actor, {
         'operation_id': operation_id, 'state': old['state'],
-        'channel': old.get('channel') or '', 'backup': old.get('backup') or '',
+        'channels': mapping_channel_ids(old),
+        'display_order': old.get('display_order'),
         'expected_revision': body.get('expected_revision'),
     })
 
@@ -406,7 +591,7 @@ def save_mapping(actor, body):
     config = dict(kind=kind, front=front, label=str(body.get('label') or front)[:100], channel=cid,
                   backup=backup, enabled=body.get('enabled') is True)
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         for target in filter(None,(cid,backup)):
             current=c.execute('SELECT version FROM channels WHERE id=?',(target,)).fetchone()
             if not current:
@@ -502,16 +687,27 @@ def _confirm_acceptance(connection, payload):
     from .function_registry import operation
     contract = operation(operation_id)
     mapping = operation_mapping(operation_id, connection=connection)
+    route_order = [str(item) for item in binding.get('route_order', []) if str(item or '')]
+    candidates = binding.get('route_candidates') or []
     if (not mapping or mapping.get('state') != 'managed'
             or int(mapping.get('revision') or 0) != int(binding.get('mapping_revision') or 0)
-            or mapping.get('channel') != binding.get('id')):
+            or (route_order and mapping_channel_ids(mapping) != route_order)
+            or (not route_order and mapping.get('channel') != binding.get('id'))):
         raise ValueError('功能映射已变化，请刷新后重新提交')
-    cfg = _mapping_channel(
-        binding.get('id'), contract, require_ready=True, connection=connection)
-    if (int(cfg['version']) != int(binding.get('version') or 0)
-            or cfg.get('adapter') != binding.get('adapter')
-            or cfg.get('model') != binding.get('model')):
-        raise ValueError('渠道版本已变化，请刷新后重新提交')
+    snapshots = candidates or [_route_candidate(binding)]
+    if candidates:
+        pricing = _mapping_channel(
+            binding.get('pricing_id') or route_order[0], contract, connection=connection)
+        if int(pricing['version']) != int(binding.get('pricing_version') or 0):
+            raise ValueError('渠道版本已变化，请刷新后重新提交')
+    for snapshot in snapshots:
+        try:
+            cfg = _mapping_channel(
+                snapshot.get('id'), contract, require_enabled=True, connection=connection)
+        except ValueError:
+            raise ValueError('渠道版本已变化，请刷新后重新提交') from None
+        if any(cfg.get(key) != snapshot.get(key) for key in ROUTE_CANDIDATE_FIELDS):
+            raise ValueError('渠道版本已变化，请刷新后重新提交')
     return True
 
 
@@ -531,7 +727,7 @@ def acceptance_guard(payloads):
         yield
         return
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         try:
             for payload in managed:
                 _confirm_acceptance(c, payload)
@@ -576,10 +772,16 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
             })
         return _legacy_capture(kind, clean, preparation)
     from .function_registry import operation
-    cfg = _mapping_channel(
-        cid, operation(operation_id) or mapping['kind'], require_ready=True)
+    contract = operation(operation_id) or mapping['kind']
+    route_candidates, route_skipped, pricing = [], [], None
+    if kind == 'image':
+        pricing, route_candidates, route_skipped = _managed_image_route(mapping, contract)
+        cfg = version(route_candidates[0]['id'], route_candidates[0]['version'])
+    else:
+        cfg = _mapping_channel(cid, contract, require_enabled=True)
+        pricing = cfg
     from .channel_parameters import apply
-    clean, _ = apply(cfg, clean, required=not preparation)
+    clean, _ = apply(pricing, clean, required=not preparation)
     from .channel_runtime import validate_payload
     validate_payload(cfg, clean)
     clean['_channel_binding'] = {
@@ -588,6 +790,13 @@ def capture(kind, payload, preparation=False, invocation_source='web'):
         'model': cfg['model'], 'front': _front(kind, clean),
         'invocation_source': source,
     }
+    if route_candidates:
+        clean['_channel_binding'].update({
+            'pricing_id': pricing['id'], 'pricing_version': pricing['version'],
+            'route_order': mapping_channel_ids(mapping),
+            'route_candidates': route_candidates, 'route_skipped': route_skipped,
+            'route_attempt': 1, 'attempts': [],
+        })
     return clean
 
 
@@ -604,7 +813,7 @@ def record_shadow(job_id, snapshot):
     ) if snapshot.get(key) not in (None, '')}
     now = time.time()
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         rid = public_snapshot['observation_id']
         existing = c.execute(
             "SELECT r.job_id,s.snapshot FROM runs r JOIN run_snapshots s ON s.run_id=r.id "
@@ -657,9 +866,13 @@ def overview():
                 'WHERE operation_id=? ORDER BY revision DESC LIMIT 20',
                 (mapping['operation_id'],))]
         runs = [dict(r) for r in c.execute(
-            'SELECT r.*,s.operation_id,s.mapping_revision,s.invocation_source '
+            'SELECT r.*,s.operation_id,s.mapping_revision,s.invocation_source,s.snapshot '
             'FROM runs r LEFT JOIN run_snapshots s ON s.run_id=r.id '
             'ORDER BY r.started DESC LIMIT 100')]
+        for run in runs:
+            raw_snapshot = run.pop('snapshot', None)
+            if raw_snapshot:
+                run['execution_snapshot'] = json.loads(raw_snapshot)
         events = [dict(r) for r in c.execute('SELECT * FROM events ORDER BY created DESC LIMIT 30')]
         for channel in channels:
             cfg = version(channel['id'], channel['version'])
@@ -684,11 +897,15 @@ def overview():
                     channel['checks'].append(dict(check_row))
     from .function_registry import operation_catalog
     operations = operation_catalog(channel_eligible=True)
+    # 全量功能目录（含不可切换的）：后台据此展示「为什么这个功能不能切」，
+    # 而不是只给一个拖不动的手柄。不改变 operations 的既有语义。
+    all_operations = operation_catalog()
     current = {item['operation_id']: item for item in operation_mappings}
     for item in operations:
         item['mapping'] = current.get(item['operation_id'])
     return {'items': channels, 'mappings': mappings, 'operation_mappings': operation_mappings,
-            'operations': operations, 'runs': runs, 'events': events, 'adapters': ADAPTERS,
+            'operations': operations, 'all_operations': all_operations,
+            'runs': runs, 'events': events, 'adapters': ADAPTERS,
             'legacy_controls':legacy_states(), 'legacy_scopes':LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone':'Asia/Shanghai', 'stats_window':'最近24小时'}
 
@@ -699,7 +916,7 @@ def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
     cfg = snapshot or version(cid)
     now, rid = time.time(), uuid.uuid4().hex
     with closing(db()) as c:
-        c.execute('BEGIN IMMEDIATE')
+        _begin_write(c)
         if kind!='task':
             current=c.execute('SELECT ch.enabled,v.config FROM channels ch JOIN versions v ON v.channel=ch.id AND v.version=ch.version WHERE ch.id=?',(cid,)).fetchone()
             if not current or not current['enabled'] or json.loads(current['config']).get('_lifecycle',{}).get('deleted'):
@@ -726,10 +943,7 @@ def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
         c.execute('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', (rid,cid,cfg['version'],kind,'queued',now,now,None,'等待执行',str(job_id),'',cfg['test_cost'] if kind=='full' else 0))
         binding = execution_snapshot if isinstance(execution_snapshot, dict) else {}
         if binding:
-            public_snapshot = {key: binding.get(key) for key in (
-                'operation_id', 'mapping_revision', 'id', 'version', 'adapter',
-                'model', 'front', 'invocation_source',
-            ) if binding.get(key) not in (None, '')}
+            public_snapshot = public_execution_snapshot(binding)
             c.execute('INSERT INTO run_snapshots VALUES(?,?,?,?,?)', (
                 rid, public_snapshot.get('operation_id', ''),
                 public_snapshot.get('mapping_revision'),
@@ -747,6 +961,95 @@ def finish(rid, state, detail, provider_id=''):
         c.execute('UPDATE runs SET state=?,detail=?,updated=?,duration=?-started,provider_id=CASE WHEN ?!=\'\' THEN ? ELSE provider_id END WHERE id=?',
                   (state, detail[:300], time.time(), time.time(), provider_id, provider_id, rid))
         c.commit()
+
+
+def finish_task_failover_safe(rid, detail):
+    """Atomically mark a task attempt as failed and safe to move to the next route."""
+    if channel_store.enabled():
+        return channel_store.finish_task_failover_safe(rid, detail)
+    now = time.time()
+    with closing(db()) as c:
+        _begin_write(c)
+        row = c.execute(
+            "SELECT r.kind,r.state,r.provider_id,s.snapshot FROM runs r "
+            "JOIN run_snapshots s ON s.run_id=r.id WHERE r.id=?", (rid,),
+        ).fetchone()
+        if (not row or row['kind'] != 'task'
+                or row['state'] not in {'queued', 'running'} or row['provider_id']):
+            # queued 也在允许范围内：并发/限流排队超时的任务从未提交供应商，同样是「未受理」。
+            raise ValueError('当前任务状态不允许自动切换渠道')
+        snapshot = json.loads(row['snapshot'])
+        snapshot['failover_safe'] = True
+        snapshot['failure_reason'] = str(detail or '')[:300]
+        c.execute(
+            "UPDATE runs SET state='failed',detail=?,updated=?,duration=?-started WHERE id=?",
+            (str(detail or '')[:300], now, now, rid),
+        )
+        c.execute('UPDATE run_snapshots SET snapshot=? WHERE run_id=?', (
+            json.dumps(snapshot, ensure_ascii=False), rid))
+        c.commit()
+
+
+def prepare_task_failover(rid, candidate, reason=''):
+    """Move one safely failed task run to a sealed next candidate without a new charge."""
+    if channel_store.enabled():
+        return channel_store.prepare_task_failover(rid, candidate, reason)
+    candidate = _route_candidate(candidate if isinstance(candidate, dict) else {})
+    if not candidate.get('id') or not candidate.get('version'):
+        raise ValueError('候选渠道快照无效')
+    now = time.time()
+    with closing(db()) as c:
+        _begin_write(c)
+        row = c.execute(
+            "SELECT r.*,s.snapshot FROM runs r JOIN run_snapshots s ON s.run_id=r.id "
+            "WHERE r.id=?", (rid,),
+        ).fetchone()
+        if (not row or row['kind'] != 'task' or row['state'] != 'failed'
+                or row['provider_id']):
+            raise ValueError('当前任务状态不允许自动切换渠道')
+        snapshot = json.loads(row['snapshot'])
+        if not snapshot.get('failover_safe'):
+            raise ValueError('上一渠道结果未确认，禁止自动切换')
+        expected = next((item for item in snapshot.get('route_candidates', [])
+                         if item.get('id') == candidate['id']), None)
+        if not expected or any(expected.get(key) != candidate.get(key)
+                               for key in ROUTE_CANDIDATE_FIELDS):
+            raise ValueError('候选渠道不在任务受理快照中')
+        attempts = list(snapshot.get('attempts') or [])
+        attempts.append({
+            'attempt': int(snapshot.get('route_attempt') or len(attempts) + 1),
+            'channel': row['channel'], 'version': row['version'],
+            'state': 'failed', 'detail': str(row['detail'] or '')[:300],
+        })
+        snapshot.update(candidate)
+        snapshot['route_attempt'] = len(attempts) + 1
+        snapshot['switch_reason'] = str(reason or snapshot.get('failure_reason') or '')[:300]
+        snapshot['attempts'] = attempts[:MAX_MAPPING_CHANNELS]
+        snapshot.pop('failover_safe', None)
+        snapshot.pop('failure_reason', None)
+        _ready_candidate(candidate['id'], c)   # 采集后被停用/回收/证据过期的候选不再接单
+        cfg_row = c.execute(
+            'SELECT config FROM versions WHERE channel=? AND version=?',
+            (candidate['id'], candidate['version']),
+        ).fetchone()
+        if not cfg_row:
+            raise ValueError('候选渠道版本不存在')
+        cfg = json.loads(cfg_row['config'])
+        pending = c.execute(
+            "SELECT COUNT(*) FROM runs WHERE channel=? AND state='queued' AND id!=?",
+            (candidate['id'], rid),
+        ).fetchone()[0]
+        if pending >= max(1, cfg['queue_limit']):
+            raise ValueError('候选渠道等待队列已满')
+        c.execute(
+            "UPDATE runs SET channel=?,version=?,state='queued',detail=?,updated=?,"
+            "duration=NULL,provider_id='' WHERE id=?",
+            (candidate['id'], candidate['version'], '安全切换到下一渠道', now, rid),
+        )
+        c.execute('UPDATE run_snapshots SET snapshot=? WHERE run_id=?', (
+            json.dumps(snapshot, ensure_ascii=False), rid))
+        c.commit()
+    return snapshot
 
 
 def notification_settings(private=False):
@@ -767,7 +1070,8 @@ def task_evidence(job_id):
         return channel_store.task_evidence(job_id)
     with closing(db()) as c:
         row = c.execute(
-            "SELECT r.channel,r.version,r.state,r.provider_id,s.operation_id,s.mapping_revision,"
+            "SELECT r.id,r.kind,r.channel,r.version,r.state,r.provider_id,"
+            "s.operation_id,s.mapping_revision,"
             "s.invocation_source,s.snapshot FROM runs r LEFT JOIN run_snapshots s ON s.run_id=r.id "
             "WHERE r.kind IN ('task','shadow') AND r.job_id=? "
             "ORDER BY CASE WHEN r.kind='task' THEN 0 ELSE 1 END,r.started DESC LIMIT 1",
@@ -800,7 +1104,7 @@ def mark_interrupted_task_unknown(job_id, detail):
         return channel_store.mark_interrupted_task_unknown(job_id, detail)
     try:
         with closing(db()) as c:
-            c.execute('BEGIN IMMEDIATE')
+            _begin_write(c)
             row = c.execute(
                 "SELECT id,state FROM runs WHERE kind='task' AND job_id=? "
                 "ORDER BY started DESC LIMIT 1", (str(job_id),),

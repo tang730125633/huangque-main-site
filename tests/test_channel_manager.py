@@ -45,6 +45,28 @@ class ChannelTests(unittest.TestCase):
         connection.commit()
         return connection
 
+    def test_original_display_order_survives_restore_and_rollback(self):
+        cid = self.ch['id']
+        first = cm.save_operation_mapping('admin', {
+            'operation_id': 'image.banana.nb2.text', 'state': 'managed',
+            'channels': [cid], 'display_order': [cid, '@original'], 'expected_revision': 0})
+        self.assertEqual(first['display_order'], [cid, '@original'])
+        self.assertEqual(first['channels'], [cid])
+        restored = cm.save_operation_mapping('admin', {
+            'operation_id': 'image.banana.nb2.text', 'state': 'legacy',
+            'channels': [], 'display_order': ['@original', cid], 'expected_revision': 1})
+        self.assertEqual(cm.operation_mapping('image.banana.nb2.text')['display_order'], ['@original', cid])
+        self.assertEqual(restored['channels'], [])
+        self.assertIsNone(cm.operation_mapping('image.banana.nb2.reference'))
+        self.assertEqual(cm.version(cid, 1, True)['secret'], 'private-secret')
+        rollback = cm.rollback_operation_mapping('admin', {
+            'operation_id': 'image.banana.nb2.text', 'target_revision': 1, 'expected_revision': 2})
+        self.assertEqual(rollback['display_order'], [cid, '@original'])
+        with self.assertRaisesRegex(ValueError, '第一项'):
+            cm.save_operation_mapping('admin', {
+                'operation_id': 'image.banana.nb2.text', 'state': 'legacy',
+                'channels': [], 'display_order': [cid, '@original'], 'expected_revision': 3})
+
     def test_vault_and_public_redaction(self):
         self.assertNotIn(b'private-secret',Path(self.tmp.name+'/channels.db').read_bytes())
         self.assertNotIn('private-secret',json.dumps(cm.overview()))
@@ -143,9 +165,10 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual('agent', binding['invocation_source'])
         self.assertEqual('test-model', binding['model'])
 
+        # 取消 24 小时完整测试门槛：换过模型、从未测试或证据过期的渠道不再阻止新任务接单
         cm.save('admin', dict(self.body, **self.ch, model='new-untested-model'))
-        with self.assertRaisesRegex(ValueError, '完整生成测试'):
-            cm.capture('image', payload)
+        after_switch = cm.capture('image', payload)
+        self.assertEqual('new-untested-model', after_switch['_channel_binding']['model'])
 
         paused = cm.save_operation_mapping('admin', {
             'operation_id':'image.xiaole.text', 'state':'paused',
@@ -168,6 +191,363 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual([4, 3, 2, 1], [
             item['revision'] for item in cm.overview()['operation_mappings'][0]['history']
         ])
+
+    def test_priority_accepts_different_models_and_keeps_auto_chain_homogeneous(self):
+        """手动切换允许两侧展示名 / 模型 ID / 协议 / 参数都不同；自动候补链仍然只收同契约渠道。"""
+        other = cm.save('admin', dict(self.body, name='other', model='another-model',
+                                      adapter='lechuang_image', secret='other-secret'))
+        published = cm.save_operation_mapping('admin', {
+            'operation_id': 'image.xiaole.text', 'state': 'managed',
+            'channels': [other['id'], self.ch['id']], 'expected_revision': 0,
+        })
+        self.assertEqual([other['id'], self.ch['id']], published['channels'])
+        self.assertEqual(other['id'], published['channel'])
+        # 每条渠道各自保留自己的实际模型 ID，没有为了通过比较而被改写成同一个字符串
+        self.assertEqual('another-model', cm.version(other['id'])['model'])
+        self.assertEqual('test-model', cm.version(self.ch['id'])['model'])
+        # 自动故障切换本次不放宽：不同模型 / 协议的渠道不进入同一条自动重试链
+        from server.content_domains.function_registry import operation
+        for ch in (self.ch, other):
+            cm.finish(cm.reserve(ch['id'], 'full'), 'passed', 'fixture checked')
+        _, candidates, skipped = cm._managed_image_route(
+            {'channels': [other['id'], self.ch['id']]}, operation('image.xiaole.text'))
+        self.assertEqual([other['id']], [c['id'] for c in candidates])
+        self.assertEqual([self.ch['id']], [s['id'] for s in skipped])
+
+    def test_priority_legacy_cross_model_candidate_is_not_used(self):
+        other = cm.save('admin', dict(self.body, name='other', model='another-model'))
+        for ch in (self.ch, other):
+            cm.finish(cm.reserve(ch['id'], 'full'), 'passed', 'fixture checked')
+        from server.content_domains.function_registry import operation
+        _, candidates, skipped = cm._managed_image_route(
+            {'channels': [self.ch['id'], other['id']]}, operation('image.xiaole.text'))
+        self.assertEqual([self.ch['id']], [c['id'] for c in candidates])
+        self.assertIn('模型', skipped[0]['reason'])
+
+    def test_operation_mapping_preserves_ordered_channel_priorities_and_rollback(self):
+        second = cm.save('admin', dict(self.body, name='备用图片渠道', secret='second-secret'))
+        third = cm.save('admin', dict(self.body, name='候选图片渠道', secret='third-secret'))
+        ordered = [self.ch['id'], second['id'], third['id']]
+        first = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channels':ordered, 'expected_revision':0,
+        })
+        self.assertEqual(ordered, first['channels'])
+        self.assertEqual(self.ch['id'], first['channel'])
+        self.assertEqual(second['id'], first['backup'])
+
+        reordered = [third['id'], self.ch['id'], second['id']]
+        second_revision = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'shadow',
+            'channels':reordered, 'expected_revision':1,
+        })
+        self.assertEqual(reordered, second_revision['channels'])
+
+        restored = cm.rollback_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'target_revision':1,
+            'expected_revision':2,
+        })
+        self.assertEqual(ordered, restored['channels'])
+        self.assertEqual(3, restored['revision'])
+
+        with self.assertRaisesRegex(ValueError, '重复'):
+            cm.save_operation_mapping('admin', {
+                'operation_id':'image.xiaole.text', 'state':'shadow',
+                'channels':[self.ch['id'], self.ch['id']], 'expected_revision':3,
+            })
+
+        from server.content_domains import channel_lifecycle
+        disabled = channel_lifecycle.mutate('admin', {
+            'id':third['id'], 'version':1, 'action':'disable', 'reason':'准备下线',
+        })
+        with self.assertRaisesRegex(ValueError, '优先级'):
+            channel_lifecycle.mutate('admin', {
+                'id':third['id'], 'version':disabled['version'],
+                'action':'delete', 'reason':'确认下线',
+            })
+
+    def test_managed_capture_seals_ordered_ready_image_candidates(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        for channel in (self.ch, second):
+            run_id = cm.reserve(channel['id'], 'full')
+            cm.finish(run_id, 'passed', 'artifact checked')
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channels':[self.ch['id'], second['id']], 'expected_revision':0,
+        })
+
+        captured = cm.capture('image', {
+            'source_page':'banana', 'provider':'xiaole', 'prompt':'hello',
+        })
+        binding = captured['_channel_binding']
+        self.assertEqual([self.ch['id'], second['id']], [
+            item['id'] for item in binding['route_candidates']
+        ])
+        self.assertEqual([self.ch['id'], second['id']], binding['route_order'])
+        self.assertEqual(1, binding['route_attempt'])
+        self.assertNotIn('secret', json.dumps(binding))
+
+        cm.save('admin', dict(self.body, **second, model='changed-after-capture'))
+        with self.assertRaisesRegex(ValueError, '版本已变化'):
+            with cm.acceptance_guard([captured]):
+                pass
+
+    def test_image_task_fails_over_after_definitive_prebilling_rejection(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        run_id = cm.reserve(second['id'], 'full')   # 切换目标必须具备最近 24 小时完整测试证据
+        cm.finish(run_id, 'passed', 'artifact checked')
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':[
+                {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+                {'id':second['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+            ],
+        }
+        calls = []
+
+        def generate(cfg, payload, _rid, _job_id):
+            calls.append(cfg['id'])
+            if cfg['id'] == self.ch['id']:
+                raise runtime.SubmissionRejected('供应商明确拒绝提交')
+            return {'type':'image', 'channel_id':cfg['id']}
+
+        with patch.object(runtime, 'generate', side_effect=generate):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 501)
+
+        self.assertEqual([self.ch['id'], second['id']], calls)
+        self.assertEqual(second['id'], result['channel_id'])
+        evidence = cm.task_evidence(501)
+        self.assertEqual('passed', evidence['state'])
+        self.assertEqual(second['id'], evidence['channel'])
+        self.assertEqual(2, evidence['execution_snapshot']['route_attempt'])
+        self.assertEqual(self.ch['id'], evidence['execution_snapshot']['attempts'][0]['channel'])
+        self.assertEqual('failed', evidence['execution_snapshot']['attempts'][0]['state'])
+        overview_run = next(item for item in cm.overview()['runs'] if item['job_id'] == '501')
+        self.assertEqual(self.ch['id'], overview_run['execution_snapshot']['attempts'][0]['channel'])
+
+    def test_image_task_never_fails_over_when_submission_outcome_is_unknown(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+            'model':'test-model', 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':[
+                {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+                {'id':second['id'], 'version':1, 'adapter':'openai_image',
+                 'model':'test-model'},
+            ],
+        }
+        with patch.object(runtime, 'generate',
+                          side_effect=runtime.OutcomeUnknown('提交结果未知')) as generate:
+            with self.assertRaises(RuntimeError):
+                runtime.run_task(binding, {'prompt':'hello'}, 502)
+        self.assertEqual(1, generate.call_count)
+        evidence = cm.task_evidence(502)
+        self.assertEqual('unknown', evidence['state'])
+        self.assertEqual(self.ch['id'], evidence['channel'])
+
+    def test_provider_post_failure_classification_is_conservative(self):
+        from server.content_domains import safe_http
+        cfg = cm.version(self.ch['id'], 1, True)
+        with patch.object(safe_http, 'request_json',
+                          side_effect=safe_http.SafeHttpError('unauthorized', 401)):
+            with self.assertRaises(runtime.SubmissionRejected):
+                runtime.request(cfg, 'POST', '/images/generations', {})
+        for status in (0, 408, 409, 425, 429, 500):
+            with self.subTest(status=status), patch.object(
+                    safe_http, 'request_json',
+                    side_effect=safe_http.SafeHttpError('uncertain', status)):
+                with self.assertRaises(runtime.OutcomeUnknown):
+                    runtime.request(cfg, 'POST', '/images/generations', {})
+
+    def test_queued_failover_resumes_selected_candidate_after_worker_restart(self):
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        ready = cm.reserve(second['id'], 'full')   # 切换目标必须具备最近 24 小时完整测试证据
+        cm.finish(ready, 'passed', 'artifact checked')
+        candidates = [
+            {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+            {'id':second['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+        ]
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            **candidates[0], 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':candidates,
+        }
+        rid = cm.reserve(self.ch['id'], 'task', '503', cm.version(self.ch['id']),
+                         execution_snapshot=binding)
+        cm.finish(rid, 'running', '执行请求前检查')
+        cm.finish_task_failover_safe(rid, '供应商明确拒绝提交')
+        cm.prepare_task_failover(rid, candidates[1], '供应商明确拒绝提交')
+
+        seen = []
+        def execute(run_id, _payload):
+            evidence = cm.task_evidence(503)
+            seen.append((run_id, evidence['channel']))
+            cm.finish(run_id, 'passed', 'artifact checked')
+            return {'channel_id':evidence['channel']}
+
+        with patch.object(runtime, 'execute', side_effect=execute):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 503)
+        self.assertEqual([(rid, second['id'])], seen)
+        self.assertEqual(second['id'], result['channel_id'])
+
+    def test_queued_gate_timeout_switches_channel_before_any_submission(self):
+        """并发/限流排队超时属于「未提交」失败：必须切到下一候选，而不是卡在排队。"""
+        second = cm.save('admin', dict(
+            self.body, name='备用图片渠道', secret='second-secret'))
+        run_id = cm.reserve(second['id'], 'full')   # 候补渠道必须有最近 24 小时的完整测试证据
+        cm.finish(run_id, 'passed', 'artifact checked')
+        candidates = [
+            {'id':self.ch['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+            {'id':second['id'], 'version':1, 'adapter':'openai_image',
+             'model':'test-model'},
+        ]
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1,
+            **candidates[0], 'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], second['id']], 'route_attempt':1,
+            'route_candidates':candidates,
+        }
+        # 占满主渠道（默认并发 2）：新任务只能在排队闸里等，等满 120 秒仍未提交供应商
+        busy = [cm.reserve(self.ch['id'], 'task', job, cm.version(self.ch['id']))
+                for job in ('504', '506')]
+        with closing(cm.db()) as c:
+            for run in busy:
+                c.execute("UPDATE runs SET state='running' WHERE id=?", (run,))
+            c.commit()
+
+        real_monotonic = time.monotonic
+        class JumpClock:
+            calls = 0
+            def __call__(self):
+                JumpClock.calls += 1
+                return real_monotonic() + (0.0 if JumpClock.calls <= 4 else 500.0)
+
+        def generate(cfg, _payload, _rid, _job_id):
+            return {'channel_id':cfg['id']}
+
+        with patch.object(time, 'monotonic', JumpClock()), \
+                patch.object(time, 'sleep', lambda *_: None), \
+                patch.object(runtime, 'generate', side_effect=generate):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 505)
+
+        self.assertEqual(second['id'], result['channel_id'])
+        evidence = cm.task_evidence(505)
+        self.assertEqual('passed', evidence['state'])
+        self.assertEqual(second['id'], evidence['channel'])
+        snapshot = evidence['execution_snapshot']
+        self.assertEqual(2, snapshot['route_attempt'])
+        self.assertEqual(self.ch['id'], snapshot['attempts'][0]['channel'])
+        self.assertIn('尚未提交供应商', snapshot['attempts'][0]['detail'])
+        self.assertEqual(1, len([run for run in cm.overview()['runs']
+                                 if run['job_id'] == '505']))
+
+    def test_failover_skips_candidate_that_lost_readiness(self):
+        """采集后被停用的候补渠道不能再接单：切换应跳过它、落到下一个可用候选。"""
+        second = cm.save('admin', dict(self.body, name='备用-失效', secret='second-secret'))
+        third = cm.save('admin', dict(self.body, name='备用-可用', secret='third-secret'))
+        for channel in (self.ch, second, third):
+            run_id = cm.reserve(channel['id'], 'full')
+            cm.finish(run_id, 'passed', 'artifact checked')
+        cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channels':[self.ch['id'], second['id'], third['id']], 'expected_revision':0,
+        })
+        binding = cm.capture('image', {
+            'source_page':'banana', 'provider':'xiaole', 'prompt':'hello',
+        })['_channel_binding']
+        cm.save('admin', dict(self.body, **second, enabled=False))
+
+        calls = []
+        def generate(cfg, _payload, _rid, _job_id):
+            calls.append(cfg['id'])
+            if cfg['id'] == self.ch['id']:
+                raise runtime.SubmissionRejected('供应商明确拒绝提交')
+            return {'channel_id':cfg['id']}
+
+        with patch.object(runtime, 'generate', side_effect=generate):
+            result = runtime.run_task(binding, {'prompt':'hello'}, 601)
+
+        self.assertEqual([self.ch['id'], third['id']], calls)
+        self.assertEqual(third['id'], result['channel_id'])
+        evidence = cm.task_evidence(601)
+        self.assertEqual(third['id'], evidence['channel'])
+        self.assertEqual(2, evidence['execution_snapshot']['route_attempt'])
+
+    def test_stranded_queued_run_converges_instead_of_queue_loop(self):
+        """排队记录指向候选清单之外的渠道时必须收敛成终态，否则会在排队与重排之间空转。"""
+        backup = cm.save('admin', dict(self.body, name='备用-固化', secret='second-secret'))
+        candidates = [
+            {'id':self.ch['id'], 'version':1, 'adapter':'openai_image', 'model':'test-model'},
+            {'id':backup['id'], 'version':1, 'adapter':'openai_image', 'model':'test-model'},
+        ]
+        switched = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1, **candidates[1],
+            'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], backup['id']], 'route_attempt':2,
+            'route_candidates':candidates,
+        }
+        cm.reserve(backup['id'], 'task', '602', cm.version(backup['id']),
+                   execution_snapshot=switched)
+        incoming = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':9, **candidates[0],
+            'route_candidates':[candidates[0]],
+        }
+
+        with patch.object(runtime, 'execute') as execute:
+            with self.assertRaises(RuntimeError) as raised:
+                runtime.run_task(incoming, {'prompt':'hello'}, 602)
+
+        self.assertIn('不在候选清单中', str(raised.exception))
+        self.assertFalse(execute.called)
+        evidence = cm.task_evidence(602)
+        self.assertEqual('failed', evidence['state'])
+        self.assertEqual(backup['id'], evidence['channel'])
+
+    def test_refused_failover_bookkeeping_converges_to_terminal_state(self):
+        """记账被拒时不能把裸 ValueError 抛出循环：必须落成终态，让调用方按失败退点。"""
+        backup = cm.save('admin', dict(self.body, name='备用-记账', secret='second-secret'))
+        candidates = [
+            {'id':self.ch['id'], 'version':1, 'adapter':'openai_image', 'model':'test-model'},
+            {'id':backup['id'], 'version':1, 'adapter':'openai_image', 'model':'test-model'},
+        ]
+        binding = {
+            'operation_id':'image.xiaole.text', 'mapping_revision':1, **candidates[0],
+            'front':'', 'invocation_source':'web',
+            'route_order':[self.ch['id'], backup['id']], 'route_attempt':1,
+            'route_candidates':candidates,
+        }
+
+        def generate(cfg, _payload, _rid, _job_id):
+            if cfg['id'] == self.ch['id']:
+                raise runtime.SubmissionRejected('供应商明确拒绝提交')
+            return {'channel_id':cfg['id']}
+
+        with patch.object(runtime, 'generate', side_effect=generate), \
+                patch.object(cm, 'finish_task_failover_safe',
+                             side_effect=ValueError('当前任务状态不允许自动切换渠道')):
+            with self.assertRaises(RuntimeError) as raised:
+                runtime.run_task(binding, {'prompt':'hello'}, 603)
+
+        self.assertIn('供应商明确拒绝提交', str(raised.exception))
+        evidence = cm.task_evidence(603)
+        self.assertEqual('failed', evidence['state'])
+        self.assertEqual(self.ch['id'], evidence['channel'])
 
     def test_operation_publish_serializes_concurrent_channel_change(self):
         full = cm.reserve(self.ch['id'], 'full')
@@ -362,12 +742,22 @@ class ChannelTests(unittest.TestCase):
             handler.headers = {'X-HQ-Internal-Token':'trusted-token'}
             self.assertEqual('agent', core._invocation_source(handler))
 
-    def test_managed_publish_requires_fresh_full_generation_evidence(self):
-        with self.assertRaisesRegex(ValueError, '完整生成测试'):
-            cm.save_operation_mapping('admin', {
-                'operation_id':'image.xiaole.text', 'state':'managed',
-                'channel':self.ch['id'], 'expected_revision':0,
-            })
+    def test_managed_publish_no_longer_requires_fresh_full_generation_evidence(self):
+        """从未测试、或测试超过 24/48/72 小时，都不能仅因此阻止手动切换。"""
+        published = cm.save_operation_mapping('admin', {
+            'operation_id':'image.xiaole.text', 'state':'managed',
+            'channel':self.ch['id'], 'expected_revision':0,
+        })
+        self.assertEqual('managed', published['state'])
+        self.assertEqual([self.ch['id']], published['channels'])
+        # 测试记录仍作为状态提示存在（未验证），但不再是接单门槛
+        channel = next(i for i in cm.overview()['items'] if i['id'] == self.ch['id'])
+        self.assertIn('health', channel)
+        captured = cm.capture('image', {'source_page':'banana','provider':'xiaole','prompt':'hi'})
+        self.assertEqual(self.ch['id'], captured['_channel_binding']['id'])
+        # 自动切换前的复核仍然保留 24 小时要求（本次不放宽）
+        with self.assertRaisesRegex(ValueError, '24小时'):
+            cm._ready_candidate(self.ch['id'])
 
     def test_operation_mapping_rejects_missing_reference_capability(self):
         with self.assertRaisesRegex(ValueError, '参考图'):

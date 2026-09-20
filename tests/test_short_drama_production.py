@@ -3881,6 +3881,27 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             "still-submit-001", 24,
         ), tuple(association))
 
+    def test_still_admission_freezes_configuration_before_charge_and_replays(self):
+        from content_domains import provider_config
+        ref = {"target_id":"image.banana.nb2", "version":17}
+        def freeze(kind, payload, actor):
+            self.assertEqual([], self.points.deduct_calls)
+            return dict(payload, _provider_config=ref)
+        with mock.patch.object(provider_config, "prepare_job_payload", side_effect=freeze) as pin:
+            first_status, first = self.request("/api/gen/short-drama/generate-stills",
+                body=self._body(), idempotency_key="frozen-still-1")
+            replay_status, replay = self.request("/api/gen/short-drama/generate-stills",
+                body=self._body(), idempotency_key="frozen-still-1")
+        self.assertEqual((first_status,replay_status),(200,200))
+        self.assertEqual(first,replay)
+        pin.assert_called_once()
+        self.assertEqual(len(self.points.deduct_calls),1)
+        with closing(core.jdb()) as conn:
+            stored = conn.execute("SELECT payload FROM jobs WHERE id=?",(first["job_id"],)).fetchone()[0]
+            attempt = conn.execute("SELECT image_payload_json FROM short_drama_charge_attempts").fetchone()[0]
+        self.assertEqual(json.loads(stored)["_provider_config"],ref)
+        self.assertEqual(json.loads(attempt)["_provider_config"],ref)
+
     def test_generic_insert_failure_replays_500_without_creating_again(self):
         path = "/api/gen/image"
         body = {
@@ -3912,7 +3933,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         }
         with mock.patch(
             "content_domains.channel_manager.capture",
-            side_effect=lambda kind, payload: dict(payload, _channel_binding=binding),
+            side_effect=lambda kind, payload, **kwargs: dict(payload, _channel_binding=binding),
         ) as capture:
             status, response = self.request(
                 "/api/gen/image", body=body,

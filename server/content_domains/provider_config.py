@@ -1,0 +1,1138 @@
+# -*- coding: utf-8 -*-
+"""环境变量型线路的「后台覆盖配置」——版本化存储 + 统一解析入口。
+
+背景
+----
+现状：`image.py` / `core.py` / `video.py` / `wavespeed.py` 等模块在 **import 时**
+把 `os.environ` 读成模块级常量，所以改 Key/URL 必须改服务器环境变量并重启服务。
+本模块提供「后台配置优先、原环境变量兜底」的版本化覆盖层，业务方改为调用
+``resolve(target_id)``，即可在不重启的情况下让新任务用上新配置。
+
+硬规则（与改造方案一致）
+------------------------
+1. **URL 与 Key 作为同一个版本发布**，不允许先换 URL 再换 Key。
+2. **验证证据绑定版本**：改了字段就是新版本，旧证据自动不适用。
+3. **已发布后台配置后绝不静默回退环境变量**：读取/解密失败一律抛错。
+4. **票面不允许出现明文 Key**：状态接口只给 `key_present` / `key_last4`。
+5. 发布必须带 `expected_seq`（防两人互覆盖）与 `op_id`（防重复点击），且为原子操作。
+
+存储
+----
+仅支持 PostgreSQL 的 ops.provider_config_* 表，由 Alembic 建表。
+必须显式设置 HQ_ADMIN_CONFIG_STORE=postgres 与 HQ_DATABASE_URL，不提供 SQLite 回退。
+沿用主密钥 HQ_PROVIDER_KEYS_MASTER_KEY（AESGCM），不改变旧业务存储。
+
+这个模块默认不生效：只有业务方调用 ``resolve()`` 且存在 published 版本时才覆盖。
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import threading
+import time
+import urllib.parse
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from . import admin_config_store
+
+MASTER_KEY_ENV = "HQ_PROVIDER_KEYS_MASTER_KEY"
+# 接线开关：不设/空 = 完全不接管（行为与改造前逐字节一致）。
+# 取值：all / 1 / true，或逗号分隔的 target_id 白名单。
+WIRING_ENV = "HQ_PROVIDER_CONFIG_WIRING"
+CACHE_TTL_SECONDS = 5.0  # ≤10s 生效目标下，进程内缓存的保守上限
+
+SOURCE_ENV = "env"
+SOURCE_BACKEND = "backend"
+
+STATUS_DRAFT = "draft"
+STATUS_PUBLISHED = "published"
+STATUS_SUPERSEDED = "superseded"
+STATUS_REVOKED = "revoked"
+
+# ---------------------------------------------------------------------------
+# 目标线路登记表
+# ---------------------------------------------------------------------------
+# ``pool_provider`` 非空表示：这个环境变量同时被号池当作运行兜底/快照来源
+# （见 provider_keys.ENV_KEYS）。这类线路的影响范围会跨图片/视频，UI 必须显式提示。
+TARGETS = {
+    "image.banana.nb2": {
+        "provider": "gemini", "kind": "image",
+        "features": ["图片生成 → 纳米香蕉 2 / Pro"],
+        "env_keys": ("GEMINI_API_KEY",),
+        "url_env": ("GEMINI_OFFICIAL_BASE", "GEMINI_BASE"),
+        "url_default": "https://generativelanguage.googleapis.com",
+        "pool_provider": "omni",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+    },
+    "image.seedream": {
+        "provider": "seedance", "kind": "image",
+        "features": ["图片生成 → 黄雀引擎 1（Seedream）"],
+        "env_keys": ("ARK_API_KEY",),
+        "url_env": ("ARK_BASE",),
+        "url_default": "https://ark.cn-beijing.volces.com/api/v3",
+        "pool_provider": "seedance",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+    },
+    "image.openai": {
+        "provider": "openai", "kind": "image",
+        "features": ["图片生成 → 黄雀引擎 2"],
+        "env_keys": ("OPENAI_API_KEY",),
+        "url_env": ("OPENAI_OFFICIAL_BASE", "OPENAI_BASE"),
+        "url_default": "https://api.openai.com",
+        "pool_provider": "sora",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+    },
+    "image.xiaole": {
+        "provider": "xiaolevideo", "kind": "image",
+        "features": ["图片生成 → 果肉生图（已下架）"],
+        "env_keys": ("XIAOLEVIDEO_API_KEY",),
+        "url_env": ("XIAOLEVIDEO_API_BASE",),
+        "url_default": "https://api.xiaolevideo.cn",
+        "pool_provider": "",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+        "editable": False,
+        "deprecated": True,
+        "deprecated_reason": "该生图 API 已下架（image.py::validate_image_payload）",
+    },
+    "xiaolevideo": {
+        # 凭据线路目标：video.py::_xiaole_request 是唯一咽喉，果肉生图与
+        # generate_xiaole_video（视频）共用同一份 Key/URL。
+        # 果肉生图已下架；本目标保留为“接线模式”的参考实现，默认不出可编辑按钮。
+        "provider": "xiaolevideo", "kind": "image+video",
+        "features": ["图片生成 → 果肉生图（已下架）",
+                      "视频生成 → 果肉视频（generate_xiaole_video 历史路径）"],
+        "env_keys": ("XIAOLEVIDEO_API_KEY",),
+        "url_env": ("XIAOLEVIDEO_API_BASE",),
+        "url_default": "https://api.xiaolevideo.cn",
+        "pool_provider": "",
+        "choke_point": "content_domains/video.py::_xiaole_request",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+        "editable": False,
+        "deprecated": True,
+        "deprecated_reason": "果肉生图已下架；仅保留为历史视频路径",
+    },
+    "video.tryon.classic": {
+        "provider": "runninghub", "kind": "video",
+        "features": ["视频模块 → 换装换背景 · 线路一"],
+        "env_keys": ("RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"),
+        "url_env": ("RUNNINGHUB_BASE",),
+        "url_default": "https://www.runninghub.cn",
+        "pool_provider": "",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+    },
+    "video.tryon.fast": {
+        "provider": "wavespeed", "kind": "video",
+        "features": ["视频模块 → 换装换背景 · 线路二",
+                      "视频模块 → Seedance AI 超清"],
+        "env_keys": ("WAVESPEED_API_KEY",),
+        "url_env": ("WAVESPEED_BASE",),
+        "url_default": "https://api.wavespeed.ai/api/v3",
+        "pool_provider": "",
+        "url_allowlist_env": "HQ_PROVIDER_BASE_HOST_ALLOWLIST",
+    },
+}
+
+_ALLOWED_URL_PORT = (None, 443)
+
+
+class ProviderConfigError(RuntimeError):
+    """可预期的业务错误（校验失败、版本冲突、未验证等）。"""
+
+
+class ProviderConfigUnavailable(ProviderConfigError):
+    """存储/密钥不可用；调用方必须 fail-closed，不得回退环境变量。"""
+
+
+class VersionConflict(ProviderConfigError):
+    """``expected_seq`` 与当前发布版本不一致（并发修改）。"""
+
+
+class NotVerified(ProviderConfigError):
+    """该版本还没有可用验证证据，禁止发布。"""
+
+
+
+
+def mode() -> str:
+    value = (os.environ.get("HQ_ADMIN_CONFIG_STORE") or "sqlite").strip().lower()
+    if value != "postgres":
+        raise ProviderConfigUnavailable("线路配置仅支持 PostgreSQL，请设置 HQ_ADMIN_CONFIG_STORE=postgres")
+    if not (os.environ.get("HQ_DATABASE_URL") or "").strip():
+        raise ProviderConfigUnavailable("线路配置缺少 HQ_DATABASE_URL")
+    return value
+
+
+
+
+
+
+
+
+
+
+
+
+def init_db() -> None:
+    """Check configured storage; schema is exclusively managed by Alembic."""
+    mode()
+
+
+# ---------------------------------------------------------------------------
+# 密钥封装（与 provider_keys 共用主密钥，AAD 域分开）
+# ---------------------------------------------------------------------------
+
+def vault_ready() -> bool:
+    try:
+        _master_key()
+        return True
+    except ProviderConfigUnavailable:
+        return False
+
+
+def _master_key() -> bytes:
+    value = str(os.environ.get(MASTER_KEY_ENV) or "").strip()
+    if not value:
+        raise ProviderConfigUnavailable("后台密钥保险箱尚未配置")
+    try:
+        raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderConfigUnavailable("后台密钥保险箱配置无效") from exc
+    if len(raw) != 32:
+        raise ProviderConfigUnavailable("后台密钥保险箱配置无效")
+    return raw
+
+
+def _aad(target_id: str) -> bytes:
+    # 只绑定目标线路，不绑定 seq：同一线路内“沿用旧 Key / 回滚”是合法语义，
+    # 需要把旧版本的密文复制到新版本；跨线路重放仍被 AAD 阻断。
+    return ("huangque-provider-config:%s" % target_id).encode("utf-8")
+
+
+def _seal(target_id: str, secret: str):
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(_master_key()).encrypt(
+        nonce, secret.encode("utf-8"), _aad(target_id)
+    )
+    return ciphertext, nonce
+
+
+def _open(target_id: str, ciphertext, nonce) -> str:
+    try:
+        return AESGCM(_master_key()).decrypt(
+            bytes(nonce), bytes(ciphertext), _aad(target_id)
+        ).decode("utf-8")
+    except ProviderConfigUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderConfigUnavailable(
+            "已发布配置的凭据解密失败；拒绝回退环境变量"
+        ) from exc
+
+
+def _last4(secret: str) -> str:
+    return secret[-4:] if len(secret) >= 4 else secret
+
+
+# ---------------------------------------------------------------------------
+# URL 校验（不接受凭据入 URL；只接受 HTTPS 443；默认仅官方域名 + 服务器白名单）
+# ---------------------------------------------------------------------------
+
+def validate_url(target_id: str, value) -> str:
+    spec = target(target_id)
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        raise ProviderConfigError("Base URL 不能为空")
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        raise ProviderConfigError("Base URL 必须是有效的 HTTPS 地址")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ProviderConfigError("Base URL 不能包含账号、密码、查询参数或片段")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ProviderConfigError("Base URL 端口无效") from exc
+    if port not in _ALLOWED_URL_PORT:
+        raise ProviderConfigError("Base URL 仅允许 HTTPS 443 端口")
+    host = parsed.hostname.rstrip(".").lower()
+    if (
+        host == "localhost"
+        or host.endswith((".localhost", ".local", ".internal"))
+        or host.replace(".", "").isdigit()
+        or ":" in host
+    ):
+        raise ProviderConfigError("Base URL 不允许指向本机或内网地址")
+    official = set()
+    if spec.get("url_default"):
+        official.add(urllib.parse.urlsplit(spec["url_default"]).hostname.lower())
+    allowed = official | {
+        item.strip().rstrip(".").lower()
+        for item in str(os.environ.get(spec["url_allowlist_env"]) or "").split(",")
+        if item.strip()
+    }
+    if host not in allowed:
+        raise ProviderConfigError("Base URL 域名未在服务器允许名单中")
+    path = parsed.path.rstrip("/")
+    suffix = {"image.openai": "/v1", "image.banana.nb2": "/v1beta"}.get(target_id)
+    if suffix and path.endswith(suffix):
+        path = path[:-len(suffix)]
+    return urllib.parse.urlunsplit(("https", parsed.netloc, path, "", ""))
+
+
+def url_hint(target_id: str) -> str:
+    """给前端提示：应填域名还是含 /v1、/v3 的基础路径。"""
+    spec = target(target_id)
+    default = spec.get("url_default") or ""
+    return default
+
+
+# ---------------------------------------------------------------------------
+# 登记表读取
+# ---------------------------------------------------------------------------
+
+def target(target_id: str) -> dict:
+    spec = TARGETS.get(str(target_id or "").strip())
+    if not spec:
+        raise ProviderConfigError("未登记的配置目标")
+    return spec
+
+
+def targets() -> list:
+    out = []
+    for target_id, spec in TARGETS.items():
+        out.append(
+            {
+                "target_id": target_id,
+                "provider": spec["provider"],
+                "kind": spec["kind"],
+                "features": list(spec["features"]),
+                "env_keys": list(spec["env_keys"]),
+                "pool_provider": spec.get("pool_provider", ""),
+                "pool_shared": bool(spec.get("pool_provider")),
+                "choke_point": spec.get("choke_point", ""),
+                "editable": spec.get("editable", True),
+                "deprecated": bool(spec.get("deprecated")),
+                "deprecated_reason": spec.get("deprecated_reason", ""),
+                "url_default": spec.get("url_default", ""),
+            }
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 版本读取
+# ---------------------------------------------------------------------------
+
+def _version_row(target_id: str, seq):
+    """按版本号取整行（含密文）；PostgreSQL 为唯一权威。"""
+    mode()
+    return admin_config_store.pc_get_version(target_id, seq)
+
+
+def _evidence_payload(checks: dict, actor, now) -> dict:
+    checks = checks or {}
+    return {
+        "checks": checks.get("checks") or {},
+        "ok": bool(checks.get("ok")),
+        "free_verification": bool(checks.get("free_verification")),
+        "note": str(checks.get("note") or "")[:300],
+        "at": _now(now),
+        "actor": str(actor or ""),
+    }
+
+
+
+
+def active_version(target_id: str):
+    target(target_id)
+    mode()
+    return admin_config_store.pc_active_version(target_id)
+
+
+def list_versions(target_id: str) -> list:
+    target(target_id)
+    mode()
+    rows = admin_config_store.pc_list_versions(target_id)
+    for row in rows:
+        if row.get("evidence"):
+            try:
+                row["evidence"] = json.loads(row["evidence"])
+            except (TypeError, ValueError):
+                row["evidence"] = None
+    return rows
+
+
+def _env_value(names) -> str:
+    for name in names:
+        value = str(os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _env_url(target_id: str) -> str:
+    spec = target(target_id)
+    return _env_value(spec.get("url_env", ())) or str(spec.get("url_default") or "")
+
+
+def status(target_id: str) -> dict:
+    """给后台的状态：不含明文 Key。区分配置来源、版本、验证与生效。"""
+    spec = target(target_id)
+    row = active_version(target_id)
+    backend_url = (row or {}).get("url") or ""
+    url = backend_url or _env_url(target_id)
+    if row:
+        if (row.get("source") or "backend") == "env":
+            source = SOURCE_ENV
+            version = row["seq"]
+            if row.get("key_present"):
+                key_present, key_last4 = True, row.get("key_last4") or ""
+            else:
+                env_secret = _env_value(spec["env_keys"])
+                key_present = bool(env_secret)
+                key_last4 = _last4(env_secret) if env_secret else ""
+        else:
+            key_present = bool(row.get("key_present"))
+            source = SOURCE_BACKEND
+            version = row["seq"]
+            key_last4 = row.get("key_last4") or ""
+    else:
+        key_present = bool(_env_value(spec["env_keys"]))
+        source = SOURCE_ENV
+        version = None
+        key_last4 = _last4(_env_value(spec["env_keys"])) if key_present else ""
+    return {
+        "target_id": target_id,
+        "provider": spec["provider"],
+        "features": list(spec["features"]),
+        "env_keys": list(spec["env_keys"]),
+        "pool_provider": spec.get("pool_provider", ""),
+        "pool_shared": bool(spec.get("pool_provider")),
+        "source": source,
+        "version": version,
+        "url": url,
+        "url_default": spec.get("url_default", ""),
+        "key_present": key_present,
+        "key_last4": key_last4,
+        "editable": spec.get("editable", True),
+        "deprecated": bool(spec.get("deprecated")),
+        "deprecated_reason": spec.get("deprecated_reason", ""),
+        "vault_ready": vault_ready(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 草稿 / 验证 / 发布 / 回滚
+# ---------------------------------------------------------------------------
+
+def _now(now=None) -> int:
+    return int(now if now is not None else time.time())
+
+
+
+
+def save_draft(target_id: str, url=None, secret=None, actor="", reason="",
+               now=None) -> dict:
+    """保存候选 URL/Key 为**新版本草稿**；不改变生产使用版本。
+
+    ``url`` 为 None 表示沿用当前有效 URL；``secret`` 为空表示沿用当前有效 Key。
+    URL 与 Key 永远作为同一个版本；改任一字段都产生新版本（旧验证证据自动失效）。
+    """
+    spec = target(target_id)
+    if not spec.get("editable", True):
+        raise ProviderConfigError(
+            spec.get("deprecated_reason") or "该线路当前不可在后台编辑")
+    actor = str(actor or "").strip()
+    if not actor:
+        raise ProviderConfigError("缺少操作人")
+    current = status(target_id)
+    candidate_url = current["url"] if url is None else validate_url(target_id, url)
+    if not candidate_url:
+        raise ProviderConfigError("缺少 Base URL")
+
+    secret_text = str(secret or "").strip()
+    reuse = not secret_text
+    ts = _now(now)
+
+    ciphertext = nonce = None
+    key_present = 0
+    key_last4 = ""
+    if reuse:
+        if current["source"] == SOURCE_BACKEND:
+            prev = _version_row(target_id, current["version"])
+            if prev and prev["key_present"]:
+                ciphertext, nonce = bytes(prev["ciphertext"]), bytes(prev["nonce"])
+                key_present, key_last4 = 1, prev["key_last4"] or ""
+        else:
+            env_secret = _env_value(spec["env_keys"])
+            if env_secret:
+                ciphertext, nonce = _seal(target_id, env_secret)
+                key_present, key_last4 = 1, _last4(env_secret)
+    else:
+        ciphertext, nonce = _seal(target_id, secret_text)
+        key_present, key_last4 = 1, _last4(secret_text)
+
+    if not key_present:
+        raise ProviderConfigError("缺少 API Key（留空仅当已有可用 Key）")
+
+    mode()
+    out = admin_config_store.pc_save_draft(
+        target_id, spec["provider"], candidate_url, ciphertext, nonce,
+        key_present, key_last4, actor, reason, ts)
+    seq = int(out["seq"])
+    invalidate(target_id)
+    return {"target_id": target_id, "seq": seq, "url": candidate_url,
+            "key_present": bool(key_present), "key_last4": key_last4,
+            "status": STATUS_DRAFT}
+
+
+def record_evidence(target_id: str, seq: int, checks: dict, actor="", now=None) -> dict:
+    """把验证证据绑定到**指定版本**；只有 ``ok`` 为真才可用于发布。"""
+    target(target_id)
+    checks = checks or {}
+    ok = bool(checks.get("ok"))
+    mode()
+    payload = _evidence_payload(checks, actor, now)
+    if not admin_config_store.pc_set_evidence(
+            target_id, int(seq),
+            json.dumps(payload, ensure_ascii=False, sort_keys=True), payload["at"]):
+        raise ProviderConfigError("只能给草稿版本写验证证据")
+    return payload
+
+
+def publish(target_id: str, seq: int, expected_seq, op_id, actor="", now=None) -> dict:
+    """原子发布：校验证据 → 冲突检查 → supersede 旧版本 → 置 published。
+
+    ``op_id`` 幂等：同一 target 重复调用返回首次结果，不产生第二次发布。
+    """
+    target(target_id)
+    op_id = str(op_id or "").strip()
+    if not op_id:
+        raise ProviderConfigError("缺少操作 ID")
+    actor = str(actor or "").strip()
+    if not actor:
+        raise ProviderConfigError("缺少操作人")
+    ts = _now(now)
+
+    mode()
+    try:
+        return admin_config_store.pc_publish(
+            target_id, int(seq), expected_seq, op_id, actor, ts)
+    except admin_config_store.ProviderConfigConflict as exc:
+        raise VersionConflict(str(exc)) from exc
+    except admin_config_store.ProviderConfigNotVerified as exc:
+        raise NotVerified(str(exc)) from exc
+
+
+def rollback(target_id: str, expected_seq, op_id, actor="", to_seq=None, now=None) -> dict:
+    """回滚：把上一个可用版本作为**新版本**重新发布（保留历史）。"""
+    target(target_id)
+    versions = [v for v in list_versions(target_id) if v["status"] in (
+        STATUS_PUBLISHED, STATUS_SUPERSEDED)]
+    if not versions:
+        # 只有一次后台发布（或从未发布）：回滚 = 回到环境变量状态。
+        return _publish_env_version(target_id, expected_seq, op_id, actor, now)
+    target_seq = int(to_seq) if to_seq is not None else None
+    if target_seq is None:
+        published = next((v for v in versions if v["status"] == STATUS_PUBLISHED), None)
+        candidates = [v for v in versions if not published or v["seq"] < published["seq"]]
+        if not candidates:
+            # 当前发布就是首个后台版本 → 回滚 = 回到环境变量
+            return _publish_env_version(target_id, expected_seq, op_id, actor, now)
+        target_seq = candidates[0]["seq"]
+    ts = _now(now)
+    mode()
+    src = admin_config_store.pc_get_version(target_id, target_seq)
+    if not src:
+        raise ProviderConfigError("回滚目标版本不存在")
+    before = admin_config_store.pc_active_version(target_id)
+    out = admin_config_store.pc_insert_published(
+        target_id, src["provider"], src["url"], src["ciphertext"], src["nonce"],
+        src["key_present"], src["key_last4"], src["source"] or "backend",
+        src["evidence"], "rollback to seq %s" % int(target_seq),
+        expected_seq, op_id, actor, ts)
+    invalidate(target_id)
+    out["restored_seq"] = int(target_seq)
+    out["rolled_back_from"] = int(before["seq"]) if before else None
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 统一解析入口
+# ---------------------------------------------------------------------------
+
+_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def invalidate(target_id=None) -> None:
+    with _CACHE_LOCK:
+        if target_id is None:
+            _CACHE.clear()
+        else:
+            _CACHE.pop(str(target_id), None)
+
+
+def _resolve_uncached(target_id: str) -> dict:
+    spec = target(target_id)
+    row = active_version(target_id)
+    if row:
+        if (row.get("source") or "backend") == "env":
+            # 基线/回滚版本：优先用版本内快照（环境变量后来变了也不影响）。
+            if row.get("key_present") and row.get("ciphertext") is not None:
+                return {
+                    "target_id": target_id,
+                    "provider": spec["provider"],
+                    "url": row["url"] or _env_url(target_id),
+                    "credential": _open(target_id, row["ciphertext"], row["nonce"]),
+                    "version": int(row["seq"]),
+                    "source": SOURCE_ENV,
+                }
+            env_secret = _env_value(spec["env_keys"])
+            return {
+                "target_id": target_id,
+                "provider": spec["provider"],
+                "url": _env_url(target_id),
+                "credential": env_secret,
+                "version": int(row["seq"]),
+                "source": SOURCE_ENV,
+            }
+        if not row.get("key_present") or row.get("ciphertext") is None:
+            # 已发布但凭据不可用：fail-closed，绝不回退环境变量。
+            raise ProviderConfigUnavailable(
+                "已发布配置缺少可用凭据，拒绝回退环境变量"
+            )
+        secret = _open(target_id, row["ciphertext"], row["nonce"])
+        return {
+            "target_id": target_id,
+            "provider": spec["provider"],
+            "url": row["url"] or _env_url(target_id),
+            "credential": secret,
+            "version": int(row["seq"]),
+            "source": SOURCE_BACKEND,
+        }
+    return {
+        "target_id": target_id,
+        "provider": spec["provider"],
+        "url": _env_url(target_id),
+        "credential": _env_value(spec["env_keys"]),
+        "version": None,
+        "source": SOURCE_ENV,
+    }
+
+
+def resolve(target_id: str, now=None) -> dict:
+    """业务统一入口：返回 ``实际 URL / 有效凭据 / 配置版本 / 配置来源``。
+
+    进程内 5 秒缓存；发布/回滚会显式失效。已发布后台配置后，存储或解密失败
+    一律抛 ``ProviderConfigUnavailable``，调用方不得回退环境变量。
+    存储瞬时不可用时，若进程内已有 **任意年龄** 的成功读数（安全缓存），
+    返回该读数——它仍是后台配置，不是任意环境变量，不会造成双份不一致。
+    """
+    target(target_id)
+    ts = time.monotonic()
+    with _CACHE_LOCK:
+        hit = _CACHE.get(str(target_id))
+        if hit and ts - hit[0] < CACHE_TTL_SECONDS:
+            return hit[1]
+    try:
+        result = _resolve_uncached(target_id)
+    except ProviderConfigUnavailable:
+        with _CACHE_LOCK:
+            stale = _CACHE.get(str(target_id))
+        if stale is not None:
+            return stale[1]  # 安全缓存：宁用上一次真实读数，也不回退环境变量
+        raise
+    with _CACHE_LOCK:
+        _CACHE[str(target_id)] = (ts, result)
+    return result
+
+
+def wiring_enabled(target_id=None) -> bool:
+    """接线开关：默认关闭。未开启时业务方保持旧行为（读进程启动时的 env 常量）。"""
+    raw = str(os.environ.get(WIRING_ENV) or "").strip().lower()
+    if not raw:
+        return False
+    if raw in ("all", "1", "true", "yes", "on"):
+        return True
+    ids = {item.strip() for item in raw.split(",") if item.strip()}
+    if target_id is None:
+        return bool(ids)
+    return str(target_id) in ids
+
+
+def credentials_for(target_id: str, legacy_key="", legacy_url="") -> dict:
+    """生成/提交路径的唯一取凭据入口（各模块统一调它，避免各自读 env）。
+
+    - 未开启接线：原样返回旧常量（行为零变化）；
+    - 已开启但尚无已发布后台配置：返回环境变量，``source='env'``；
+    - 已开启且有已发布后台配置：返回后台版本（不返回环境变量）；
+    - 存储/解密失败：抛 ``ProviderConfigUnavailable``（fail-closed）。
+    """
+    if not wiring_enabled(target_id):
+        return {"target_id": target_id, "url": legacy_url, "credential": legacy_key,
+                "version": None, "source": SOURCE_ENV, "wired": False}
+    out = dict(resolve(target_id))
+    out["wired"] = True
+    if not out.get("credential"):
+        out["credential"] = legacy_key
+    if not out.get("url"):
+        out["url"] = legacy_url
+    # 生效反馈来自“实际使用它的服务”：这里上报本次真正加载的版本。
+    # 上报失败不影响业务，但生效状态会诚实地显示“结果待核对”。
+    try:
+        report_loaded(target_id, out.get("version"), out.get("source"))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def job_credentials(target_id, ref, legacy_key="", legacy_url=""):
+    """Resolve an immutable job version, including after disabling admission."""
+    if ref:
+        if not isinstance(ref, dict) or ref.get("target_id") != target_id or not ref.get("version"):
+            raise ProviderConfigUnavailable("任务渠道版本不匹配")
+        out = dict(resolve_pinned(target_id, ref["version"]))
+        out["wired"] = True
+        try:
+            report_loaded(target_id, out.get("version"), out.get("source"))
+        except Exception:
+            pass
+        return out
+    # Pre-rollout jobs have no version. Never silently move those jobs to a
+    # subsequently published account; new admissions always pin before charge.
+    return {"target_id": target_id, "url": legacy_url, "credential": legacy_key,
+            "version": None, "source": SOURCE_ENV, "wired": False}
+
+
+def reveal(target_id: str, seq: int, actor="", now=None) -> dict:
+    """管理员查看指定版本的明文（调用方必须写审计）。"""
+    target(target_id)
+    row = _version_row(target_id, seq)
+    if not row:
+        raise ProviderConfigError("配置版本不存在")
+    if not row["key_present"] or row["ciphertext"] is None:
+        return {"target_id": target_id, "seq": int(seq), "secret": "", "url": row["url"]}
+    return {
+        "target_id": target_id,
+        "seq": int(seq),
+        "secret": _open(target_id, row["ciphertext"], row["nonce"]),
+        "url": row["url"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 生效反馈：由**实际运行的服务**上报自己加载的版本
+# ---------------------------------------------------------------------------
+# “配置已生效”必须来自运行服务的加载结果，不能由保存/发布成功推断。
+RUNTIME_FRESH_SECONDS = 900  # 超过此时间未上报的实例视为“未刷新/已下线”
+
+# 生效状态（与改造方案第五节一致）
+STATE_DRAFT_ONLY = "draft_only"            # 草稿已保存（尚未发布）
+STATE_VERIFIED = "verified"                # 验证通过（尚未发布）
+STATE_PUBLISHING = "publishing"             # 已发布，部分实例尚未确认
+STATE_EFFECTIVE = "effective"               # 配置已生效（新任务将使用新版本）
+STATE_UNCONFIRMED = "unconfirmed"           # 结果待核对（无运行实例上报）
+STATE_FAILED = "failed"                     # 发布失败（未完成发布）
+
+STATE_LABELS = {
+    STATE_DRAFT_ONLY: "草稿已保存",
+    STATE_VERIFIED: "验证通过（未发布）",
+    STATE_PUBLISHING: "正在生效",
+    STATE_EFFECTIVE: "配置已生效",
+    STATE_UNCONFIRMED: "结果待核对",
+    STATE_FAILED: "发布失败",
+}
+
+
+def _instance_id(instance_id=None) -> str:
+    if instance_id:
+        return str(instance_id)[:120]
+    try:
+        import socket
+        return "%s:%d" % (socket.gethostname(), os.getpid())
+    except Exception:  # noqa: BLE001
+        return "pid:%d" % os.getpid()
+
+
+def report_loaded(target_id: str, version, source: str, instance_id=None,
+                  now=None) -> None:
+    """运行服务在真正使用某个版本时上报。生效判断只看这张表。"""
+    target(target_id)
+    ts = _now(now)
+    mode()
+    admin_config_store.pc_runtime_upsert(
+        target_id, _instance_id(instance_id), version, str(source), ts)
+    return
+
+
+def runtime_instances(target_id: str, now=None) -> list:
+    target(target_id)
+    ts = _now(now)
+    mode()
+    rows = admin_config_store.pc_runtime_list(target_id)
+    for row in rows:
+        row["fresh"] = (ts - int(row["loaded_at"] or 0)) <= RUNTIME_FRESH_SECONDS
+    return rows
+
+
+def effective_status(target_id: str, now=None) -> dict:
+    """把“发布状态”与“运行服务实际加载结果”合起来给出一个诚实的生效结论。"""
+    spec = target(target_id)
+    ts = _now(now)
+    published = active_version(target_id)
+    versions = list_versions(target_id)
+    latest_draft = next((v for v in versions if v["status"] == STATUS_DRAFT), None)
+    instances = runtime_instances(target_id, ts)
+    fresh = [i for i in instances if i["fresh"]]
+
+    if not published:
+        if latest_draft and (latest_draft.get("evidence") or {}).get("ok"):
+            state = STATE_VERIFIED
+        elif latest_draft:
+            state = STATE_DRAFT_ONLY
+        else:
+            # 从未发布过后台配置：仍在用环境变量，不算“后台配置生效”。
+            state = SOURCE_ENV
+        return {
+            "target_id": target_id, "provider": spec["provider"],
+            "state": state, "label": STATE_LABELS.get(state, "使用环境变量"),
+            "published_version": None, "published_at": None,
+            "instances": instances, "fresh_instances": len(fresh),
+            "editable": spec.get("editable", True),
+            "pool_shared": bool(spec.get("pool_provider")),
+            "checked_at": ts,
+        }
+
+    want = int(published["seq"])
+    if not fresh:
+        state = STATE_UNCONFIRMED
+    elif all(int(i["version"] or 0) == want for i in fresh):
+        state = STATE_EFFECTIVE
+    else:
+        state = STATE_PUBLISHING
+    return {
+        "target_id": target_id, "provider": spec["provider"],
+        "state": state, "label": STATE_LABELS[state],
+        "published_version": want,
+        "published_at": published.get("published_at"),
+        "instances": instances, "fresh_instances": len(fresh),
+        "stale_instances": len(instances) - len(fresh),
+        "not_loaded_instances": [i["instance_id"] for i in fresh
+                                 if int(i["version"] or 0) != want],
+        "editable": spec.get("editable", True),
+        "pool_shared": bool(spec.get("pool_provider")),
+        "checked_at": ts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 任务版本固定：任务创建时定版，后续查询/下载/恢复用同一版本
+# ---------------------------------------------------------------------------
+
+def ensure_baseline_version(target_id: str, actor: str = "system", now=None) -> dict:
+    """确保存在一条可恢复的「环境变量基线版本」。
+
+    任务创建时若还没有任何版本，就把**当前**环境变量的 URL/凭据快照成一条不可变
+    已发布版本（source='env'），使任务总有可恢复的版本引用。
+    """
+    target(target_id)
+    row = active_version(target_id)
+    if row:
+        return {"target_id": target_id, "seq": int(row["seq"]), "created": False}
+    out = _publish_env_version(target_id, None, "baseline-env:%s" % target_id,
+                               actor or "system", now)
+    return {"target_id": target_id, "seq": int(out["seq"]), "created": True}
+
+
+def pin(target_id: str, actor: str = "system") -> dict:
+    """任务创建时调用：返回本任务应固定的版本引用（不含明文）。
+
+    没有任何版本时先落一条环境变量基线快照，保证任务**总有**可恢复的版本引用。
+    """
+    target(target_id)
+    row = active_version(target_id)
+    if not row:
+        ensure_baseline_version(target_id, actor)
+        row = active_version(target_id)
+    if not row:
+        return {"target_id": target_id, "version": None, "source": SOURCE_ENV}
+    return {"target_id": target_id, "version": int(row["seq"]),
+            "url": row["url"], "source": row.get("source") or SOURCE_BACKEND}
+
+
+def resolve_pinned(target_id: str, version, legacy_key="", legacy_url="") -> dict:
+    """按任务固定的版本解析凭据；版本不存在一律报错（不回退环境变量）。"""
+    if version in (None, "", 0, "0"):
+        return {"target_id": target_id, "url": legacy_url, "credential": legacy_key,
+                "version": None, "source": SOURCE_ENV}
+    target(target_id)
+    row = _version_row(target_id, version)
+    if not row:
+        raise ProviderConfigError("任务引用的配置版本不存在（可能未迁移）")
+    if row["status"] not in (STATUS_PUBLISHED, STATUS_SUPERSEDED):
+        raise ProviderConfigError("任务引用的配置版本不可用")
+    if (row.get("source") or "backend") == "env":
+        # 基线版本存的是**快照**：优先用它，环境变量后来变了也不影响老任务恢复。
+        if row["key_present"] and row["ciphertext"] is not None:
+            evidence = row.get("evidence") or {}
+            if isinstance(evidence, str):
+                evidence = json.loads(evidence)
+            return {"target_id": target_id, "url": row["url"] or legacy_url,
+                    "fallback_url": evidence.get("fallback_url") or row["url"] or legacy_url,
+                    "credential": _open(target_id, row["ciphertext"], row["nonce"]),
+                    "version": int(row["seq"]), "source": SOURCE_ENV}
+        return {"target_id": target_id, "url": legacy_url, "credential": legacy_key,
+                "version": int(row["seq"]), "source": SOURCE_ENV}
+    if not row["key_present"] or row["ciphertext"] is None:
+        raise ProviderConfigUnavailable("任务引用的配置版本缺少凭据")
+    return {
+        "target_id": target_id,
+        "url": row["url"] or legacy_url,
+        "credential": _open(target_id, row["ciphertext"], row["nonce"]),
+        "version": int(row["seq"]),
+        "source": SOURCE_BACKEND,
+    }
+
+
+def _publish_env_version(target_id, expected_seq, op_id, actor, now=None):
+    """发布一条 source='env' 的版本：语义上等于「回到服务器环境变量」。
+
+    重要：把当前环境变量的 URL 与凭据**快照**进版本（不可变）。否则以后改环境变量，
+    老任务就无法还原它创建时用的配置。
+    """
+    target(target_id)
+    op_id = str(op_id or "").strip()
+    if not op_id:
+        raise ProviderConfigError("缺少操作 ID")
+    actor = str(actor or "").strip()
+    if not actor:
+        raise ProviderConfigError("缺少操作人")
+    ts = _now(now)
+    evidence_data = (
+        {"ok": True, "checks": {"source": "env"}, "free_verification": True,
+         "note": "环境变量基线快照（不可变，供任务恢复固定版本）"})
+    env_secret = _env_value(target(target_id)["env_keys"])
+    env_url = _env_url(target_id)
+    prefix = {"image.banana.nb2": "GEMINI", "image.openai": "OPENAI"}.get(target_id)
+    if prefix:
+        default = target(target_id)["url_default"]
+        env_url = os.environ.get(prefix + "_OFFICIAL_BASE", default).rstrip("/")
+        fallback = os.environ.get(prefix + "_BASE", default).rstrip("/")
+        parsed = urllib.parse.urlsplit(fallback)
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ProviderConfigUnavailable("环境变量备用地址含敏感参数，无法建立线路快照")
+        evidence_data["fallback_url"] = fallback
+    evidence = json.dumps(evidence_data, ensure_ascii=False, sort_keys=True)
+    snap_cipher = snap_nonce = None
+    snap_present, snap_last4 = 0, ""
+    if env_secret:
+        snap_cipher, snap_nonce = _seal(target_id, env_secret)
+        snap_present, snap_last4 = 1, _last4(env_secret)
+
+    mode()
+    before = admin_config_store.pc_active_version(target_id)
+    out = admin_config_store.pc_insert_published(
+        target_id, target(target_id)["provider"], env_url, snap_cipher, snap_nonce,
+        snap_present, snap_last4, "env", evidence,
+        "rollback to environment variables", expected_seq, op_id, actor, ts)
+    invalidate(target_id)
+    out["source"] = "env"
+    out["rolled_back_from"] = int(before["seq"]) if before else None
+    return out
+
+
+def sanitize_payload(payload: dict) -> dict:
+    """任务入口第一步：丢掉客户端可能伪造的 ``_provider_config``。
+
+    配置版本必须**由服务端生成**，不能信任客户端传入（否则可以指定任意版本/绕过发布）。
+    入口应在校验前调它，插入前再调 ``pin_payload`` 写上服务端版本。
+    """
+    if isinstance(payload, dict):
+        payload.pop("_provider_config", None)
+    return payload
+
+
+def pin_payload(target_id: str, payload: dict, actor: str = "system") -> dict:
+    """任务创建时调用：**覆盖式**写入服务端解析出的固定版本（随 job 记录持久化）。
+
+    - 无论 payload 里原先有什么 ``_provider_config`` 都会被服务端值覆盖；
+    - 必须在扣费/入队**之前**调用；写入失败就不得留下“已扣费但无法执行”的任务。
+    - worker / 重试 / 恢复读的是持久化 payload，不依赖进程内存。
+    """
+    ref = pin(target_id, actor)
+    if isinstance(payload, dict):
+        payload["_provider_config"] = {"target_id": target_id,
+                                       "version": ref.get("version")}
+    return payload
+
+
+def retained_versions(target_id: str) -> list:
+    """所有仍可被在途任务引用的版本（published + superseded）。只增不删。"""
+    target(target_id)
+    return [v["seq"] for v in list_versions(target_id)
+            if v["status"] in (STATUS_PUBLISHED, STATUS_SUPERSEDED)]
+
+
+def prepare_job_payload(kind: str, payload: dict, actor: str = "system") -> dict:
+    """Server-owned snapshot at the shared, pre-charge admission boundary.
+
+    Never reuse a caller's version. Managed routes own their own immutable
+    binding. Legacy image/tryon and composite material routes pin here. The switch
+    controls admission of NEW jobs, not resolution of already pinned jobs.
+    """
+    clean = sanitize_payload(dict(payload))
+    provider = str(clean.get("provider") or "openai").strip().lower()
+    target_id = ({"seedream": "image.seedream", "banana": "image.banana.nb2",
+                  "openai": "image.openai"}.get(provider) if kind == "image" else None)
+    if kind == "tryon":
+        from .video import _tryon_line
+        target_id = "video.tryon.fast" if _tryon_line(clean) == "2" else "video.tryon.classic"
+    elif kind == "xiaole_video" and clean.get("channel") == "micro" and clean.get("upscale") is True:
+        target_id = "video.tryon.fast"
+    elif kind == "script_to_video" and any(
+            isinstance(item, dict) and item.get("source") == "generate"
+            for item in clean.get("material_plan") or []):
+        target_id = "image.openai"
+    if not target_id or clean.get("_channel_binding") or not wiring_enabled(target_id):
+        return clean
+    pin_payload(target_id, clean, actor)
+    ref = clean["_provider_config"]
+    if not ref.get("version"):
+        raise ProviderConfigUnavailable("无法固定图片渠道配置版本，未扣点")
+    credentials = resolve_pinned(target_id, ref["version"])
+    if not credentials.get("credential") or not credentials.get("url"):
+        raise ProviderConfigUnavailable("图片渠道配置不完整，未扣点")
+    return clean
+
+
+# ---------------------------------------------------------------------------
+# 草稿验证：只用连接 + 鉴权探测，**不触发生成、不产生费用**
+# ---------------------------------------------------------------------------
+
+def _http_probe(url, key, timeout=8):
+    """默认探测器：对候选 URL 做连接探测，对 {url}/models 做鉴权探测。
+
+    不使用付费生成，也不因验证失败关闭 HTTPS 校验。只用于“能不能用”的判定，
+    不代表生成一定成功。
+    """
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    ctx = ssl.create_default_context()
+    base = str(url).rstrip("/")
+    out = {"connection": {"ok": False},
+           "auth": {"ok": False}}
+    try:
+        req = urllib.request.Request(base, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            out["connection"] = {"ok": True, "status": int(resp.status)}
+    except urllib.error.HTTPError as exc:
+        # 能拿到 HTTP 状态就说明网络可达（401/403/404 都算可达）。
+        out["connection"] = {"ok": True, "status": int(exc.code)}
+    except Exception:  # noqa: BLE001
+        out["connection"] = {"ok": False, "error": "连接探测失败，请检查地址或稍后重试"}
+        out["auth"] = {"ok": False, "error": "连接未建立，鉴权未验证"}
+        return out
+    try:
+        req = urllib.request.Request(
+            base + "/models", method="GET",
+            headers={"Authorization": "Bearer " + str(key or "")})
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            status = int(resp.status)
+            out["auth"] = {"ok": 200 <= status < 300, "status": status}
+    except urllib.error.HTTPError as exc:
+        # Reachable is not authenticated. A missing endpoint, rate limit or
+        # upstream failure supplies no positive evidence and MUST NOT publish.
+        status = int(exc.code)
+        note = ("凭据被拒绝" if status in (401, 403) else
+                "验证接口不存在，请检查 URL" if status == 404 else
+                "上游限流，鉴权未验证，请稍后重试" if status == 429 else
+                "上游验证失败，鉴权未验证，请稍后重试")
+        out["auth"] = {"ok": False, "status": status, "note": note}
+    except Exception:  # noqa: BLE001
+        out["auth"] = {"ok": False, "error": "鉴权探测失败，请检查配置或稍后重试"}
+    return out
+
+
+def _provider_probe(target_id, url, key, timeout=8):
+    """Read-only provider-specific authentication; HTTP 200 HTML is not success."""
+    if target_id == "image.seedream":
+        return _http_probe(url, key, timeout)
+    import urllib.error
+    import urllib.request
+
+    paths = {"image.openai": "/v1/models", "image.banana.nb2": "/v1beta/models",
+             "video.tryon.fast": "/balance", "video.tryon.classic": "/uc/openapi/accountStatus"}
+    if target_id not in paths:
+        raise ProviderConfigError("该线路尚未支持免费验证")
+    headers = {"Authorization": "Bearer " + key}
+    body = None
+    if target_id == "image.banana.nb2":
+        headers = {"x-goog-api-key": key}
+    elif target_id == "video.tryon.classic":
+        headers["Content-Type"] = "application/json"
+        body = json.dumps({"apikey": key}).encode()
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    out = {"connection": {"ok": False}, "auth": {"ok": False}}
+    req = urllib.request.Request(url.rstrip("/") + paths[target_id], data=body,
+                                 headers=headers, method="POST" if body else "GET")
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as response:
+            status = int(response.status)
+            out["connection"] = {"ok": True, "status": status}
+            data = json.loads(response.read(1048576))
+            valid = isinstance(data, dict)
+            if target_id == "image.openai":
+                valid = valid and isinstance(data.get("data"), list)
+            elif target_id == "image.banana.nb2":
+                valid = valid and isinstance(data.get("models"), list)
+            elif target_id == "video.tryon.fast":
+                valid = valid and data.get("code") == 200 and isinstance(data.get("data"), dict) and "balance" in data["data"]
+            else:
+                valid = valid and data.get("code") == 0 and isinstance(data.get("data"), dict) and "remainCoins" in data["data"]
+            out["auth"] = {"ok": bool(valid and 200 <= status < 300), "status": status}
+    except urllib.error.HTTPError as exc:
+        out = {"connection": {"ok": True, "status": exc.code},
+               "auth": {"ok": False, "status": exc.code}}
+    except Exception:
+        out["auth"] = {"ok": False, "error": "鉴权未验证：连接失败或响应格式不正确"}
+    return out
+
+
+def validate_draft(target_id: str, seq: int, actor="", probe=None, now=None) -> dict:
+    """用候选版本的 URL/Key 做验证，把证据绑定到**该版本**。
+
+    只做连接与鉴权探测（默认 _http_probe），不做付费生成。
+    验证后若再改字段会生成新版本，旧证据自动不适用。
+    """
+    target(target_id)
+    row = _version_row(target_id, seq)
+    if not row:
+        raise ProviderConfigError("配置版本不存在")
+    if row["status"] != STATUS_DRAFT:
+        raise ProviderConfigError("只能验证草稿版本")
+    if not row["key_present"] or row["ciphertext"] is None:
+        raise ProviderConfigError("草稿缺少凭据，无法验证")
+    key = _open(target_id, row["ciphertext"], row["nonce"])
+    checks = probe(row["url"], key) if probe else _provider_probe(target_id, row["url"], key)
+    connection = checks.get("connection") or {}
+    auth = checks.get("auth") or {}
+    ok = bool(connection.get("ok")) and bool(auth.get("ok"))
+    note = "连接与鉴权探测（免费，不触发生成）"
+    evidence = record_evidence(
+        target_id, int(seq),
+        {"ok": ok, "checks": {"connection": connection, "auth": auth},
+         "free_verification": True, "note": note},
+        actor=actor, now=now,
+    )
+    return {"target_id": target_id, "seq": int(seq), "ok": ok,
+            "checks": {"connection": connection, "auth": auth},
+            "evidence": evidence,
+            "note": ("验证通过仅代表连接与鉴权可用，不代表生成成功率" if ok else
+                     "验证未通过，不能发布；当前生效配置未改变")}

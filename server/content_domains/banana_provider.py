@@ -190,14 +190,21 @@ def _normalize_ratio(raw, ratio):
 def generate(payload, out_dir, public_url):
     body = validate_payload(payload)
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY is not configured")
     official_base = os.environ.get(
         "GEMINI_OFFICIAL_BASE", "https://generativelanguage.googleapis.com"
     ).rstrip("/")
     fallback_base = os.environ.get(
         "GEMINI_BASE", "https://generativelanguage.googleapis.com"
     ).rstrip("/")
+    from . import provider_config
+    config = provider_config.job_credentials(
+        "image.banana.nb2", payload.get("_provider_config"), api_key, official_base)
+    if config["wired"]:
+        api_key = config["credential"]
+        official_base = config["url"]
+        fallback_base = config.get("fallback_url") or official_base
+    if not api_key:
+        raise ValueError("Gemini 图片渠道未配置")
     model_id = MODELS[body["model"]]
     image_size = IMAGE_SIZES[body["model"]][body["quality"]]
     request_body = build_request_body(

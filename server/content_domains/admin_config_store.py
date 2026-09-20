@@ -15,6 +15,7 @@ SQLite 路径，行为与迁移前逐字节一致。
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -329,3 +330,183 @@ def read_legacy_audit(prefixes, limit) -> list:
     )
     patterns = ["%s%%" % str(item) for item in prefixes]
     return _rows(sql, (patterns, int(limit)))
+
+
+# ---------------------------------------------------------------------------
+# ops.provider_config_versions / ops.provider_config_runtime
+# ---------------------------------------------------------------------------
+# 「环境变量型线路」的版本化后台配置（见 content_domains/provider_config.py）。
+# ciphertext/nonce 是 AES-GCM 密文，任何日志或响应都不得输出。
+
+class ProviderConfigConflict(RuntimeError):
+    """发布冲突：expected_seq 与当前发布版本不一致。"""
+
+
+class ProviderConfigNotVerified(RuntimeError):
+    """目标版本没有通过的验证证据。"""
+
+
+_PC_COLUMNS = (
+    "target_id", "provider", "seq", "url", "ciphertext", "nonce", "key_present",
+    "key_last4", "status", "evidence", "evidence_at", "op_id", "actor", "reason",
+    "source", "created_at", "published_at",
+)
+
+
+def pc_list_versions(target_id) -> list:
+    return _rows(
+        "SELECT seq, url, source, key_present, key_last4, status, evidence, evidence_at, "
+        "op_id, actor, reason, created_at, published_at "
+        "FROM ops.provider_config_versions WHERE target_id = %s ORDER BY seq DESC",
+        (str(target_id),),
+    )
+
+
+def pc_get_version(target_id, seq) -> dict | None:
+    rows = _rows(
+        "SELECT * FROM ops.provider_config_versions WHERE target_id = %s AND seq = %s",
+        (str(target_id), int(seq)))
+    return rows[0] if rows else None
+
+
+def pc_active_version(target_id) -> dict | None:
+    rows = _rows(
+        "SELECT * FROM ops.provider_config_versions WHERE target_id = %s "
+        "AND status = 'published' ORDER BY seq DESC LIMIT 1", (str(target_id),))
+    return rows[0] if rows else None
+
+
+def _pc_lock(conn, target_id) -> None:
+    """同一 target 的写操作串行化（避免并发重复创建基线 / 双发布）。"""
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))",
+                 ("hq-provider-config:" + str(target_id),))
+
+
+def _pc_next_seq(conn, target_id) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(seq), 0) AS s FROM ops.provider_config_versions "
+        "WHERE target_id = %s", (str(target_id),)).fetchone()
+    return int(row["s"]) + 1
+
+
+def _pc_want(expected_seq):
+    return None if expected_seq in (None, "", 0, "0") else int(expected_seq)
+
+
+def pc_save_draft(target_id, provider, url, ciphertext, nonce, key_present,
+                  key_last4, actor, reason, now) -> dict:
+    with _pool_instance().connection() as conn:
+        with conn.transaction():
+            _pc_lock(conn, target_id)
+            seq = _pc_next_seq(conn, target_id)
+            conn.execute(
+                "INSERT INTO ops.provider_config_versions(" + ",".join(_PC_COLUMNS) + ") "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'draft',NULL,NULL,NULL,%s,%s,'backend',%s,NULL)",
+                (str(target_id), str(provider), int(seq), str(url), ciphertext, nonce,
+                 bool(key_present), str(key_last4), str(actor),
+                 str(reason or "")[:200], int(now)))
+    return {"seq": int(seq)}
+
+
+def pc_set_evidence(target_id, seq, evidence_json, at) -> bool:
+    return _write(
+        "UPDATE ops.provider_config_versions SET evidence = %s, evidence_at = %s "
+        "WHERE target_id = %s AND seq = %s AND status = 'draft'",
+        (str(evidence_json), int(at), str(target_id), int(seq))) > 0
+
+
+def _pc_guard(conn, target_id, op_id, expected_seq):
+    done = conn.execute(
+        "SELECT seq, url, status FROM ops.provider_config_versions "
+        "WHERE target_id = %s AND op_id = %s", (str(target_id), str(op_id))).fetchone()
+    if done:
+        return {"seq": done["seq"], "url": done["url"], "status": done["status"],
+                "idempotent": True}
+    cur = conn.execute(
+        "SELECT COALESCE(MAX(seq), 0) AS s FROM ops.provider_config_versions "
+        "WHERE target_id = %s AND status = 'published'", (str(target_id),)).fetchone()
+    current = int(cur["s"]) or None
+    want = _pc_want(expected_seq)
+    if current != want:
+        raise ProviderConfigConflict(
+            "配置已被他人修改：当前发布版本 %s，你基于 %s" % (current, want))
+    return None
+
+
+def pc_publish(target_id, seq, expected_seq, op_id, actor, now) -> dict:
+    with _pool_instance().connection() as conn:
+        with conn.transaction():
+            _pc_lock(conn, target_id)
+            hit = _pc_guard(conn, target_id, op_id, expected_seq)
+            if hit:
+                return hit
+            draft = conn.execute(
+                "SELECT * FROM ops.provider_config_versions WHERE target_id = %s AND seq = %s "
+                "FOR UPDATE", (str(target_id), int(seq))).fetchone()
+            if not draft:
+                raise ValueError("待发布版本不存在")
+            if draft["status"] != "draft":
+                raise ValueError("该版本不是草稿，无法发布")
+            ok = False
+            if draft["evidence"]:
+                try:
+                    evidence = json.loads(draft["evidence"])
+                    ok = bool(evidence.get("ok"))
+                    # Reject persisted false-positive evidence from older
+                    # validators too; a deployment must not bless an old 404.
+                    checks = evidence.get("checks") or {}
+                    auth = checks.get("auth") if isinstance(checks, dict) else None
+                    if isinstance(auth, dict) and 'status' in auth:
+                        ok = ok and auth.get('ok') is True and 200 <= int(auth['status']) < 300
+                except (TypeError, ValueError):
+                    ok = False
+            if not ok:
+                raise ProviderConfigNotVerified("该版本没有通过的验证证据，禁止发布")
+            conn.execute(
+                "UPDATE ops.provider_config_versions SET status = 'superseded' "
+                "WHERE target_id = %s AND status = 'published'", (str(target_id),))
+            conn.execute(
+                "UPDATE ops.provider_config_versions SET status = 'published', "
+                "published_at = %s, op_id = %s, actor = %s "
+                "WHERE target_id = %s AND seq = %s",
+                (int(now), str(op_id), str(actor), str(target_id), int(seq)))
+    return {"seq": int(seq), "url": draft["url"], "status": "published",
+            "idempotent": False, "published_at": int(now)}
+
+
+def pc_insert_published(target_id, provider, url, ciphertext, nonce, key_present,
+                        key_last4, source, evidence_json, reason, expected_seq,
+                        op_id, actor, now) -> dict:
+    with _pool_instance().connection() as conn:
+        with conn.transaction():
+            _pc_lock(conn, target_id)
+            hit = _pc_guard(conn, target_id, op_id, expected_seq)
+            if hit:
+                return hit
+            seq = _pc_next_seq(conn, target_id)
+            conn.execute(
+                "UPDATE ops.provider_config_versions SET status = 'superseded' "
+                "WHERE target_id = %s AND status = 'published'", (str(target_id),))
+            conn.execute(
+                "INSERT INTO ops.provider_config_versions(" + ",".join(_PC_COLUMNS) + ") "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,'published',%s,%s,%s,%s,%s,%s,%s,%s)",
+                (str(target_id), str(provider), int(seq), str(url), ciphertext, nonce,
+                 bool(key_present), str(key_last4), str(evidence_json), int(now),
+                 str(op_id), str(actor), str(reason), str(source), int(now), int(now)))
+    return {"seq": int(seq), "url": str(url), "status": "published",
+            "source": str(source), "idempotent": False}
+
+
+def pc_runtime_upsert(target_id, instance_id, version, source, now) -> None:
+    _write(
+        "INSERT INTO ops.provider_config_runtime(target_id, instance_id, version, source, loaded_at) "
+        "VALUES(%s,%s,%s,%s,%s) ON CONFLICT (target_id, instance_id) DO UPDATE SET "
+        "version = EXCLUDED.version, source = EXCLUDED.source, loaded_at = EXCLUDED.loaded_at",
+        (str(target_id), str(instance_id),
+         None if version is None else int(version), str(source), int(now)))
+
+
+def pc_runtime_list(target_id) -> list:
+    return _rows(
+        "SELECT instance_id, version, source, loaded_at FROM ops.provider_config_runtime "
+        "WHERE target_id = %s ORDER BY loaded_at DESC", (str(target_id),))

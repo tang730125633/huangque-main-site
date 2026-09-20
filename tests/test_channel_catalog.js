@@ -68,6 +68,12 @@ test('mapping options only contain compatible protocol kinds',()=>{
   assert.equal(C.compatible(data,'image')[0].id,'b');
   assert.equal(C.compatible(data,'audio').length,0);
 });
+test('ordered mapping candidates remain visible in channel relationships',()=>{
+  const changed={...data,operation_mappings:[{operation_id:'image.test',label:'图片候选',channels:['b']} ]};
+  const candidate=C.catalog(changed,[]).find(row=>row.id==='b');
+  assert.deepEqual(Array.from(C.mappingChannels(changed.operation_mappings[0])),['b']);
+  assert.deepEqual(Array.from(candidate.features),['图片候选']);
+});
 test('unknown provider category stays explicit',()=>{
   assert.deepEqual(Array.from(C.classify('未登记服务')),['other']);
   assert.equal(rows.find(r=>r.id==='b').supplier,'未标注供应商');
@@ -81,22 +87,23 @@ test('admin scripts parse together and channel entry is unique',()=>{
   assert.equal((html.match(/data-module-tab="channels"/g)||[]).length,0);
 });
 
-test('frontend function center uses a model list and keeps technical details in the drawer',()=>{
+test('frontend function center uses a model list and keeps technical details in the drawer',async()=>{
   const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-workspace.js'),'utf8');
   const element=id=>({id,hidden:false,innerHTML:'',textContent:'',value:'',checked:false,
     isConnected:true,listeners:{},focus(){},classList:{toggle(){}},addEventListener(type,fn){this.listeners[type]=fn},setAttribute(){},querySelector(){return null},querySelectorAll(){return[]}});
   const ids=['cmMatrix','cmSearch','cmSupplier','cmTransport','cmState','cmHistory','cmDrawer','cmDrawerTitle','cmDrawerClose','cmDetail','cmEditor','cmMappingEditor','cmCount','cmCategories','cmList','cmHealth'];
   const elements=Object.fromEntries(ids.map(id=>[id,element(id)])),root=element('root');
+  elements.cmDrawer.hidden=true;
   const panels=['matrix','catalog','mapping','health','audit','layout'].map(cmPanel=>({dataset:{cmPanel},hidden:cmPanel!=='matrix'}));
-  const context={window:null,ChannelCatalog:C,document:{activeElement:element('active'),querySelector:()=>root,querySelectorAll:selector=>selector==='[data-cm-panel]'?panels:[],body:{classList:{add(){},remove(){}}}}};context.window=context;
+  const context={window:null,ChannelCatalog:C,confirm:()=>true,document:{activeElement:element('active'),querySelector:()=>root,querySelectorAll:selector=>selector==='[data-cm-panel]'?panels:[],body:{classList:{add(){},remove(){}}}}};context.window=context;
   vm.createContext(context);vm.runInContext(source,context);
   const legacyChannels=[
     {key:'gemini',name:'Google Gemini API',category:'图片生成',features:['纳米香蕉'],configured:true,accepts_new_jobs:true,env_base_url:'https://generativelanguage.googleapis.com',evidence:{state:'ok',label:'鉴权通过'}},
     {key:'cosyvoice',name:'阿里百炼 API',category:'音频生成',features:['AI 配音 → 公共音色'],configured:true,accepts_new_jobs:true,env_base_url:'https://dashscope.aliyuncs.com',evidence:{state:'ok',label:'鉴权通过'}}
   ];
-  const detailCalls=[],editCalls=[];
+  const detailCalls=[],editCalls=[],newCalls=[],requests=[];
   let allowLegacyClose=true;
-  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,api:async()=>({}),legacy:()=>legacyChannels,closeLegacy(){return allowLegacyClose},editChannel:id=>editCalls.push(id),lifecycle(){},detail(channel,options){detailCalls.push([channel.key,options.managementKind])},mapping(){},refresh(){},task(){},journey(){}});
+  const workspace=context.initChannelWorkspace({el:id=>elements[id],esc:String,toast(){},api:async(path,options)=>{requests.push([path,options]);return{}},legacy:()=>legacyChannels,closeLegacy(){return allowLegacyClose},editChannel:id=>editCalls.push(id),newChannel:template=>newCalls.push(template),lifecycle(){},detail(channel,options){detailCalls.push([channel.key,options.managementKind])},mapping(){},refresh(){},task(){},journey(){}});
   const workspaceData={items:[],mappings:[],legacy_controls:{},adapters:{},frontend_matrix:{page:'image',summary:{products:1,models:1,admitted_models:1,attention_models:0},products:[{
     key:'banana',label:'纳米香蕉',description:'前台产品',visible:true,admitted:true,models:[{key:'nb2',label:'纳米香蕉 2',actual_model:'gemini-3.1-flash-image',capabilities:['文生图','图生图'],admitted:true,routes:[{capability:'文生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}},backup:{id:'gemini-backup',name:'Google Gemini API · 兜底',supplier:'Google Gemini API',connection_type:'relay',base_host:'relay.example.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'ok',label:'鉴权通过'},full:{state:'unverified',label:'未建立模型级成品证据'}},candidate:{id:'gemini-shadow',name:'候选线路',supplier:'候选供应商',connection_type:'relay',base_host:'shadow.example.com',credential_source:'渠道密钥库',configured:true,enabled:false,auth:{state:'stale',label:'证据已过期'},full:{state:'unverified',label:'未建立模型级成品证据'}}},{capability:'图生图',control_state:'legacy',admitted:true,primary:{id:'gemini-primary',name:'Google Gemini API',supplier:'Google Gemini API',connection_type:'official',base_host:'generativelanguage.googleapis.com',credential_source:'服务器环境变量 · GEMINI_API_KEY',configured:true,enabled:true,auth:{state:'unverified',label:'未验证'},full:{state:'unverified',label:'未建立模型级成品证据'}}}]}]
   },{key:'xiaole',label:'果肉生图',description:'前台未开放',visible:false,admitted:false,models:[{key:'default',label:'GPT Image 2',actual_model:'gpt-image-2',visible:false,admitted:false,routes:[]}]}]}};
@@ -106,6 +113,12 @@ test('frontend function center uses a model list and keeps technical details in 
   bananaModel.routes[0].candidate.management={kind:'managed_channel',uid:'managed:shadow-channel'};
   bananaModel.routes[1].primary.management={kind:'server_env',uid:'legacy:gemini'};
   workspace.render(workspaceData);
+  // 产品默认是「简洁视图」（入口保留）；本用例验证的是高级视图契约，
+  // 因此显式点「高级视图 / 优先级」进入，而不是假定高级视图为默认。
+  assert.match(elements.cmMatrix.innerHTML,/cm-simple/);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-simple-toggle/);
+  const simpleToggle={dataset:{cmSimpleToggle:''}};
+  root.listeners.click({target:{closest:()=>simpleToggle}});
   assert.match(elements.cmMatrix.innerHTML,/cm-function-workspace/);
   for(const group of ['内容创作','人物与声音','智能工具','基础服务'])assert.match(elements.cmMatrix.innerHTML,new RegExp(group));
   for(const label of ['生图','生视频'])assert.match(elements.cmMatrix.innerHTML,new RegExp(label));
@@ -149,7 +162,7 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/纳米香蕉 2/);
   assert.match(elements.cmMatrix.innerHTML,/Google Gemini API/);
   assert.match(elements.cmMatrix.innerHTML,/官方直连/);
-  assert.match(elements.cmMatrix.innerHTML,/查看配置/);
+  assert.match(elements.cmMatrix.innerHTML,/配置渠道/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/generativelanguage\.googleapis\.com/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/服务器环境变量/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/证据已过期/);
@@ -189,8 +202,46 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.equal(panels.find(panel=>panel.dataset.cmPanel==='matrix').hidden,true);
   root.listeners.click({target:{closest:()=>({dataset:{cmView:'matrix'}})}});
   assert.equal(panels.find(panel=>panel.dataset.cmPanel==='matrix').hidden,false);
+  workspaceData.items=[
+    {id:'managed-primary',name:'托管主渠道',supplier:'供应商 A',adapter:'openai_image',model:'gemini-3.1-flash-image',base_url:'https://primary.example/v1',connection_type:'official',enabled:true,configured:true,health:'成品核验通过'},
+    {id:'managed-backup',name:'托管备用渠道',supplier:'供应商 B',adapter:'openai_image',model:'gemini-3.1-flash-image',base_url:'https://backup.example/v1',connection_type:'relay',enabled:true,configured:true,health:'未验证'}
+  ];
+  workspaceData.adapters={openai_image:{kind:'image',name:'图片生成'},gemini_image:{kind:'image',name:'Google Gemini 官方生图'}};
+  workspaceData.operations=[{operation_id:'image.banana.nb2.text',channel_eligible:true,channel_kind:'image',name:'纳米香蕉 2 文生图',mapping:{operation_id:'image.banana.nb2.text',state:'shadow',revision:4,channels:['managed-primary','managed-backup'],channel:'managed-primary',backup:'managed-backup'}}];
+  workspaceData.operation_mappings=[workspaceData.operations[0].mapping];
+  workspaceData.runs=[{id:81,job_id:501,operation_id:'image.banana.nb2.text',mapping_revision:4,channel:'managed-backup',state:'passed',execution_snapshot:{route_attempt:2,attempts:[{attempt:1,channel:'managed-primary',version:1,state:'failed',detail:'供应商明确拒绝提交'}]}}];
+  bananaModel.routes[0].operation_id='image.banana.nb2.text';
+  bananaModel.routes[0].primary.model='gemini-3.1-flash-image';
+  workspace.render(workspaceData);
   const modelButton={dataset:{cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
-  root.listeners.click({target:{closest:()=>modelButton}});
+  // 简洁视图会默认选中首个可见模型（否则右侧面板是空的），而这个选择与高级视图
+  // 共享同一个 matrixExpanded —— 所以切到高级视图时该模型已经是展开的。
+  // 因此这里显式验证「点击 = 收起 / 再点 = 展开」这条契约。
+  await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-key]'?modelButton:null}});
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/cm-priority-editor/);
+  await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-key]'?modelButton:null}});
+  assert.equal(elements.cmDrawer.hidden,true);
+  assert.match(elements.cmMatrix.innerHTML,/cm-priority-editor/);
+  assert.match(elements.cmMatrix.innerHTML,/渠道优先级/);
+  assert.match(elements.cmMatrix.innerHTML,/draggable="true"/);
+  assert.match(elements.cmMatrix.innerHTML,/托管主渠道/);
+  assert.match(elements.cmMatrix.innerHTML,/托管备用渠道/);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-managed-edit="managed-primary"/);
+  assert.match(elements.cmMatrix.innerHTML,/修改 Key \/ URL/);
+  assert.match(elements.cmMatrix.innerHTML,/最近安全切换/);
+  assert.match(elements.cmMatrix.innerHTML,/未受理，已安全切换/);
+  assert.match(elements.cmMatrix.innerHTML,/生成成功/);
+  assert.match(elements.cmMatrix.innerHTML,/结果未知或已受理后失败均不会切换/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
+  assert.match(elements.cmMatrix.innerHTML,/拖到第一位即切换主渠道/);
+  const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
+  await root.listeners.click({target:{closest:selector=>selector==='button'?moveButton:null}});
+  // Reordering itself submits; there is no separate save control.
+  const publish=JSON.parse(requests.find(([path])=>path.endsWith('/operation-mapping'))[1].body);
+  assert.deepEqual(Array.from(publish.channels),['managed-backup','managed-primary']);
+  assert.equal(publish.expected_revision,4);
+  const configButton={dataset:{cmModelConfig:'',cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
+  await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-config]'?configButton:null}});
   assert.equal(elements.cmDrawer.hidden,false);
   assert.match(elements.cmDrawerTitle.textContent,/纳米香蕉 · 纳米香蕉 2/);
   assert.match(elements.cmDetail.innerHTML,/generativelanguage\.googleapis\.com/);
@@ -207,7 +258,20 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmDetail.innerHTML,/id="cmLegacyKeys"/);
   assert.match(elements.cmDetail.innerHTML,/data-cm-managed-edit="shadow-channel"/);
   assert.match(elements.cmDetail.innerHTML,/data-cm-inline-route="legacy:gemini" data-cm-inline-kind="provider_pool"/);
+  assert.match(elements.cmDetail.innerHTML,/线路配置 · 验证后发布/);
+  assert.match(elements.cmDetail.innerHTML,/data-pc-edit="image.banana.nb2"/);
+  assert.doesNotMatch(elements.cmDetail.innerHTML,/data-cm-server-replace/);
   assert.deepEqual(detailCalls,[['gemini','server_env']]);
+  root.listeners.click({target:{closest:()=>({dataset:{cmServerReplace:'image.banana.nb2'}})}});
+  assert.equal(newCalls.length,1);
+  assert.equal(newCalls[0].adapter,'gemini_image');
+  assert.equal(newCalls[0].model,'gemini-3.1-flash-image');
+  assert.equal(newCalls[0].base_url,'https://generativelanguage.googleapis.com');
+  assert.equal(newCalls[0].enabled,true);
+  assert.equal(newCalls[0].test_cost,1,'没有完整测试预算就无法验证，也就永远切不了主渠道');
+  assert.equal(newCalls[0].daily_limit,1);
+  assert.equal(newCalls[0].daily_budget,1);
+  assert.deepEqual(Array.from(newCalls[0]._replacement.operations),['image.banana.nb2.text']);
   const poolButton={dataset:{cmInlineRoute:'legacy:gemini',cmInlineKind:'provider_pool'},classList:{toggle(){}},setAttribute(){}};
   allowLegacyClose=false;
   root.listeners.click({target:{closest:()=>poolButton}});
@@ -228,11 +292,14 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(source,/data-cm-matrix-hidden/);
   assert.match(source,/data-cm-inline-route/);
   assert.match(source,/data-cm-managed-edit/);
+  assert.match(source,/data-cm-server-replace/);
   assert.match(source,/data-cm-view="layout">调整前台展示/);
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
   assert.doesNotMatch(html,/module-subnav[^>]*aria-label="渠道管理页面"/);
   assert.doesNotMatch(html,/data-cm-tab=/);
-  assert.match(html,/data-cm-view="catalog">渠道与密钥/);
+  assert.doesNotMatch(html,/<button data-cm-view="catalog">渠道与密钥<\/button>/);
+  assert.match(html,/<details class="cm-admin-menu">[\s\S]*data-cm-view="catalog">底层渠道库/);
+  assert.match(html,/<h3>底层渠道库<\/h3>/);
   assert.match(html,/data-cm-view="health">运行检查/);
   assert.match(html,/data-cm-view="matrix">← 返回模型与渠道/);
 });
@@ -290,4 +357,33 @@ test('layout loader accepts wrapped and legacy contracts and exposes empty and r
   assert.match(elements.cmLayout.innerHTML,/正在读取前台布局/);
   await settle();
   assert.match(elements.cmLayout.innerHTML,/data-layout-row="video:minimax"/);
+});
+
+test('server-line replacement never promotes the new channel and keeps paused functions paused',async()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-manager.js'),'utf8');
+  const start=source.indexOf('async function applyReplacement');
+  const end=source.indexOf('\n    }',start)+6;
+  assert.ok(start>0&&end>start,'applyReplacement 未找到');
+  const run=async(mappings)=>{
+    const requests=[];
+    const ctx={post:(action,body)=>{requests.push({action,body});return Promise.resolve({id:'new'})},
+      mappingChannels:m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean),
+      routeMappings:()=>mappings};
+    vm.createContext(ctx);
+    vm.runInContext('let replacementPaused=[];\n'+source.slice(start,end)+'\nglobalThis.__apply=applyReplacement;',ctx);
+    const paused=await ctx.__apply({id:'new'},{operations:mappings.map(m=>m.operation_id)});
+    return {requests,paused};
+  };
+  const managed={operation_id:'image.banana.nb2.text',state:'managed',revision:7,channels:['primary','backup'],channel:'primary',backup:'backup'};
+  const legacy={operation_id:'image.gemini.nb2.text',state:'legacy',revision:1,channel:'legacy-line'};
+  const paused={operation_id:'video.banana.pro.text',state:'paused',revision:3,channels:['stopped']};
+  const {requests,paused:pausedOperations}=await run([managed,legacy,paused]);
+  const mapping=requests.filter(r=>r.action==='operation-mapping');
+  const summary=JSON.parse(JSON.stringify(mapping.map(r=>[r.body.operation_id,r.body.state,r.body.channels,r.body.expected_revision])));
+  assert.deepEqual(summary,
+    [['image.banana.nb2.text','managed',['primary','backup','new'],7],
+     ['image.gemini.nb2.text','shadow',['new','legacy-line'],1]]);
+  assert.deepEqual(Array.from(pausedOperations),['video.banana.pro.text']);
+  assert.equal(mapping.some(r=>r.body.operation_id==='video.banana.pro.text'),false,'暂停中的功能不得被静默恢复');
+  assert.deepEqual(requests.filter(r=>r.action==='test').map(r=>r.body.kind),['connection','auth']);
 });

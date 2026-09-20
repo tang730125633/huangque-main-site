@@ -30,7 +30,9 @@ CATALOG = {
     "HQ-UPSTREAM-003": {"type": "upstream_timeout", "status": 504, "message": "生成渠道响应超时，请稍后查询任务状态", "retryable": True},
 }
 
-STATUS_CODES = {item["status"]: code for code, item in CATALOG.items()}
+STATUS_CODES = {}
+for code, item in CATALOG.items():
+    STATUS_CODES.setdefault(item["status"], code)
 LEGACY_CODES = {
     "cli_unauthorized": "HQ-AUTH-001",
     "insufficient_scope": "HQ-AUTH-002",

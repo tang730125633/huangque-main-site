@@ -2,7 +2,10 @@
 (function(){
   window.initChannelManager=function(env){
     const {api,esc,el,toast}=env;
-    let data={items:[],mappings:[],runs:[],adapters:{}}, editing=null, loading=false, runFilter=null, secretTimer=null;
+    let data={items:[],mappings:[],runs:[],adapters:{}}, editing=null, loading=false, runFilter=null, secretTimer=null, replacementPaused=[];
+    const request=window.ChannelRequest?window.ChannelRequest.createClient(api,{readTimeout:20000,writeTimeout:15000}):null;
+    const loadGuard=window.ChannelRequest?window.ChannelRequest.createLatestGuard():null;
+    let lastLoadedAt=0,createUncertain=false,createPending=false;
     const secretField=()=>'<div class="cm-secret-field" style="display:grid;gap:6px"><label>API 密钥（留空保留旧值）<input class="field" name="secret" type="password" autocomplete="new-password" placeholder="不填则保留已保存密钥"></label><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button type="button" class="mini" data-cm-secret="view">显示 5 秒</button><button type="button" class="mini" data-cm-secret="copy">复制</button><span class="muted" style="font-size:11.5px">查看明文会留审计记录</span></div><p id="cmSecretReveal" class="muted" hidden style="margin:0;word-break:break-all;font-family:ui-monospace,monospace;user-select:all"></p></div>';
     function selectReveal(node){
       try{const range=document.createRange();range.selectNodeContents(node);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);return true}catch(e){return false}
@@ -33,9 +36,60 @@
       if(!channel){toast('没有找到对应的托管渠道，已取消编辑');return false}
       edit(channel);return true;
     }
-    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById});
+    /* 服务器托管线路替换：新渠道只能是候选，绝不能顶掉已生效的主渠道。
+       managed 映射把新渠道追加到候选末尾；legacy/shadow 先写影子候选；
+       paused 的功能一律不动 —— 暂停是管理员的明确决定，不能因为换 Key 被静默恢复。
+       只依赖 post / routeMappings / mappingChannels（便于单测直接注入），
+       返回值保持“已暂停 operation_id 数组”的既有契约，结构化结果挂在 .structured 上。 */
+    async function applyReplacement(saved,replacement){
+      const mappings=routeMappings();
+      const outcomes=[],paused=[];
+      for(const operationId of replacement.operations||[]){
+        const current=mappings.find(m=>m.operation_id===operationId);
+        if(!current){outcomes.push({operationId,action:'missing',status:'unknown',label:'未找到已发布映射，未处理'});continue}
+        const state=String(current.state||'legacy');
+        if(state==='paused'){paused.push(operationId);outcomes.push({operationId,action:'paused',status:'paused',label:'已暂停，保持不变'});continue}
+        const existing=mappingChannels(current).map(String).filter(id=>id!==String(saved.id));
+        const managed=state==='managed',action=managed?'managed':'shadow';
+        const channels=managed?[...existing,String(saved.id)]:[String(saved.id),...existing];
+        try{
+          await post('operation-mapping',{operation_id:operationId,state:action,channels:channels,expected_revision:Number(current.revision||0)});
+          outcomes.push({operationId,action,status:'done',label:managed?'已加入托管候补':'已加入影子候选'});
+        }catch(error){
+          const timedOut=Boolean(error&&error.timedOut);
+          outcomes.push({operationId,action,status:timedOut?'unknown':'failed',label:timedOut?'已提交，结果待核对（超时）':'失败：'+(error&&error.message||error)});
+        }
+      }
+      const test={connection:null,auth:null};
+      for(const kind of ['connection','auth']){
+        try{await post('test',{id:saved.id,kind});test[kind]={status:'submitted',label:'检测已提交，尚未出结果'}}
+        catch(error){const timedOut=Boolean(error&&error.timedOut);test[kind]={status:timedOut?'unknown':'failed',label:timedOut?'已提交，结果待核对（超时）':'提交失败：'+(error&&error.message||error)}}
+      }
+      paused.structured={plan:{managed:outcomes.filter(o=>o.action==='managed'&&o.status==='done'),shadow:outcomes.filter(o=>o.action==='shadow'&&o.status==='done'),paused:outcomes.filter(o=>o.action==='paused'),missing:outcomes.filter(o=>o.action==='missing')},outcomes,test};
+      return paused;
+    }
+    function renderReplacementResult(saved,result){
+      const host=el('cmReplacementResult');if(!host)return;
+      const line=(cls,text)=>'<div class="cm-replacement-line '+cls+'">'+esc(text)+'</div>';
+      const parts=[],p=result.plan;
+      parts.push(line('ok','新渠道已保存 · ID：'+esc(saved.id)));
+      if(p.managed.length)parts.push(line('neutral',p.managed.length+' 个功能已加入托管候补（不会替换生产主渠道）：'+p.managed.map(s=>s.operationId).join('、')));
+      if(p.shadow.length)parts.push(line('neutral',p.shadow.length+' 个功能已加入影子候选（不改生产路由）：'+p.shadow.map(s=>s.operationId).join('、')));
+      if(p.paused.length)parts.push(line('muted',p.paused.length+' 个功能因暂停保持不变：'+p.paused.map(s=>s.operationId).join('、')));
+      if(p.missing.length)parts.push(line('warn',p.missing.length+' 个功能未找到已发布映射：'+p.missing.map(s=>s.operationId).join('、')));
+      const failed=result.outcomes.filter(o=>o.status==='failed');
+      const unknown=result.outcomes.filter(o=>o.status==='unknown');
+      if(failed.length)parts.push(line('bad','失败步骤：'+failed.map(o=>o.operationId+'（'+o.label+'）').join('、')));
+      if(unknown.length)parts.push(line('warn','结果待核对步骤：'+unknown.map(o=>o.operationId+'（'+o.label+'）').join('、')));
+      const testTxt=[];if(result.test.connection)testTxt.push('连接检测：'+result.test.connection.label);if(result.test.auth)testTxt.push('鉴权检测：'+result.test.auth.label);
+      parts.push(line('neutral',testTxt.join('；')||'检测未提交'));
+      parts.push(line('muted','下一步：等待完整生成测试通过后，在“功能映射 / 渠道优先级”中把该渠道提升为主渠道并发布。请刷新核对实际写入结果，勿重复新建。'));
+      host.innerHTML=parts.join('');host.hidden=false;host.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }
+    const workspace=window.initChannelWorkspace({...env,mapping:editMap,refresh:load,lifecycle,editChannel:editChannelById,channelHistory:showChannelHistory,newChannel:template=>edit(template||{}),validationSettings:id=>{const c=data.items.find(item=>item.id===id);if(c)edit(c,true)}});
+    const mappingChannels=m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean);
     function routeMappings(){return [...(data.mappings||[]),...(data.operation_mappings||[])]}
-    const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>routeMappings().filter(m=>m.channel===id||m.backup===id)});
+    const parameterEditor=window.initChannelParameterEditor({...env,workspace,parameterMappings:id=>routeMappings().filter(m=>mappingChannels(m).includes(id))});
     window.closeChannelWorkspace=workspace.close;
     const labels={passed:'通过',failed:'失败',unknown:'结果未知',terminated:'已终止',queued:'等待中',running:'执行中',blocked:'条件未满足',captured:'已记录'};
     const kinds={connection:'连接检测',auth:'鉴权检测',full:'完整生成测试',task:'用户任务',shadow:'影子观察'};
@@ -45,14 +99,19 @@
     function options(items,selected){return items.map(([id,name])=>'<option value="'+esc(id)+'" '+(id===selected?'selected':'')+'>'+esc(name)+'</option>').join('')}
     function select(label,name,items,selected){return '<label>'+esc(label)+'<select class="field" name="'+name+'">'+options(items,selected)+'</select></label>'}
     function values(form){const out=Object.fromEntries(new FormData(form));form.querySelectorAll('input[type=checkbox]').forEach(x=>out[x.name]=x.checked);return out}
-    async function post(action,body){return api('/api/admin/channel-manager/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})}
+    async function post(action,body){
+      const path='/api/admin/channel-manager/'+action;
+      const raw=request?await request.post(path,body):await api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(raw&&raw.ok===false)throw Object.assign(new Error(raw.detail||raw.error||('业务失败：'+action)),{name:'BusinessError',business:true});
+      return raw;
+    }
     function table(head,rows){return '<div style="overflow:auto"><table><thead><tr>'+head.map(x=>'<th>'+esc(x)+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>'}
     function lifecycle(c,action){
       if(!c)return;
       const names={enable:'启用',disable:'停用',delete:'移入回收站',restore:'恢复'};
       const refs=[...(data.mappings||[]),...(data.operation_mappings||[])]
-        .filter(m=>m.channel===c.id||m.backup===c.id).map(m=>m.label||m.operation_id||m.front);
-      const impact={enable:'允许后续新任务接单。启用不代表渠道测试通过。',disable:'阻止后续新任务和新测试。已受理任务继续使用原配置，不会被终止。',delete:'必须先停用，并解除全部主渠道 / 备用映射引用。执行中或结果未知的调用会阻止删除。历史配置和任务记录保留。',restore:'恢复后保持停用。请检查配置及映射，再手动启用。'};
+        .filter(m=>mappingChannels(m).includes(c.id)).map(m=>m.label||m.operation_id||m.front);
+      const impact={enable:'允许后续新任务接单。启用不代表渠道测试通过。',disable:'阻止后续新任务和新测试。已受理任务继续使用原配置，不会被终止。',delete:'必须先停用，并解除全部渠道优先级引用。执行中或结果未知的调用会阻止删除。历史配置和任务记录保留。',restore:'恢复后保持停用。请检查配置及映射，再手动启用。'};
       if(c.source==='legacy')impact.disable='阻止下列范围的新任务接单。已有任务继续执行；鉴权探针及其他接口保持原有行为。';
       const dialog=document.createElement('dialog');dialog.className='cm-lifecycle-dialog';
       dialog.innerHTML='<form><h3>'+names[action]+' · '+esc(c.name)+'</h3><p>'+esc(impact[action])+'</p><p>'+esc(c.source==='legacy'?'控制范围：'+c.scope+'。其他同步接口不受此开关控制。':'关联功能：'+(refs.join('、')||'无'))+'</p><label>操作原因<textarea class="field" name="reason" required minlength="2" maxlength="200" placeholder="请填写原因，便于后续追踪"></textarea></label><p class="cm-operation-error" role="alert"></p><div class="actions"><button type="button">取消</button><button class="primary" type="submit">确认'+names[action]+'</button></div></form>';
@@ -68,7 +127,7 @@
     function render(){
       workspace.render(data);
       const stateName={legacy:'旧线路',shadow:'影子校验',managed:'统一托管',paused:'已暂停'};
-      const operationRows=(data.operations||[]).map(op=>{const m=op.mapping||{};return '<tr><td>'+esc(op.page_name+' / '+op.feature_name)+'</td><td><strong>'+esc(op.name)+'</strong><br><code>'+esc(op.operation_id)+'</code></td><td>'+esc(data.items.find(c=>c.id===m.channel)?.name||'—')+' / '+esc(data.items.find(c=>c.id===m.backup)?.name||'未设置')+'</td><td>'+esc(stateName[m.state]||'未发布（旧线路）')+(m.revision?' · r'+m.revision:'')+'</td><td><button data-operation="'+esc(op.operation_id)+'">配置 / 切换</button></td></tr>'});
+      const operationRows=(data.operations||[]).map(op=>{const m=(data.operation_mappings||[]).find(x=>x.operation_id===op.operation_id)||op.mapping||{};const chs=Array.isArray(m.channels)?m.channels:[m.channel,m.backup].filter(Boolean);const names=chs.map(id=>data.items.find(c=>c.id===id)?.name||id).join(' → ');return '<tr><td>'+esc(op.page_name+' / '+op.feature_name)+'</td><td><strong>'+esc(op.name)+'</strong><br><code>'+esc(op.operation_id)+'</code></td><td>'+esc(names||'未设置')+'</td><td>'+esc(stateName[m.state]||'未发布（旧线路）')+(m.revision?' · r'+m.revision:'')+'</td><td><button data-operation="'+esc(op.operation_id)+'">配置 / 切换</button></td></tr>'});
       const legacy=(data.mappings||[]).length?'<details><summary>兼容期旧 kind/front 映射（'+data.mappings.length+'）</summary>'+table(['选择器','说明','主渠道','状态','操作'],data.mappings.map((m,i)=>'<tr><td>'+esc(m.kind+' / '+m.front)+'</td><td>'+esc(m.label)+'</td><td>'+esc(data.items.find(c=>c.id===m.channel)?.name||m.channel)+'</td><td>'+(m.enabled?'启用':'停用')+'</td><td><button data-legacy-unmap="'+i+'">删除旧映射</button></td></tr>'))+'</details>':'';
       el('cmMappings').innerHTML=operationRows.length?table(['页面 / 功能','稳定操作标识','主渠道 / 备用','控制状态','操作'],operationRows)+legacy:'<p class="muted">暂无可接入统一渠道的功能。</p>';
       renderRuns(runFilter);
@@ -83,10 +142,71 @@
       const rows=data.runs.filter(r=>!cid||r.channel===cid);
       el('cmRuns').innerHTML=(cid?'<button id="cmAllRuns">显示全部渠道</button>':'')+table(['时间 / 类型','渠道 / 版本','结果 / 耗时','说明','任务 / 供应商工单'],rows.map(r=>'<tr><td>'+esc(date(r.started))+'<br>'+esc(kinds[r.kind])+'</td><td>'+esc(data.items.find(c=>c.id===r.channel)?.name||r.channel)+' / v'+r.version+'</td><td>'+esc(labels[r.state])+' / '+(r.duration==null?'—':Number(r.duration).toFixed(1)+'秒')+'</td><td>'+esc(r.detail)+'</td><td>'+esc(r.job_id||'测试 '+r.id.slice(0,8))+'<br>'+esc(r.provider_id||'尚未采集')+'<br>'+esc(r.operation_id||'未归档 operation')+(r.mapping_revision?' · r'+r.mapping_revision:'')+(r.invocation_source?' · '+esc(r.invocation_source):'')+'</td></tr>'));
     }
-    async function load(){if(loading)return;loading=true;try{data=await api('/api/admin/channel-manager');render();el('cmStatus').textContent='更新于 '+new Date().toLocaleTimeString()}catch(e){el('cmStatus').textContent=e.message}finally{loading=false}}
-    function edit(c={}){
-      editing=c;clearTimeout(secretTimer);workspace.editor(c.id?'配置渠道 · '+c.name:'新增渠道');el('cmMappingEditor').hidden=true;el('cmEditor').hidden=false;
-      el('cmEditor').innerHTML='<form id="cmForm" class="cm-form"><h3>'+(c.id?'编辑渠道 · v'+c.version:'新增渠道')+'</h3><nav class="module-subnav"><button type="button" data-edit-pane="connection" class="active">连接配置</button><button type="button" data-edit-pane="material">测试素材</button><button type="button" data-edit-pane="monitor">巡检与预算</button></nav><div data-cm-edit-pane="connection"><div class="cm-fields">'+field('渠道名称','name',c.name)+field('供应商名称','supplier',c.supplier)+select('接入方式','connection_type',[['unknown','未标注'],['official','官方直连'],['relay','中转 API']],c.connection_type||'unknown')+select('协议适配器','adapter',Object.entries(data.adapters).map(([k,v])=>[k,v.name]),c.adapter)+field('API 基础地址（含协议版本路径）','base_url',c.base_url)+field('实际模型 ID','model',c.model)+secretField()+field('网络代理地址（留空直连）','proxy',c.proxy)+field('请求超时 / 秒','timeout',c.timeout||120,'number')+field('最大并发','concurrency',c.concurrency||2,'number')+field('等待队列上限','queue_limit',c.queue_limit??20,'number')+field('每分钟调用上限','rpm',c.rpm||30,'number')+'</div>'+check('启用渠道，允许新任务接单','enabled',c.enabled)+'</div><div data-cm-edit-pane="material" hidden><h4>测试素材</h4><div class="cm-fields">'+field('测试提示词','prompt',c.fixture?.prompt||'生成一张纯色背景的产品展示图')+field('视频时长 / 秒','duration',c.fixture?.duration||5,'number')+select('画面比例','ratio',['9:16','16:9','1:1'].map(x=>[x,x]),c.fixture?.ratio||'9:16')+'<label>参考图（视频协议支持；留空保留已有 '+Number(c.material_count||0)+' 张）<input name="materials" type="file" accept="image/png,image/jpeg" multiple></label>'+check('清除已有参考图','clear_materials',false)+'</div></div><div data-cm-edit-pane="monitor" hidden><h4>定时巡检与预算</h4><div class="cm-fields">'+field('轻量巡检间隔 / 秒','poll_seconds',c.poll_seconds||900,'number')+field('每日完整测试时间 / 北京时间小时','daily_hour',c.daily_hour??9,'number')+field('每日完整测试最多次数','daily_limit',c.daily_limit??1,'number')+field('单次预留费用 / 元','test_cost',c.test_cost??0,'number')+field('每日预留费用上限 / 元','daily_budget',c.daily_budget??0,'number')+'</div><p class="muted">费用由管理员按供应商价格预估，不是实扣账单。失败和结果未知也占用预算。完整测试核验产物，不代表用户已接收。</p>'+check('启用定时连接检测','monitor',c.monitor)+check('启用每日完整生成测试','daily_test',c.daily_test)+'</div><div class="actions"><button class="primary">保存为新版本</button><button type="button" id="cmCancel">取消</button></div></form>'+(c.id?'<details><summary>历史版本回滚</summary><div class="actions">'+(c.history||[]).filter(h=>h.version!==c.version).map(h=>'<button data-rollback="'+h.version+'">恢复 v'+h.version+' · '+esc(date(h.created))+'</button>').join('')+'</div><p class="muted">回滚创建新版本，仅影响新任务。历史任务继续使用当时配置。</p></details>':'');
+    async function load(){
+      const seq=loadGuard?loadGuard.begin():0;
+      const section=document.querySelector('[data-module="managedChannels"]'),status=el('cmStatus');
+      status.textContent='正在读取渠道与实际映射…';
+      try{
+        const next=request?await request.get('/api/admin/channel-manager'):await api('/api/admin/channel-manager');
+        if(loadGuard&&!loadGuard.isLatest(seq))return false; // 旧响应不能作为发布读回凭证
+        if(!next||next.ok===false||!Array.isArray(next.items)||!Array.isArray(next.runs))throw Error('渠道响应不完整，不能作为正常状态');
+        data=next;render();lastLoadedAt=Date.now();section.classList.remove('cm-data-stale');status.removeAttribute('role');
+        status.textContent='更新于 '+new Date(lastLoadedAt).toLocaleTimeString()+' · 配置、验证、生产映射分别核对；启用不等于验证通过，验证通过不等于生产已切换';
+        return true;
+      }catch(e){
+        if(loadGuard&&!loadGuard.isLatest(seq))return false;
+        section.classList.add('cm-data-stale');status.setAttribute('role','alert');
+        status.textContent='读取失败：'+e.message+' · '+(lastLoadedAt?'显示 '+new Date(lastLoadedAt).toLocaleTimeString()+' 的旧数据（已过期，不代表当前状态）':'尚无有效数据');
+        return false;
+      }
+    }
+    function compactPayload(channel, input){
+      const out={};
+      for(const key of ['id','version','name','adapter','model','connection_type','proxy','timeout','concurrency','queue_limit','rpm','poll_seconds','daily_hour','daily_limit','test_cost','daily_budget','monitor','daily_test','enabled','fixture']){
+        if(channel[key]!==undefined)out[key]=channel[key];
+      }
+      if(channel._modelCreate){
+        if(!String(input.supplier||'').trim()||!String(input.base_url||'').trim()||!String(input.secret||'').trim())throw Error('新增渠道必须填写供应商名称、Base URL 和 API Key');
+        delete out.id;delete out.version;
+        out.name=String(input.supplier).trim()+' · '+channel.model;
+      }
+      return {...out,supplier:input.supplier,base_url:input.base_url,secret:input.secret||''};
+    }
+    function invocationExample(c){
+      const payload={model:c.model,prompt:'一张简洁的产品展示图'};
+      let path='/images/generations',headers={'Authorization':'Bearer YOUR_API_KEY','Content-Type':'application/json'},body=payload;
+      if(c.adapter==='gemini_image'){
+        path='/v1beta/models/'+encodeURIComponent(c.model)+':generateContent';
+        headers={'x-goog-api-key':'YOUR_API_KEY','Content-Type':'application/json'};
+        body={contents:[{parts:[{text:payload.prompt}]}],generationConfig:{responseModalities:['IMAGE']}};
+      }else if(c.adapter==='lechuang_image'||c.adapter==='lechuang_video'){
+        path='/generations';headers['Idempotency-Key']='UNIQUE_REQUEST_ID';
+        body={model:c.model,input:c.adapter==='lechuang_image'?{prompt:payload.prompt,mode:'text_to_image',n:1,resolution:'1k',aspect_ratio:'1:1'}:{prompt:'一段自然风景视频',mode:'text_to_video',size:'720x1280',resolution:'720p',duration_seconds:5}};
+      }else if(c.adapter==='xai_video'){
+        path='/videos/generations';body={model:c.model,prompt:'一段自然风景视频',duration:5,aspect_ratio:'9:16',resolution:'720p'};
+      }else if(c.adapter==='minimax_h3'){
+        path='/v2/video_generation';body={model:c.model,content:[{type:'text',text:'一段自然风景视频'}],duration:5,resolution:'2K',ratio:'9:16'};
+      }
+      return 'const baseURL = '+JSON.stringify(c.base_url||'YOUR_BASE_URL')+';\nconst response = await fetch(baseURL.replace(/\\/$/, "") + '+JSON.stringify(path)+', {\n  method: "POST",\n  headers: '+JSON.stringify(headers,null,2)+',\n  body: JSON.stringify('+JSON.stringify(body,null,2)+')\n});\nconsole.log(await response.json());';
+    }
+    window.ChannelConnectionExample=invocationExample;
+    function showChannelHistory(id){
+      const c=data.items.find(item=>item.id===id);if(!c){toast('渠道不存在，请刷新');return}
+      editing=c;workspace.editor('配置版本回滚 · '+c.name);el('cmEditor').hidden=false;el('cmMappingEditor').hidden=true;
+      el('cmEditor').innerHTML='<h3>历史配置</h3><p class="muted">恢复会创建新版本，仅影响新任务。</p><div class="actions">'+((c.history||[]).filter(h=>h.version!==c.version).map(h=>'<button data-rollback="'+h.version+'">恢复 v'+h.version+' · '+esc(date(h.created))+'</button>').join('')||'<p>暂无可回滚版本。</p>')+'</div><button type="button" id="cmCancel">关闭</button>';
+    }
+    function edit(c={},validation=false){
+      if(c._modelCreate&&createPending){toast('正在保存新增渠道，请等待结果后再新增');return}
+      if(c._modelCreate&&createUncertain){toast('上次新增结果待核对，请刷新页面核对渠道列表后再新增，勿重复提交');return}
+      const replacement=!!c._replacement;
+      editing=c;clearTimeout(secretTimer);if(el('cmReplacementResult'))el('cmReplacementResult').hidden=true;workspace.editor(c.id?'配置渠道 · '+c.name:replacement?'直接修改 API Key / Base URL':'新增渠道');el('cmMappingEditor').hidden=true;el('cmEditor').hidden=false;
+      if((c.id||c._modelCreate)&&!validation){
+        el('cmEditor').innerHTML='<form id="cmForm" class="cm-form" data-compact="true"><div class="cm-fields">'+field('供应商名称','supplier',c.supplier)+field('Base URL','base_url',c.base_url)+ (c._modelCreate?field('API Key（必填）','secret','','password'):secretField())+'</div>'+(c._modelCreate?'<p class="muted">绑定模型：'+esc(c.model)+'；协议：'+esc((data.adapters?.[c.adapter]||{}).name||c.adapter||'未确定')+((c._allowedAdapters||[]).length>1?'（此功能还支持：'+esc(c._allowedAdapters.filter(k=>k!==c.adapter).map(k=>(data.adapters?.[k]||{}).name||k).join('、'))+'，可在高级视图的编辑里改）':'')+'。保存仅新增渠道和当前列表草稿，不覆盖原渠道、不发布生产路由、不自动生成或扣费。</p>':'')+'<section class="cm-call-example"><h4>调用示例</h4><p class="muted">仅展示，不会自动执行；手动运行可能产生供应商费用。API Key 使用占位符。</p><pre id="cmCompactExample">'+esc(invocationExample(c))+'</pre></section><div class="actions"><button type="submit" class="primary">保存</button><button type="button" id="cmCancel">取消</button></div></form>';
+        const form=el('cmForm');
+        form.elements.base_url.oninput=()=>{el('cmCompactExample').textContent=invocationExample({...c,base_url:form.elements.base_url.value})};
+        el('cmEditor').scrollIntoView({behavior:'smooth',block:'start'});return;
+      }
+      el('cmEditor').innerHTML='<form id="cmForm" class="cm-form"><h3>'+(c.id?'编辑渠道 · v'+c.version:replacement?'替换服务器托管线路':'新增渠道')+'</h3>'+(replacement?'<p class="cm-replacement-intro">当前服务器环境变量不会被覆盖。保存后会建立一条可管理的新线路、加入当前模型的影子候选并自动发起连接与鉴权检测；完整生成验证通过后，才能切为生产主渠道。已暂停的功能保持暂停，不会被自动恢复。</p>':'')+'<nav class="module-subnav"><button type="button" data-edit-pane="connection" class="active">连接配置</button><button type="button" data-edit-pane="material">测试素材</button><button type="button" data-edit-pane="monitor">巡检与预算</button></nav><div data-cm-edit-pane="connection"><div class="cm-fields">'+field('渠道名称','name',c.name)+field('供应商名称','supplier',c.supplier)+select('接入方式','connection_type',[['unknown','未标注'],['official','官方直连'],['relay','中转 API']],c.connection_type||'unknown')+select('协议适配器','adapter',Object.entries(data.adapters).map(([k,v])=>[k,v.name]),c.adapter)+field('API 基础地址（含协议版本路径）','base_url',c.base_url)+field('实际模型 ID','model',c.model)+secretField()+field('网络代理地址（留空直连）','proxy',c.proxy)+field('请求超时 / 秒','timeout',c.timeout||120,'number')+field('最大并发','concurrency',c.concurrency||2,'number')+field('等待队列上限','queue_limit',c.queue_limit??20,'number')+field('每分钟调用上限','rpm',c.rpm||30,'number')+'</div>'+check('启用渠道，允许新任务接单','enabled',c.enabled)+'</div><div data-cm-edit-pane="material" hidden><h4>测试素材</h4><div class="cm-fields">'+field('测试提示词','prompt',c.fixture?.prompt||'生成一张纯色背景的产品展示图')+field('视频时长 / 秒','duration',c.fixture?.duration||5,'number')+select('画面比例','ratio',['9:16','16:9','1:1'].map(x=>[x,x]),c.fixture?.ratio||'9:16')+'<label>参考图（视频协议支持；留空保留已有 '+Number(c.material_count||0)+' 张）<input name="materials" type="file" accept="image/png,image/jpeg" multiple></label>'+check('清除已有参考图','clear_materials',false)+'</div></div><div data-cm-edit-pane="monitor" hidden><h4>定时巡检与预算</h4><div class="cm-fields">'+field('轻量巡检间隔 / 秒','poll_seconds',c.poll_seconds||900,'number')+field('每日完整测试时间 / 北京时间小时','daily_hour',c.daily_hour??9,'number')+field('每日完整测试最多次数','daily_limit',c.daily_limit??1,'number')+field('单次预留费用 / 元','test_cost',c.test_cost??0,'number')+field('每日预留费用上限 / 元','daily_budget',c.daily_budget??0,'number')+'</div><p class="muted">费用由管理员按供应商价格预估，不是实扣账单。失败和结果未知也占用预算。完整测试核验产物，不代表用户已接收。</p>'+check('启用定时连接检测','monitor',c.monitor)+check('启用每日完整生成测试','daily_test',c.daily_test)+'</div><div class="actions"><button class="primary">'+(replacement?'保存新 Key 并开始检测':'保存为新版本')+'</button><button type="button" id="cmCancel">取消</button></div></form>'+(c.id?'<details><summary>历史版本回滚</summary><div class="actions">'+(c.history||[]).filter(h=>h.version!==c.version).map(h=>'<button data-rollback="'+h.version+'">恢复 v'+h.version+' · '+esc(date(h.created))+'</button>').join('')+'</div><p class="muted">回滚创建新版本，仅影响新任务。历史任务继续使用当时配置。</p></details>':'');
       el('cmEditor').scrollIntoView({behavior:'smooth',block:'start'});
     }
     function editMap(selected={}){
@@ -94,7 +214,7 @@
       const operations=data.operations||[],op=operations.find(x=>x.operation_id===(selected.operation_id||''))||operations[0];
       if(!op){toast('暂无可配置功能');return}
       const m=selected.revision?selected:(op.mapping||{}),choices=window.ChannelCatalog.compatible(data,op.channel_kind),state=m.state||'legacy';
-      el('cmMappingEditor').innerHTML='<form id="cmMapForm" class="cm-form"><h3>稳定功能 → 实际模型</h3><p class="muted">映射按 operation_id 发布不可变版本。托管状态要求当前渠道版本已启用，并有最近 24 小时完整生成测试；运行时失败不会静默退回旧线路。</p><div class="cm-fields">'+select('稳定功能','operation_id',operations.map(x=>[x.operation_id,x.page_name+' / '+x.name]),op.operation_id)+select('控制状态','state',[['legacy','旧线路'],['shadow','影子校验（不改实际路由）'],['managed','统一托管'],['paused','暂停（明确拒绝）']],state)+select('主渠道','channel',[['','未设置'],...choices.map(c=>[c.id,c.name+' · '+c.model+(c.enabled?'':'（已停用）')])],m.channel)+select('备用渠道（仅记录，暂不自动切换）','backup',[['','未设置'],...choices.map(c=>[c.id,c.name])],m.backup)+'</div><input type="hidden" name="expected_revision" value="'+esc(m.revision||0)+'"><p id="cmMappingImpact" class="cm-flow"></p><button class="primary">发布新映射版本</button></form>'+((m.history||[]).length>1?'<details><summary>历史映射版本</summary><div class="actions">'+m.history.filter(h=>h.revision!==m.revision).map(h=>'<button data-operation-rollback="'+h.revision+'" data-operation-id="'+esc(op.operation_id)+'" data-expected-revision="'+m.revision+'">恢复 r'+h.revision+' · '+esc(h.state)+' · '+esc(date(h.created))+'</button>').join('')+'</div><p class="muted">恢复会发布新修订，不改写历史任务。</p></details>':'');
+      el('cmMappingEditor').innerHTML='<form id="cmMapForm" class="cm-form"><h3>稳定功能 → 实际模型</h3><p class="muted">映射按 operation_id 发布不可变版本。手动切换只要求目标渠道已启用、未回收、且能承接该功能；完整生成测试仅作为状态提示，不再是切换或接单的门槛。自动故障切换仍只在同模型/同协议/同参数的渠道之间进行，并要求候选有最近 24 小时完整生成测试；生图仅在确认未受理时按优先级安全切换，不会退回旧线路。</p><div class="cm-fields">'+select('稳定功能','operation_id',operations.map(x=>[x.operation_id,x.page_name+' / '+x.name]),op.operation_id)+select('控制状态','state',[['legacy','旧线路'],['shadow','影子校验（不改实际路由）'],['managed','统一托管'],['paused','暂停（明确拒绝）']],state)+select('主渠道','channel',[['','未设置'],...choices.map(c=>[c.id,c.name+' · '+c.model+(c.enabled?'':'（已停用）')])],m.channel)+select('备用渠道（生图安全候补）','backup',[['','未设置'],...choices.map(c=>[c.id,c.name])],m.backup)+'</div><input type="hidden" name="expected_revision" value="'+esc(m.revision||0)+'"><input type="hidden" name="channels_json" value="'+esc(JSON.stringify(mappingChannels(m)))+'"><p id="cmMappingImpact" class="cm-flow"></p><button class="primary">发布新映射版本</button></form>'+((m.history||[]).length>1?'<details><summary>历史映射版本</summary><div class="actions">'+m.history.filter(h=>h.revision!==m.revision).map(h=>'<button data-operation-rollback="'+h.revision+'" data-operation-id="'+esc(op.operation_id)+'" data-expected-revision="'+m.revision+'">恢复 r'+h.revision+' · '+esc(h.state)+' · '+esc(date(h.created))+'</button>').join('')+'</div><p class="muted">恢复会发布新修订，不改写历史任务。</p></details>':'');
       const f=el('cmMapForm');
       const impact=()=>{const c=data.items.find(c=>c.id===f.elements.channel.value);el('cmMappingImpact').textContent=op.operation_id+' → '+f.elements.state.options[f.elements.state.selectedIndex].text+' → '+(c?c.name+' / '+c.model:'旧线路或暂停状态无需渠道')+'；仅影响发布后的新任务'};
       f.oninput=impact;f.onchange=e=>{if(e.target.name==='operation_id'){const next=operations.find(x=>x.operation_id===e.target.value);editMap(next?.mapping||{operation_id:e.target.value})}else impact()};impact();
@@ -114,24 +234,39 @@
         if(b.dataset.operation)return editMap((data.operations||[]).find(x=>x.operation_id===b.dataset.operation)?.mapping||{operation_id:b.dataset.operation});
         if(b.dataset.runs){renderRuns(b.dataset.runs);el('cmRuns').scrollIntoView({behavior:'smooth'});return}
         if(b.dataset.test){if(b.dataset.test==='full'){const c=data.items.find(c=>c.id===b.dataset.id);if(!confirm('发起 '+c.name+' 的完整生成测试？\n素材：'+(c.fixture?.prompt||'未准备提示词')+'，参考图 '+Number(c.material_count||0)+' 张。\n预留费用 '+Number(c.test_cost||0)+' 元；可能产生供应商费用，未知结果也占用预算。'))return}b.disabled=true;await post('test',{id:b.dataset.id,kind:b.dataset.test});toast('测试已排队，可在最近记录查看');await load()}
-        if(b.dataset.rollback){if(!confirm('恢复为 v'+b.dataset.rollback+' 的配置并创建新版本？仅影响新任务。\n关联映射：'+routeMappings().filter(m=>m.channel===editing.id||m.backup===editing.id).map(m=>m.label||m.operation_id||m.front).join('、')))return;b.disabled=true;await post('rollback',{id:editing.id,target_version:Number(b.dataset.rollback),enabled:!!editing.enabled});workspace.close();await load()}
+        if(b.dataset.rollback){if(!confirm('恢复为 v'+b.dataset.rollback+' 的配置并创建新版本？仅影响新任务。\n关联映射：'+routeMappings().filter(m=>mappingChannels(m).includes(editing.id)).map(m=>m.label||m.operation_id||m.front).join('、')))return;b.disabled=true;await post('rollback',{id:editing.id,target_version:Number(b.dataset.rollback),enabled:!!editing.enabled});workspace.close();await load()}
       }catch(err){toast(err.message)}finally{b.disabled=false}
     });
     document.querySelector('[data-module="managedChannels"]').addEventListener('submit',async e=>{
       if(!['cmForm','cmMapForm','cmNoticeForm'].includes(e.target.id))return;
-      e.preventDefault();const f=e.target,b=f.querySelector('button[type=submit],button.primary');if(b)b.disabled=true;
+      e.preventDefault();const f=e.target;if(f.dataset.submitting==='true'||f.dataset.saveUnknown==='true')return;f.dataset.submitting='true';const b=f.querySelector('button[type=submit],button.primary');if(b)b.disabled=true;
+      let mappingReadback=null;
       try{
-        const v=values(f);
+        let v=values(f);
         if(f.id==='cmForm'){
-          const files=Array.from(f.elements.materials.files);if(files.length>5||files.reduce((n,x)=>n+x.size,0)>8*1024*1024)throw Error('最多5张参考图，总大小不超过8MB');
+          const submitted=editing,creation=submitted._modelCreate;
+          if(creation&&(createPending||createUncertain)){toast('新增请求尚未确认，请先核对结果');return}
+          if(creation){createPending=true;f.dataset.creating='true'}
+          const compact=f.dataset?.compact==='true';
+          const files=compact?[]:Array.from(f.elements.materials.files);if(files.length>5||files.reduce((n,x)=>n+x.size,0)>8*1024*1024)throw Error('最多5张参考图，总大小不超过8MB');
           const refs=await Promise.all(files.map(file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)})));
-          v.id=editing.id;v.version=editing.version;v.fixture={prompt:v.prompt,duration:Number(v.duration),ratio:v.ratio};
+          if(compact)v=compactPayload(submitted,v);
+          else{v.id=submitted.id;v.version=submitted.version;v.fixture={prompt:v.prompt,duration:Number(v.duration),ratio:v.ratio};}
           if(refs.length||v.clear_materials)v.fixture.reference_images=refs;
-          delete v.materials;const affected=routeMappings().filter(m=>m.channel===editing.id||m.backup===editing.id).map(m=>m.label||m.operation_id||m.front);if(!confirm('保存渠道 '+v.name+' 为新版本？\n实际模型：'+(editing.model||'未配置')+' → '+v.model+'\n接单：'+(v.enabled?'启用':'停用')+'\n关联功能：'+(affected.join('、')||'尚未配置映射')+'\n已有任务保留原版本，仅新任务受影响。'))return;await post('save',v);workspace.close();
-        }else if(f.id==='cmMapForm'){const name=id=>data.items.find(c=>c.id===id)?.name||'未配置';if(!confirm('确认发布 '+v.operation_id+' 的新路由版本？\n控制状态：'+v.state+'\n主渠道：'+name(v.channel)+'\n'+el('cmMappingImpact').textContent))return;v.expected_revision=Number(v.expected_revision||0);await post('operation-mapping',v);workspace.close()}
+          delete v.materials;const affected=routeMappings().filter(m=>mappingChannels(m).includes(submitted.id)).map(m=>m.label||m.operation_id||m.front);if(!confirm('保存渠道 '+v.name+' 为新版本？\n实际模型：'+(submitted.model||'未配置')+' → '+v.model+'\n接单：'+(v.enabled?'启用':'停用')+'\n关联功能：'+(affected.join('、')||'尚未配置映射')+'\n已有任务保留原版本，仅新任务受影响。'))return;
+          const replacement=submitted._replacement,saveHost=el('cmReplacementResult');
+          let saved;
+          try{saved=await post('save',v);if(!saved?.id)throw Error('保存响应缺少渠道 ID')}
+          catch(err){if(err.timedOut||(creation&&!err.business)){f.dataset.saveUnknown='true';if(creation)createUncertain=true;if(saveHost)saveHost.innerHTML='';toast('保存响应未确认，结果待核对。请刷新核对是否已生成新渠道，勿重复新建。');await load();return}throw err}
+          if(replacement){const pausedOps=await applyReplacement(saved,replacement);renderReplacementResult(saved,pausedOps.structured);toast('新渠道已保存（ID '+saved.id+'），候选与检测结果见上方提示')}
+          else{if(saveHost)saveHost.hidden=true;toast('已保存')}
+          if(el('cmForm')===f)workspace.close();
+          if(creation){if(await load())workspace.addCreatedChannel(saved,creation);else toast('新渠道已保存（ID '+saved.id+'），但列表读回失败、尚未加入草稿；刷新后从兼容渠道中添加，勿重复新增');return}
+        }else if(f.id==='cmMapForm'){const name=id=>data.items.find(c=>c.id===id)?.name||'未配置',tail=JSON.parse(v.channels_json||'[]').slice(2);v.channels=[v.channel,v.backup,...tail].filter((id,index,list)=>id&&list.indexOf(id)===index);delete v.channels_json;if(!confirm('确认发布 '+v.operation_id+' 的新路由版本？\n控制状态：'+v.state+'\n主渠道：'+name(v.channel)+'\n'+el('cmMappingImpact').textContent))return;v.expected_revision=Number(v.expected_revision||0);const prevRev=Number((data.operation_mappings||[]).find(m=>m.operation_id===v.operation_id)?.revision||0);await post('operation-mapping',v);workspace.close();mappingReadback={operationId:v.operation_id,prev:prevRev}}
         else if(f.id==='cmNoticeForm'){await post('notifications',v);el('cmNotifications').innerHTML=''}
-        toast('已保存');await load();
-      }catch(err){toast(err.message)}finally{if(b)b.disabled=false}
+        await load();
+        if(mappingReadback){const m=(data.operation_mappings||[]).find(x=>x.operation_id===mappingReadback.operationId);const ok=m&&Number(m.revision||0)>Number(mappingReadback.prev||0);toast(ok?'已发布新映射版本 r'+(m.revision||'—')+'（已回读确认）':'已提交，生效待核对（回读未确认新修订）')}
+      }catch(err){toast(err.timedOut?'请求超时，结果待核对，请刷新核对（不会自动重试）':err.message)}finally{if(f.dataset.creating==='true'){createPending=false;f.dataset.creating='false'}f.dataset.submitting='false';if(b)b.disabled=f.dataset.saveUnknown==='true'}
     });
     setInterval(()=>{if(env.active()&&el('cmDrawer').hidden&&!document.querySelector('.cm-lifecycle-dialog[open]')&&!document.querySelector('#cmNoticeForm:focus-within'))load()},15000);
     return load;

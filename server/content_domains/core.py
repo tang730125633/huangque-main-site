@@ -2854,7 +2854,7 @@ class H(BaseHTTPRequestHandler):
                     points_left = int(attempt["points_left"])
                     job_id = jobs_store.create_job_after_charge(
                         jdb, "image", user["username"], int(prepared["cost"]),
-                        prepared["payload"], SERVICE_OWNER,
+                        attempt["payload"], SERVICE_OWNER,
                         before_commit=lambda connection, linked_job_id:
                             _short_drama_domain().record_character_reference_job(
                                 connection, prepared, user["username"], linked_job_id
@@ -4132,6 +4132,8 @@ class H(BaseHTTPRequestHandler):
             from . import digital_human_oneclick
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "matrix_template_video", "copy", "canvas_agent"} else self._json_body()
+                from . import provider_config
+                body = provider_config.sanitize_payload(body)
                 if kind in {"cinematic", "script_to_video", "matrix_template_video"}:
                     request_body = dict(body) if isinstance(body, dict) else body
                     idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
@@ -4736,6 +4738,9 @@ class H(BaseHTTPRequestHandler):
                         e.status if e.status in (402, 403) else 502,
                         _public_points_error(points_domain, e, cost),
                     )
+                except jobs_store.PaidJobDeductError as e:
+                    _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(e.status, {"detail": e.detail, "charged": False})
                 except jobs_store.PaidJobInsertError as e:
                     if staged_ref_keys: video_domain.cleanup_staged_seedance_references(staged_ref_keys); video_domain.release_seedance_staging_attempt(user["username"], p, idem_key)
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",

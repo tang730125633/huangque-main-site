@@ -349,15 +349,20 @@ def _build_banana_body(prompt, ratio, images=None, image_size=None):
         "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": img_cfg},
     }
 
-def _banana_one(model, body, idx, ratio=None):
+def _banana_one(model, body, idx, ratio=None, config=None):
     """Generate one image, save it, and return filename plus dimensions."""
     # 出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。前档超时/报错自动降级；
     # 未配 EGRESS_* 时只走 heygen，行为与改动前一致。
     from content_domains import egress
+    official, fallback, secret = GEMINI_OFFICIAL_BASE, GEMINI_BASE, GEMINI_KEY
+    if config and config["wired"]:
+        official = config["url"]
+        fallback = config.get("fallback_url") or official
+        secret = config["credential"]
     d = egress.post_json(
-        GEMINI_OFFICIAL_BASE, GEMINI_BASE,
+        official, fallback,
         "/v1beta/models/" + model + ":generateContent", body,
-        {"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY},
+        {"Content-Type": "application/json", "x-goog-api-key": secret},
         log=lambda m: print(m, flush=True))
     parts = (d.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
     img = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
@@ -382,10 +387,12 @@ def gen_banana(payload):
     q = payload["quality"]
     image_size = IMAGE_SIZES[mkey][q]
     count = payload["count"]
-    if not GEMINI_KEY:
+    from content_domains import provider_config
+    config = provider_config.job_credentials("image.banana.nb2", payload.get("_provider_config"), GEMINI_KEY, GEMINI_OFFICIAL_BASE)
+    if not config["credential"]:
         raise ValueError("GEMINI_API_KEY 未配置")
     body = json.dumps(_build_banana_body(prompt, ratio, images, image_size)).encode()
-    items = [_banana_one(model, body, i, ratio) for i in range(count)]
+    items = [_banana_one(model, body, i, ratio, **({"config": config} if config["wired"] else {})) for i in range(count)]
     files = [fn for fn, _ in items]
     dimensions = [dim for _, dim in items if dim]
     urls = [_public_url(f, "image/png") for f in files]
@@ -689,6 +696,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(503, {"detail": str(e)})
             body = self._json_body()
             try:
+                from content_domains import provider_config
+                body = provider_config.sanitize_payload(body)
                 body = validate_banana_payload(body)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
