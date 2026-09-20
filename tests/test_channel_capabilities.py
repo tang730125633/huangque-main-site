@@ -75,6 +75,7 @@ class ChannelCapabilityTests(unittest.TestCase):
         self.assertIn('image', caps.switchable_kinds())
         self.assertIn('xiaole_video', caps.switchable_kinds())
         self.assertIn('tryon', caps.switchable_kinds())
+        self.assertIn('audio', caps.switchable_kinds())
         self.assertTrue(registry.operation('image.banana.nb2.text')['channel_eligible'])
         self.assertTrue(registry.operation('video.grok.text')['channel_eligible'])
 
@@ -83,7 +84,7 @@ class ChannelCapabilityTests(unittest.TestCase):
         for operation_id, keyword in (
             ('video.digital_ip.text.single', 'HeyGen'),
             ('video.tryon.classic', 'RunningHub'),
-            ('audio.tts.public', 'TTS'),
+            ('assets.audio.clone_vip', 'CosyVoice'),
         ):
             with self.subTest(operation_id=operation_id):
                 op = registry.operation(operation_id)

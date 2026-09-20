@@ -216,6 +216,14 @@ def capabilities(cfg,profile=None):
         return dict(profile='wavespeed_tryon',profiles=['wavespeed_tryon'],
                     fields={'duration':list(range(5,16))},
                     reference_min=2,reference_max=2,count=1)
+    if adapter=='cosyvoice_tts':
+        # 复用原厂 audio.py 的量纲：payload 的 speed/pitch/volume 与 CosyVoice 参数的换算一致，
+        # 这里只声明可用范围，不另写一份。
+        return dict(profile='cosyvoice_tts',profiles=['cosyvoice_tts'],
+                    fields={'speed':[round(0.5+0.1*i,1) for i in range(16)],
+                            'pitch':list(range(-12,13,2)),
+                            'volume':[-50,-25,0,25,50,75,100]},
+                    reference_min=0,reference_max=0,count=1)
     if adapter=='sora_video':
         # 复用原厂 Sora 的模型 / 时长 / 比例 / 尺寸事实，不另写一份白名单。
         from . import video as video_domain

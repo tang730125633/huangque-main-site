@@ -80,7 +80,8 @@ test('unknown provider category stays explicit',()=>{
 });
 test('admin scripts parse together and channel entry is unique',()=>{
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
-  assert.match(html,/\.cm-business-tabs\{[^}]*overflow-x:auto;overflow-y:hidden[^}]*\}/);
+  // 高级视图已删除：其专属类名不应再出现在渠道管理脚本里
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname,'../site/admin/channel-workspace.js'),'utf8'),/cm-business-tabs/);
   for(const m of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))if(m[1].trim())new vm.Script(m[1]);
   for(const file of ['channel-workspace.js','channel-manager.js'])new vm.Script(fs.readFileSync(path.join(__dirname,'../site/admin',file),'utf8'));
   assert.equal((html.match(/data-module-tab="managedChannels"/g)||[]).length,1);
@@ -113,90 +114,26 @@ test('frontend function center uses a model list and keeps technical details in 
   bananaModel.routes[0].candidate.management={kind:'managed_channel',uid:'managed:shadow-channel'};
   bananaModel.routes[1].primary.management={kind:'server_env',uid:'legacy:gemini'};
   workspace.render(workspaceData);
-  // 产品默认是「简洁视图」（入口保留）；本用例验证的是高级视图契约，
-  // 因此显式点「高级视图 / 优先级」进入，而不是假定高级视图为默认。
+  // 视图切换已删除：渠道管理恒定「简洁视图」（模型列表 + 优先级编辑器）。
+  // 不再有「更多 → 高级视图」，也不再有并行的矩阵渲染。
   assert.match(elements.cmMatrix.innerHTML,/cm-simple/);
-  assert.match(elements.cmMatrix.innerHTML,/data-cm-simple-toggle/);
-  const simpleToggle={dataset:{cmSimpleToggle:''}};
-  root.listeners.click({target:{closest:()=>simpleToggle}});
-  assert.match(elements.cmMatrix.innerHTML,/cm-function-workspace/);
-  for(const group of ['内容创作','人物与声音','智能工具','基础服务'])assert.match(elements.cmMatrix.innerHTML,new RegExp(group));
-  for(const label of ['生图','生视频'])assert.match(elements.cmMatrix.innerHTML,new RegExp(label));
-  const businessHtml=elements.cmMatrix.innerHTML.match(/<nav class="cm-business-tabs"[^>]*>([\s\S]*?)<\/nav>/)[1];
-  assert.equal((businessHtml.match(/data-cm-matrix-group=/g)||[]).length,4);
-  assert.doesNotMatch(businessHtml,/生图|生视频|数字人|音频与配音/);
-  assert.doesNotMatch(businessHtml,/项需处理/);
-  assert.match(elements.cmMatrix.innerHTML,/cm-subfunction-tabs/);
-  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status neutral">待验证/);
-  assert.match(elements.cmMatrix.innerHTML,/待验证 <b>1<\/b>/);
-  assert.match(elements.cmMatrix.innerHTML,/需要处理 <b>0<\/b>/);
-  const primary=workspaceData.frontend_matrix.products[0].models[0].routes[0].primary;
-  primary.auth={state:'pending',label:'检测中'};primary.full={state:'ok',label:'通过'};
-  workspace.render(workspaceData);
-  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status neutral">检测中/);
-  assert.doesNotMatch(elements.cmMatrix.innerHTML,/项需处理/);
-  assert.match(elements.cmMatrix.innerHTML,/需要处理 <b>0<\/b>/);
-  primary.auth={state:'attention',label:'凭据被拒绝'};
-  workspace.render(workspaceData);
-  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status warn">凭据被拒绝/);
-  assert.match(elements.cmMatrix.innerHTML,/1 项需处理/);
-  assert.match(elements.cmMatrix.innerHTML,/需要处理 <b>1<\/b>/);
-  primary.auth={state:'ok',label:'鉴权通过'};primary.full={state:'ok',label:'成品验证通过'};
-  const imageRoute=workspaceData.frontend_matrix.products[0].models[0].routes[1];
-  imageRoute.admitted=false;imageRoute.reason='图生图线路不可用';
-  workspace.render(workspaceData);
-  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status warn">部分能力不可接单/);
-  assert.match(elements.cmMatrix.innerHTML,/1 项需处理/);
-  assert.match(elements.cmMatrix.innerHTML,/需要处理 <b>1<\/b>/);
-  imageRoute.admitted=true;imageRoute.reason='';
-  primary.auth={state:'stale',label:'证据已过期'};
-  workspace.render(workspaceData);
-  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status warn">证据已过期/);
-  assert.match(elements.cmMatrix.innerHTML,/1 项需处理/);
-  assert.match(elements.cmMatrix.innerHTML,/需要处理 <b>1<\/b>/);
-  primary.auth={state:'unverified',label:'未验证'};primary.full={state:'unverified',label:'未建立模型级成品证据'};
-  workspace.render(workspaceData);
-  assert.match(elements.cmMatrix.innerHTML,/cm-model-list/);
-  assert.match(elements.cmMatrix.innerHTML,/cm-model-list-link/);
-  assert.match(elements.cmMatrix.innerHTML,/当前主渠道/);
-  assert.match(elements.cmMatrix.innerHTML,/纳米香蕉 2/);
-  assert.match(elements.cmMatrix.innerHTML,/Google Gemini API/);
-  assert.match(elements.cmMatrix.innerHTML,/官方直连/);
-  assert.match(elements.cmMatrix.innerHTML,/配置渠道/);
-  assert.doesNotMatch(elements.cmMatrix.innerHTML,/generativelanguage\.googleapis\.com/);
-  assert.doesNotMatch(elements.cmMatrix.innerHTML,/服务器环境变量/);
-  assert.doesNotMatch(elements.cmMatrix.innerHTML,/证据已过期/);
-  assert.match(elements.cmMatrix.innerHTML,/cm-hidden-products/);
-  assert.match(elements.cmMatrix.innerHTML,/果肉生图/);
-  assert.doesNotMatch(elements.cmMatrix.innerHTML,/cm-hidden-products" open/);
-  const hiddenButton={dataset:{cmMatrixHidden:''}};
-  root.listeners.click({target:{closest:()=>hiddenButton}});
-  assert.match(elements.cmMatrix.innerHTML,/cm-hidden-products" open/);
-  assert.match(elements.cmMatrix.innerHTML,/前台隐藏/);
-  root.listeners.click({target:{closest:()=>hiddenButton}});
-  const peopleButton={dataset:{cmMatrixGroup:'people'}};
-  root.listeners.click({target:{closest:()=>peopleButton}});
-  assert.match(elements.cmMatrix.innerHTML,/<h3>数字人<\/h3>/);
-  const audioButton={dataset:{cmMatrixPage:'audio'}};
-  root.listeners.click({target:{closest:()=>audioButton}});
-  assert.match(elements.cmMatrix.innerHTML,/阿里百炼 API/);
-  assert.match(elements.cmMatrix.innerHTML,/服务配置/);
-  assert.match(elements.cmMatrix.innerHTML,/已登记的真实前端功能与依赖服务/);
-  const cosyvoice=legacyChannels.find(item=>item.key==='cosyvoice');
-  cosyvoice.evidence={state:'warn',verification_state:'pending',label:'已配置 · 需人工检测'};
-  workspace.render(workspaceData);
-  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status neutral">已配置 · 需人工检测/);
-  assert.doesNotMatch(elements.cmMatrix.innerHTML,/项需处理/);
-  cosyvoice.evidence={state:'fail',label:'凭据已失效'};
-  workspace.render(workspaceData);
-  assert.match(elements.cmMatrix.innerHTML,/cm-matrix-status warn">凭据已失效/);
-  assert.match(elements.cmMatrix.innerHTML,/1 项需处理/);
-  root.listeners.click({target:{closest:()=>({dataset:{cmMatrixGroup:'creation'}})}});
-  assert.match(elements.cmMatrix.innerHTML,/<h3>生图<\/h3>/);
-  root.listeners.click({target:{closest:()=>peopleButton}});
-  assert.match(elements.cmMatrix.innerHTML,/<h3>音频与配音<\/h3>/);
-  root.listeners.click({target:{closest:()=>({dataset:{cmMatrixGroup:'creation'}})}});
-  assert.match(elements.cmMatrix.innerHTML,/纳米香蕉 2/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-simple-toggle/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/cm-function-workspace/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/cm-business-tabs/);
+  // 「切换功能」只列出未关闭的分类：数字人 / 文本与助手 / 视频处理 不出现
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-matrix-page="image"/);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-matrix-page="video"/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-matrix-page="avatar"/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-matrix-page="text"/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-matrix-page="process"/);
+  // 模型列表 + 优先级编辑器；切换主渠道只剩拖动，不再有「设为主渠道」
+  assert.match(elements.cmMatrix.innerHTML,/cm-model-strip/);
+  assert.match(elements.cmMatrix.innerHTML,/纳米香蕉 · 纳米香蕉 2/);
+  assert.match(elements.cmMatrix.innerHTML,/cm-priority-editor/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-first=/);
+  assert.doesNotMatch(elements.cmMatrix.innerHTML,/设为主渠道/);
+  // 高级视图已删除：状态徽标 / 业务分组 / 分页 / 隐藏产品折叠那一整套断言随之移除。
+  // 下面验证简洁视图下仍然成立的部分：面板切换、优先级编辑器、拖动发布、抽屉详情。
   root.listeners.click({target:{closest:()=>({dataset:{cmView:'health'}})}});
   assert.equal(panels.find(panel=>panel.dataset.cmPanel==='health').hidden,false);
   assert.equal(panels.find(panel=>panel.dataset.cmPanel==='matrix').hidden,true);
@@ -213,13 +150,8 @@ test('frontend function center uses a model list and keeps technical details in 
   bananaModel.routes[0].operation_id='image.banana.nb2.text';
   bananaModel.routes[0].primary.model='gemini-3.1-flash-image';
   workspace.render(workspaceData);
-  const modelButton={dataset:{cmModelPage:'image',cmModelProduct:'banana',cmModelKey:'nb2'}};
-  // 简洁视图会默认选中首个可见模型（否则右侧面板是空的），而这个选择与高级视图
-  // 共享同一个 matrixExpanded —— 所以切到高级视图时该模型已经是展开的。
-  // 因此这里显式验证「点击 = 收起 / 再点 = 展开」这条契约。
-  await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-key]'?modelButton:null}});
-  assert.doesNotMatch(elements.cmMatrix.innerHTML,/cm-priority-editor/);
-  await root.listeners.click({target:{closest:selector=>selector==='[data-cm-model-key]'?modelButton:null}});
+  // 简洁视图默认选中首个可见模型，优先级编辑器直接展开在模型卡片下方
+  // （不再需要先点一次「展开」）。
   assert.equal(elements.cmDrawer.hidden,true);
   assert.match(elements.cmMatrix.innerHTML,/cm-priority-editor/);
   assert.match(elements.cmMatrix.innerHTML,/渠道优先级/);
@@ -227,11 +159,10 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(elements.cmMatrix.innerHTML,/托管主渠道/);
   assert.match(elements.cmMatrix.innerHTML,/托管备用渠道/);
   assert.match(elements.cmMatrix.innerHTML,/data-cm-managed-edit="managed-primary"/);
-  assert.match(elements.cmMatrix.innerHTML,/修改 Key \/ URL/);
+  assert.match(elements.cmMatrix.innerHTML,/data-cm-managed-edit="managed-primary">编辑/);
   assert.match(elements.cmMatrix.innerHTML,/最近安全切换/);
   assert.match(elements.cmMatrix.innerHTML,/未受理，已安全切换/);
   assert.match(elements.cmMatrix.innerHTML,/生成成功/);
-  assert.match(elements.cmMatrix.innerHTML,/结果未知或已受理后失败均不会切换/);
   assert.doesNotMatch(elements.cmMatrix.innerHTML,/data-cm-priority-save=/);
   assert.match(elements.cmMatrix.innerHTML,/拖到第一位即切换主渠道/);
   const moveButton={dataset:{cmPriorityMove:'1',operation:'image.banana.nb2.text',channel:'managed-primary'},disabled:false};
@@ -288,12 +219,16 @@ test('frontend function center uses a model list and keeps technical details in 
   assert.match(source,/data-cm-matrix-page/);
   assert.match(source,/matrixPageMeta/);
   assert.match(source,/matrixPageGroups/);
-  assert.match(source,/cm-business-tabs/);
-  assert.match(source,/data-cm-matrix-hidden/);
+  assert.doesNotMatch(source,/cm-business-tabs/);
+  assert.doesNotMatch(source,/cm-subfunction-tabs/);
+  assert.doesNotMatch(source,/data-cm-matrix-hidden/);
+  assert.match(source,/HIDDEN_PAGES/);
+  assert.match(source,/HIDDEN_PRODUCTS/);
+  assert.match(source,/MOVED_PRODUCTS/);
+  assert.match(source,/cm-model-strip/);
   assert.match(source,/data-cm-inline-route/);
   assert.match(source,/data-cm-managed-edit/);
   assert.match(source,/data-cm-server-replace/);
-  assert.match(source,/data-cm-view="layout">调整前台展示/);
   const html=fs.readFileSync(path.join(__dirname,'../site/admin/index.html'),'utf8');
   assert.doesNotMatch(html,/module-subnav[^>]*aria-label="渠道管理页面"/);
   assert.doesNotMatch(html,/data-cm-tab=/);

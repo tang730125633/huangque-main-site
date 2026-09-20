@@ -17,15 +17,16 @@ test('功能未开放时，原厂及托管主线路都不能宣称正在生产',
     assert.match(html,/就绪状态待核对/);
   }
 });
-test('内置主渠道保留配置入口且第一候选可以设为主渠道',()=>{
+test('内置主渠道保留配置入口，切换主渠道只靠拖动',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
   route.control_state='shadow';
   route.primary={id:'legacy:gemini',name:'Google Gemini API',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
   const {elements}=build({},data),html=elements.cmMatrix.innerHTML;
-  assert.match(html,/查看配置 \/ Key/);
-  assert.match(html,/data-cm-priority-first="ch-banana"/);
-  const live=html.match(/<div class="cm-priority-channel cm-live-primary"[\s\S]*?<\/div><\/div>/)[0];
-  assert.doesNotMatch(live,/data-cm-priority-first/,'内置线路不应有统一切换按钮');
+  // 「查看配置 / Key」与「编辑」本是同一动作，现在统一叫「编辑」
+  assert.match(html,/data-cm-live-detail="legacy:gemini">编辑</);
+  // 「设为主渠道」按钮已删除：拖动就是切换主渠道的入口
+  assert.doesNotMatch(html,/data-cm-priority-first/,'切换主渠道只剩拖动，不应再有统一切换按钮');
+  assert.doesNotMatch(html,/设为主渠道/);
 });
 test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
@@ -283,13 +284,16 @@ test('分类抽屉列出全部分类，且有且只有当前分类是选中态',
   assert.match(html,/class="cm-category-picker"/);
   assert.match(html,/class="cm-category-sheet"/);
   assert.match(html,/data-cm-category-close/);
-  for(const label of ['生图','生视频','数字人','音频与配音','文本与助手'])
+  // 数字人 / 文本与助手 / 视频处理 已在渠道管理里关闭，不再出现在切换功能里
+  for(const label of ['生图','生视频','音频与配音','采集与解析','系统依赖'])
     assert.ok(html.includes(label),'分类缺少 '+label);
+  for(const label of ['数字人','文本与助手','视频处理'])
+    assert.ok(!html.includes(label),'已关闭的分类不应出现：'+label);
   assert.equal((html.match(/data-cm-matrix-page="image" aria-pressed="true"/g)||[]).length,1);
   // 分类选中态只在抽屉内统计（模型横排也有 aria-pressed，不要混进来）
   const sheet=html.match(/<div class="cm-category-sheet">[\s\S]*?<\/div><\/details>/)[0];
   assert.equal((sheet.match(/aria-pressed="true"/g)||[]).length,1,'分类抽屉里只能有一个分类是选中态');
-  assert.equal((sheet.match(/data-cm-matrix-page=/g)||[]).length,8,'抽屉应列出全部 8 个分类');
+  assert.equal((sheet.match(/data-cm-matrix-page=/g)||[]).length,5,'抽屉应列出未关闭的 5 个分类');
 });
 
 test('模型横排只显示当前分类的模型，切换分类后不残留上一个分类',async()=>{
@@ -395,7 +399,8 @@ test('模型横排不会把模型名截断（CSS 契约）',()=>{
 test('简洁渠道页保留列表，隐藏发布管理栏与底部配置区域',()=>{
   const {elements}=build();
   const html=elements.cmMatrix.innerHTML;
-  assert.match(html,/<details class="cm-view-tools"><summary>更多<\/summary>/);
+  // 高级视图已删除：不再有「更多 → 高级视图」这个折叠入口
+  assert.doesNotMatch(html,/cm-view-tools/);
   assert.match(html,/cm-priority-list/);
   assert.doesNotMatch(html,/cm-priority-published|服务端已发布|cm-priority-state|选择兼容渠道/);
   assert.doesNotMatch(html,/cm-priority-tools|配置、检测与回滚|data-cm-priority-save|data-cm-priority-rollback|data-cm-priority-test/);
@@ -437,16 +442,15 @@ test('托管接管后原厂渠道、模型、配置入口仍保留，提供切�
   assert.match(html,/data-cm-original-channel="legacy:gemini:primary"/);
   assert.match(html,/原厂线路 · 未选中 · Key 已配置/);
   assert.match(html,/data-cm-live-detail="legacy:gemini"/);
-  assert.match(html,/data-cm-priority-first="@original" data-operation="image.banana.text"/);
+  assert.doesNotMatch(html,/data-cm-priority-first/);
   assert.ok(html.indexOf('data-cm-managed-edit="ch-banana"')<html.indexOf('data-cm-original-channel='));
-  assert.doesNotMatch(html,/data-cm-priority-first="ch-banana"/);
 });
 
-test('原厂配置缺失时保留配置入口但禁用切回按钮',()=>{
+test('原厂配置缺失时保留配置入口',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
   route.original={id:'legacy:gemini:primary',name:'Google',enabled:true,configured:false,management:{kind:'server_env',uid:'legacy:gemini'}};
   const html=build({},data).elements.cmMatrix.innerHTML;
-  assert.match(html,/data-cm-priority-first="@original" data-operation="image.banana.text" disabled/);
+  assert.doesNotMatch(html,/data-cm-priority-first/);
   assert.match(html,/data-cm-live-detail="legacy:gemini"/);
 });
 

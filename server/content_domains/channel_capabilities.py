@@ -87,11 +87,11 @@ CAPABILITIES = {
         "adapters": ("wavespeed_tryon",),
         "reason": "",
     },
+    # ── 已接入：配音（CosyVoice 链路）────────────────────────────────────
     "audio": {
-        "switchable": False,
-        "adapters": (),
-        "reason": "配音走 CosyVoice 等 TTS 专用流程（含声音复刻与音色槽），"
-                  "需要先新增 TTS 适配器。",
+        "switchable": True,
+        "adapters": ("cosyvoice_tts",),
+        "reason": "",
     },
     "copy": {
         "switchable": False,
