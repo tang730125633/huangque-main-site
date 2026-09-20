@@ -52,8 +52,8 @@ PUBLIC_VOICE_PRESETS = {
 }
 
 
-def enabled():
-    return bool(DASHSCOPE_API_KEY)
+def enabled(api_key=None):
+    return bool(str(api_key or DASHSCOPE_API_KEY or '').strip())
 
 
 def model_for_voice(voice):
@@ -62,13 +62,13 @@ def model_for_voice(voice):
 
 
 # ===================== 音色管理（HTTP） =====================
-def _http(action, extra=None, timeout=40):
+def _http(action, extra=None, timeout=40, api_key=None):
     payload = {"model": "voice-enrollment", "input": {"action": action}}
     if extra:
         payload["input"].update(extra)
     req = urllib.request.Request(
         DASHSCOPE_HTTP, data=json.dumps(payload).encode(),
-        headers={"Authorization": "Bearer " + DASHSCOPE_API_KEY, "Content-Type": "application/json"},
+        headers={"Authorization": "Bearer " + (api_key or DASHSCOPE_API_KEY), "Content-Type": "application/json"},
         method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -111,9 +111,10 @@ def delete_voice(voice_id):
 
 
 # ===================== 合成（stdlib WebSocket） =====================
-def _ws_connect(api_key, timeout):
-    raw = socket.create_connection((DASHSCOPE_WS_HOST, 443), timeout=timeout)
-    sock = ssl.create_default_context().wrap_socket(raw, server_hostname=DASHSCOPE_WS_HOST)
+def _ws_connect(api_key, timeout, host=None):
+    _host = str(host or DASHSCOPE_WS_HOST)
+    raw = socket.create_connection((_host, 443), timeout=timeout)
+    sock = ssl.create_default_context().wrap_socket(raw, server_hostname=_host)
     sock.settimeout(timeout)
     key = base64.b64encode(os.urandom(16)).decode()
     sock.sendall((
@@ -177,11 +178,12 @@ def _ws_frames(sock, leftover):
         yield opcode, payload
 
 
-def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60, instruction=""):
+def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60, instruction="", api_key=None, ws_host=None):
     """合成一段语音，返回音频字节。model 按音色自动选(预置/复刻)。
     rate 语速(0.5~2)、pitch 音调(0.5~2)、volume 音量(0~100)——与抓包看到的参数名一致。
     instruction 复刻音色(v3.5-plus)的 free-form 发音风格指令，<=100 字符(中文按 2 计)，预置音色不要传。"""
-    if not DASHSCOPE_API_KEY:
+    _key = str(api_key or DASHSCOPE_API_KEY or "").strip()
+    if not _key:
         raise ValueError("CosyVoice 未配置（DASHSCOPE_API_KEY）")
     text = (text or "").strip()
     if not text:
@@ -193,7 +195,7 @@ def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume
               "volume": max(0, min(100, int(volume)))}
     if instruction:
         params["instruction"] = instruction
-    sock, leftover = _ws_connect(DASHSCOPE_API_KEY, timeout)
+    sock, leftover = _ws_connect(_key, timeout, host=ws_host)
     try:
         task_id = os.urandom(16).hex()
         _ws_send(sock, json.dumps({

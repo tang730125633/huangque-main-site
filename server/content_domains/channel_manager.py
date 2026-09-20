@@ -38,6 +38,9 @@ ADAPTERS = {
     # 各占一个适配器，由任务类型契约的 line 区分匹配。
     'wavespeed_tryon': {'name': 'WaveSpeed 换装（线路二）', 'kind': 'tryon', 'references': True,
                         'line': '2'},
+    # 配音：复用原厂 audio.py 的 CosyVoice 链路。一个渠道 = 一套 DashScope 凭据 + 接入点，
+    # 拖动即切换不同的配音账号；音色仍由任务参数决定。
+    'cosyvoice_tts': {'name': '阿里百炼 CosyVoice 配音', 'kind': 'audio', 'references': False},
 }
 
 

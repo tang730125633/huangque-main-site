@@ -53,7 +53,7 @@ def validate_payload(cfg, payload):
     if any(k.startswith('_short_drama') for k in payload) or payload.get('short_drama_binding'):
         raise ValueError('短剧绑定任务不支持通用渠道映射，请使用专用渠道配置')
     # 换装/换背景按图像素材工作，没有提示词；提示词规则只对文本驱动型协议生效。
-    if cfg['adapter'] != 'wavespeed_tryon':
+    if cfg['adapter'] not in ('wavespeed_tryon', 'cosyvoice_tts'):
         if not str(payload.get('prompt') or '').strip():
             raise ValueError('提示词不能为空')
         if len(str(payload['prompt'])) > 7000:
@@ -105,6 +105,36 @@ def validate_payload(cfg, payload):
         seconds = video_domain._tryon_seconds(payload, '2')
         if not 5 <= seconds <= 15:
             raise ValueError('线路二换装时长须为5～15秒')
+    if cfg['adapter'] == 'cosyvoice_tts':
+        # 配音按文本工作：量纲与原厂 audio.py 一致（speed 0.5~2 / pitch -12~12 / volume -50~100）。
+        text = str(payload.get('text') or '').strip()
+        if not text:
+            raise ValueError('配音文案不能为空')
+        if len(text) > 5000:
+            raise ValueError('配音文案不得超过 5000 字')
+        if not str(payload.get('voice') or '').strip():
+            raise ValueError('请选择配音音色')
+        try:
+            rate = float(payload.get('speed') or 1.0)
+        except (TypeError, ValueError):
+            raise ValueError('语速必须是数字')
+        if not 0.5 <= rate <= 2.0:
+            raise ValueError('语速需在 0.5~2.0 之间')
+        try:
+            pitch = int(payload.get('pitch') or 0)
+        except (TypeError, ValueError):
+            raise ValueError('音调必须是整数')
+        if not -12 <= pitch <= 12:
+            raise ValueError('音调需在 -12~12 之间')
+        try:
+            volume = int(payload.get('volume') or 0)
+        except (TypeError, ValueError):
+            raise ValueError('音量必须是整数')
+        if not -50 <= volume <= 100:
+            raise ValueError('音量需在 -50~100 之间')
+        if refs:
+            raise ValueError('配音不需要参考图')
+        return
     if cfg['adapter'] == 'sora_video':
         from . import video as video_domain
         if len(refs) > 1:
@@ -387,6 +417,53 @@ def _tryon_material_resolver(local_rel):
     return wavespeed._material_url(local_rel)
 
 
+def _generate_tts(cfg, payload, rid, job_id, metadata):
+    """托管配音：复用原厂 cosyvoice.synth，只把渠道自己的 Key 与接入点注入进去。
+
+    一个渠道 = 一套 DashScope 凭据（+ 可选自定义接入点），拖动即切换配音账号；
+    音色、语速、音调、音量仍由任务参数决定，与渠道解耦。
+    """
+    from . import audio as audio_domain, cosyvoice, core
+    text = str(payload.get('text') or '').strip()
+    voice = str(payload.get('voice') or '').strip()
+    speed = float(payload.get('speed') or 1.0)
+    pitch = int(payload.get('pitch') or 0)
+    volume = int(payload.get('volume') or 0)
+    try:
+        ws_host = urllib.parse.urlsplit(str(cfg.get('base_url') or '')).hostname or None
+    except ValueError:
+        ws_host = None
+    store.finish(rid, 'running', '提交配音供应商')
+    data = trace.call(
+        job_id, 'provider_submit',
+        lambda: cosyvoice.synth(
+            voice, text, rate=speed,
+            # 量纲换算与原厂 audio.py 的 CosyVoice 分支保持一致
+            pitch=max(0.5, min(2.0, 1.0 + pitch / 24.0)),
+            volume=max(0, min(100, 50 + volume // 2)),
+            api_key=cfg['secret'], ws_host=ws_host),
+        **metadata)
+    if not data:
+        raise ProviderError('配音未返回音频数据')
+    fn = 'audio/aud_%d.mp3' % int(time.time() * 1000)
+    out = audio_domain._out_path(fn)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    if not out.is_file() or out.stat().st_size <= 0:
+        raise ProviderError('配音成品文件写入失败')
+    trace.record(job_id, 'artifact', 'passed', **metadata)
+    url = core.public_url(fn, 'audio/mpeg')
+    binding = payload.get('_channel_binding') or {}
+    return {'type': 'audio', 'status': 'done', 'file': fn, 'audio_file': fn,
+            'url': url, 'audio_url': url, 'files': [fn], 'urls': [url], 'count': 1,
+            'voice': voice, 'text': text,
+            'provider': cfg['name'], 'model': cfg['model'],
+            'channel_id': cfg['id'], 'channel_version': cfg['version'],
+            'operation_id': binding.get('operation_id'),
+            'mapping_revision': binding.get('mapping_revision'),
+            'invocation_source': binding.get('invocation_source')}
+
+
 def _generate_tryon_ws(cfg, payload, rid, job_id, metadata):
     """托管换装（线路二）：复用原厂 wavespeed.generate_tryon。
 
@@ -543,6 +620,8 @@ def generate(cfg, payload, rid, job_id):
         return _generate_sora(cfg, payload, rid, job_id, metadata, refs)
     if cfg['adapter'] == 'wavespeed_tryon':
         return _generate_tryon_ws(cfg, payload, rid, job_id, metadata)
+    if cfg['adapter'] == 'cosyvoice_tts':
+        return _generate_tts(cfg, payload, rid, job_id, metadata)
     # 乐创付费创建请求要求 8-128 字符幂等键；run id 为 32 位 hex，天然幂等。
     extra_headers = {'Idempotency-Key': str(rid)} if is_lechuang else None
     result = trace.call(job_id,'provider_submit',lambda: request(cfg,'POST',path,body,extra_headers=extra_headers,files=files),**metadata)
