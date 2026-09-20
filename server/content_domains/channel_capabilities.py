@@ -64,16 +64,18 @@ CAPABILITIES = {
         "adapters": ("sora_video",),
         "reason": "",
     },
+    # ── 已接入：数字人口播（HeyGen MCP）──────────────────────────────────
+    # 渠道凭据就是一份 MCP OAuth 凭据，所以换渠道 = 换 HeyGen 账号。
     "video": {
-        "switchable": False,
-        "adapters": (),
-        "reason": "HeyGen 数字人口播是专用流程（订阅位 / 官方 API + 素材绑定），"
-                  "需要先新增 HeyGen 适配器才能切换渠道。",
+        "switchable": True,
+        "adapters": ("heygen_mcp_video",),
+        "reason": "",
     },
+    # ── 已接入：电影化身（HeyGen MCP）──────────────────────────────────
     "cinematic": {
-        "switchable": False,
-        "adapters": (),
-        "reason": "HeyGen 电影化身与数字人共用形象与素材绑定流程，需要先新增 HeyGen 适配器。",
+        "switchable": True,
+        "adapters": ("heygen_mcp_cinematic",),
+        "reason": "",
     },
     "avatar": {
         "switchable": False,

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import contextvars
 import email.utils
 import hashlib
 import http.client
@@ -4254,6 +4255,36 @@ _HEYGEN_MCP_URL = "https://mcp.heygen.com/mcp/v1/"
 _HEYGEN_MCP_TOKEN_URL = "https://api2.heygen.com/v1/oauth/token"
 _HEYGEN_OAUTH_CLIENT_ID = "q2A2QRSke2LrFTPJhoDbHtXh"
 _HEYGEN_MCP_CREDENTIALS = os.environ.get("HEYGEN_MCP_CREDENTIALS", "").strip()
+
+# 托管渠道的 HeyGen MCP 凭据覆盖。
+# 渠道的 secret 是一份完整的 MCP OAuth 凭据 JSON；渠道运行时把它落到一个私有文件，
+# 在这里设一下作用域，原厂那 ~11 处 _heygen_mcp_call 就自动用渠道自己的账号，
+# 不必把参数穿透进每一层（也就不会碰到原厂的既有逻辑）。
+# 未设置时行为与以前完全一致（读环境变量指向的凭据文件）。
+_heygen_credential_override = contextvars.ContextVar("hq_heygen_mcp_credential", default=None)
+
+
+def heygen_credential_path():
+    return _heygen_credential_override.get() or _HEYGEN_MCP_CREDENTIALS
+
+
+class heygen_credential_scope:
+    """with heygen_credential_scope(path): ... 期间所有 MCP 调用使用该凭据文件。"""
+
+    def __init__(self, path):
+        self._path = str(path or "").strip()
+        self._token = None
+
+    def __enter__(self):
+        if self._path:
+            self._token = _heygen_credential_override.set(self._path)
+        return self
+
+    def __exit__(self, *_exc):
+        if self._token is not None:
+            _heygen_credential_override.reset(self._token)
+            self._token = None
+        return False
 _HEYGEN_BILLING_MODE = os.environ.get("HEYGEN_BILLING_MODE", "auto").strip().lower()
 _heygen_mcp_auth_lock = threading.Lock()
 
@@ -4263,7 +4294,7 @@ class HeyGenMCPAuthError(RuntimeError):
 
 
 def _heygen_mcp_enabled():
-    return bool(_HEYGEN_MCP_CREDENTIALS)
+    return bool(heygen_credential_path())
 
 
 def _heygen_subscription_mode():
@@ -4305,7 +4336,7 @@ def require_avatar_submission_ready():
     """Reject an obviously unusable subscription route before job creation/charging."""
     if not _heygen_subscription_mode():
         return True
-    path = pathlib.Path(_HEYGEN_MCP_CREDENTIALS)
+    path = pathlib.Path(heygen_credential_path())
     try:
         credentials = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     except (OSError, ValueError, TypeError):
@@ -4340,9 +4371,10 @@ def require_video_submission_ready(payload=None):
 
 
 def _heygen_mcp_access_token(force_refresh=False):
-    if not str(_HEYGEN_MCP_CREDENTIALS or "").strip():
+    credential_path = heygen_credential_path()
+    if not str(credential_path or "").strip():
         raise HeyGenMCPAuthError("HeyGen MCP OAuth 未配置")
-    path = pathlib.Path(_HEYGEN_MCP_CREDENTIALS)
+    path = pathlib.Path(credential_path)
     with _heygen_mcp_auth_lock:
         with heygen_oauth_store.credential_file_lock(path):
             if not path.is_file():
