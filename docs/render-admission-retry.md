@@ -1,0 +1,9 @@
+# 节点接单有限重试
+
+run_local 的提交阶段最多5次、总预算30秒，带指数退避和抖动。每次使用完全相同的X-Request-Id与冻结payload；成功获得local job_id后只轮询，不再次提交。
+
+允许重试的情况仅为节点明确返回503/material_library_unavailable、reason_code为probe_failed/probe_timeout且retryable为JSON true。滚动兼容旧节点409/submission_failed且detail精确等于“素材库切片能力暂不可用”；其他409不重试。
+
+鉴权、协议不匹配、未知错误、异常JSON、超大响应以及状态不确定的网络错误不会盲目重发。错误保留HTTP状态、白名单原因码、尝试次数及detail的SHA256；不持久化任意响应正文、URL或可能包含秘密的detail。
+
+该改动不重新创建Relay任务，不改计费、并发或节点路由，不自动重试已有终态失败任务。先部署兼容轮询器，再部署生成仓库的新准入API；每个节点部署前应确认零在途并保留配置/文件回滚点。依赖持续不可用时仍会在预算结束后明确失败。

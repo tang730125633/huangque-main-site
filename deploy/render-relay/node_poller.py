@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,8 @@ CONCURRENCY = max(1, int(os.environ.get("NODE_CONCURRENCY", "2")))
 JOB_TIMEOUT = float(os.environ.get("NODE_JOB_TIMEOUT_SECONDS", "1800"))
 RENDER_TIMEOUT = float(os.environ.get("NODE_RENDER_TIMEOUT_SECONDS", "900"))
 TELEMETRY_INTERVAL = max(5.0, float(os.environ.get("NODE_TELEMETRY_SECONDS", "5")))
+LOCAL_SUBMIT_RETRY_SECONDS = 30.0
+LOCAL_SUBMIT_MAX_ATTEMPTS = 5
 
 
 def _call(url, token, method="GET", body=None, raw=None, headers=None, timeout=60):
@@ -120,12 +123,79 @@ def heartbeat():
         time.sleep(max(1.0, TELEMETRY_INTERVAL - (time.monotonic() - started)))
 
 
+class NodeSubmissionError(RuntimeError):
+    def __init__(self, status, code, reason, retryable=False, detail_hash=""):
+        self.status, self.code, self.reason = status, code, reason
+        self.retryable, self.detail_hash = retryable, detail_hash
+        self.attempts = 1
+        super().__init__()
+
+    def __str__(self):
+        return ("node_submission_failed http=%s code=%s reason=%s attempts=%s%s" % (
+            self.status, self.code, self.reason, self.attempts,
+            " detail_sha256=" + self.detail_hash if self.detail_hash else ""))
+
+
+def _submission_http_error(error):
+    try:
+        raw = error.read(16385)
+        value = json.loads(raw) if len(raw) <= 16384 else {}
+    except Exception:
+        value = {}
+    finally:
+        error.close()
+    if not isinstance(value, dict):
+        value = {}
+    codes = {"material_library_unavailable", "submission_failed", "invalid_request", "unauthorized", "not_found"}
+    reasons = {"probe_failed", "probe_timeout", "auth_failed", "probe_rejected", "contract_invalid",
+               "queue_capacity", "disk_capacity", "admission_failed", "idempotency_conflict"}
+    code = value.get("error")
+    code = code if isinstance(code, str) and code in codes else "unrecognized_error"
+    reason = value.get("reason_code")
+    reason = reason if isinstance(reason, str) and reason in reasons else "unclassified"
+    detail = value.get("detail")
+    detail_hash = hashlib.sha256(detail.encode()).hexdigest() if isinstance(detail, str) else ""
+    retryable = (error.code == 503 and code == "material_library_unavailable"
+                 and value.get("retryable") is True and reason in {"probe_failed", "probe_timeout"})
+    # Rolling deployment: old servers only provide this exact pre-admission detail.
+    if error.code == 409 and code == "submission_failed" and detail == "素材库切片能力暂不可用":
+        retryable, reason = True, "legacy_library_unavailable"
+    return NodeSubmissionError(error.code, code, reason, retryable, detail_hash)
+
+
+def _submit_local(payload, req_id):
+    frozen = json.loads(json.dumps(payload, ensure_ascii=False, allow_nan=False))
+    deadline = time.monotonic() + LOCAL_SUBMIT_RETRY_SECONDS
+    last = NodeSubmissionError(503, "material_library_unavailable", "retry_budget_exhausted")
+    for attempt in range(1, LOCAL_SUBMIT_MAX_ATTEMPTS + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            return _call(LOCAL + "/v1/jobs", LOCAL_TOKEN, "POST", body=frozen,
+                         headers={"X-Request-Id": req_id}, timeout=min(30, remaining))
+        except urllib.error.HTTPError as error:
+            last = _submission_http_error(error)
+            last.attempts = attempt
+            if not last.retryable or attempt == LOCAL_SUBMIT_MAX_ATTEMPTS:
+                raise last from None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            print("[poller] admission_wait request_id=%s http=%s reason=%s attempt=%s"
+                  % (req_id, last.status, last.reason, attempt), flush=True)
+            time.sleep(min(remaining, (2 ** (attempt - 1)) * random.uniform(0.8, 1.2)))
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            # An acknowledgement may be lost after acceptance. Do not blindly POST again.
+            raise NodeSubmissionError(0, "transport_error", type(error).__name__) from None
+    raise last from None
+
+
 def run_local(payload, job_id=""):
     """交给本机渲染服务，轮询到终态，返回 (result, error)。"""
     # 本机渲染服务要求 X-Request-Id（幂等键），格式必须匹配其 REQUEST_RE
     req_id = ("relay" + str(job_id))[:64]
-    job = _call(LOCAL + "/v1/jobs", LOCAL_TOKEN, "POST", body=payload,
-                headers={"X-Request-Id": req_id}, timeout=30)
+    job = _submit_local(payload, req_id)
     jid = job.get("job_id")
     if not jid:
         return None, "本机渲染服务未返回 job_id"
