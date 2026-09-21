@@ -477,18 +477,13 @@
         const isPublished=draft.state===mapping?.state&&published[index]===id;
         const role=liveInline&&isPublished?(index===0?(ready?'当前主渠道':'已配置主线路 · 未就绪'):'已发布候补 '+index):'候选 '+(index+1)+(isPublished?' · 未接管':' · 未发布');
         const vs=C.verificationStatus(channel),proof=vs.overall||{state:'neutral',label:'待验证'};
-        // 状态分三个独立维度：生产角色（角色标签）、启停（这里）、验证结果（状态灯）。
-        // 颜色含义固定，不靠深浅表达程度：
-        //   ok 绿=当前配置验证通过   failed/bad 红=验证失败（有真实失败原因）
-        //   missing/unattributed/stale 灰=没测过 / 无法归属   过期/变更 黄=需重新验证
-        //   running/queued 中性=正在验证
-        // 关键：不适用、未验证、过期都不能显示成「异常」——那会让人误以为渠道坏了。
-        const TONE={ok:'ok',failed:'bad',blocked:'bad',expired:'warn','stale-version':'warn',
-                    unattributed:'neutral',missing:'neutral',neutral:'neutral',
-                    running:'neutral',queued:'neutral',unknown:'warn'};
+        // 状态灯只有两种颜色：
+        //   绿 = 能正常使用（当前配置满足该协议的全部验证要求）
+        //   红 = 其余一切（未验证 / 失败 / 过期 / 配置已变更 / 无法归属 / 验证中 / 已停用）
+        // 具体是哪种情况，由旁边那行文案说清，不用颜色深浅表达程度。
         const healthOk=channel.enabled&&proof.state==='ok';
-        const healthTone=!channel.enabled?'muted':(TONE[proof.state]||'neutral');
-        const healthLabel=!channel.enabled?'已停用'
+        const healthTone=healthOk?'ok':'bad';
+        const healthLabel=!channel.enabled?'已停用 · 不能使用'
           :(healthOk?'当前配置验证通过'
           :(proof.label||'未验证')+(proof.kind?('（'+proof.kind+'）'):''));
         return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+channelTestButtons(id)+(index===0?'':'<button type="button" class="mini" data-cm-set-primary="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">设为主渠道</button>')+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.order.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
