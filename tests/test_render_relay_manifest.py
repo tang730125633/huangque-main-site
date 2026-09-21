@@ -52,7 +52,7 @@ class RenderRelayManifestTests(unittest.TestCase):
             encoding="utf-8"
         )
         upload = source.index("out = upload_result(")
-        report = source.index("report(jid, True, result=result)")
+        report = source.index("report(jid, True, result=result,")
         self.assertLess(upload, report)
 
     def test_relay_stores_assets_and_poller_syncs_before_render(self):
@@ -69,7 +69,7 @@ class RenderRelayManifestTests(unittest.TestCase):
             encoding="utf-8"
         )
         sync = source.index("sync_user_assets(payload, jid)")
-        render = source.index("result, error = run_local(payload, jid)")
+        render = source.index("result, error = run_local(payload, jid,")
         self.assertLess(sync, render)
 
     def test_only_assigned_node_can_fetch_a_referenced_asset(self):

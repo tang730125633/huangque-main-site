@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
+from contextlib import contextmanager
 
 RELAY = os.environ["NODE_RELAY_URL"].rstrip("/")
 NODE_TOKEN = os.environ["NODE_RELAY_TOKEN"].strip()
@@ -57,8 +60,12 @@ def _call(url, token, method="GET", body=None, raw=None, headers=None, timeout=6
 def claim():
     try:
         out = _call(RELAY + "/v1/claim", NODE_TOKEN, "POST",
-                    body={"node": NODE_NAME, "gpu_render": _renderer_capability()}, timeout=30)
-        return out.get("job")
+                    body={"node": NODE_NAME, "gpu_render": _renderer_capability(),
+                          "delivery_protocol": 2,"slots":CONCURRENCY}, timeout=30)
+        job = out.get("job")
+        if job and not re.fullmatch('[a-f0-9]{32}', str(job.get('claim_token') or '')):
+            raise RuntimeError('durable_claim_not_supported')
+        return job
     except Exception as exc:
         print("[poller] claim failed: %s" % exc, flush=True)
         return None
@@ -192,15 +199,18 @@ def _submit_local(payload, req_id):
     raise last from None
 
 
-def run_local(payload, job_id=""):
+def run_local(payload, job_id="", *, local_id=None, on_accepted=None, started_at=None, durable=False):
     """交给本机渲染服务，轮询到终态，返回 (result, error)。"""
     # 本机渲染服务要求 X-Request-Id（幂等键），格式必须匹配其 REQUEST_RE
     req_id = ("relay" + str(job_id))[:64]
-    job = _submit_local(payload, req_id)
+    job = {'job_id':local_id} if local_id else _submit_local(payload, req_id)
     jid = job.get("job_id")
     if not jid:
         return None, "本机渲染服务未返回 job_id"
-    deadline = time.monotonic() + JOB_TIMEOUT
+    if on_accepted:
+        on_accepted(jid)
+    remaining_budget = max(0, JOB_TIMEOUT - max(0, time.time() - started_at)) if started_at else JOB_TIMEOUT
+    deadline = time.monotonic() + remaining_budget
     failures = 0
     while time.monotonic() < deadline:
         time.sleep(min(3 * (2 ** min(failures, 2)), max(0, deadline - time.monotonic())))
@@ -224,6 +234,13 @@ def run_local(payload, job_id=""):
             return cur.get("result") or {}, None
         if st == "failed":
             return None, str(cur.get("error") or "渲染失败")
+    if durable:
+        # After the execution budget, read the existing job once per recovery pass.
+        # Unknown/running is NOT proof of a failed render and must not trigger a new POST.
+        cur = _call(LOCAL + '/v1/jobs/' + jid, LOCAL_TOKEN, timeout=30)
+        if cur.get('status') == 'completed': return cur.get('result') or {}, None
+        if cur.get('status') == 'failed': return None, str(cur.get('error') or 'render_failed')
+        raise RuntimeError('local_completion_unknown')
     return None, "本机任务状态跟踪超时（未重新提交渲染）"
 
 
@@ -315,15 +332,16 @@ def sync_user_assets(payload, job_id):
         )
 
 
-def report(job_id, ok, result=None, error=None):
+def report(job_id, ok, result=None, error=None, claim_token=None):
     _call(RELAY + "/v1/report", NODE_TOKEN, "POST",
-          body={"job_id": job_id, "ok": ok, "result": result, "error": error, "node": NODE_NAME}, timeout=30)
+          body={"job_id": job_id, "ok": ok, "result": result, "error": error, "node": NODE_NAME,
+                **({'claim_token':claim_token} if claim_token else {})}, timeout=30)
 
 
-def upload_result(job_id, file_url, result):
+def upload_result(job_id, file_url, result, *, claim_token=None, data=None):
     """下载本机成品并回传中转器。"""
     full = file_url if file_url.startswith("http") else LOCAL + file_url
-    data = _download_local_result(full)
+    data = _download_local_result(full) if data is None else data
     headers = {
         "Content-Type": "video/mp4",
         "X-HQ-Duration": str(result.get("duration") or 0),
@@ -337,53 +355,198 @@ def upload_result(job_id, file_url, result):
         headers["X-HQ-GPU-Render"] = base64.b64encode(
             json.dumps(result["gpu_render"], separators=(",", ":")).encode("utf-8")
         ).decode("ascii")
+    if claim_token:
+        headers.update({'X-HQ-Claim-Token':claim_token,'X-HQ-Artifact-Sha256':hashlib.sha256(data).hexdigest()})
     return _call(RELAY + "/v1/result/" + job_id, NODE_TOKEN, "POST",
                  raw=data, headers=headers, timeout=RENDER_TIMEOUT + 120)
 
 
-def worker(slot):
+class DeliveryStore:
+    """Private atomic outbox. Payload/result never go into logs or source control."""
+    def __init__(self, root):
+        if Path(root).is_symlink():raise ValueError('delivery_root_linked')
+        self.root = Path(root).resolve()
+        self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
+        if os.name != 'nt': os.chmod(self.root,0o700)
+        self.lock = threading.RLock()
+        self.active = set()
+        self.retry_at = {}
+        self.claim_lock = threading.Lock()
+
+    def path(self, jid, suffix='.json'):
+        if not re.fullmatch('[a-f0-9]{32}',jid): raise ValueError('delivery_id_invalid')
+        p = self.root/(jid+suffix)
+        if p.is_symlink(): raise ValueError('delivery_path_linked')
+        return p
+
+    def write(self, path, data):
+        fd, name = tempfile.mkstemp(prefix='.delivery-',dir=self.root)
+        try:
+            with os.fdopen(fd,'wb') as f:
+                f.write(data); f.flush(); os.fsync(f.fileno())
+            os.replace(name,path)
+        finally:
+            if os.path.exists(name): os.unlink(name)
+
+    def get(self,jid):
+        with self.lock:
+            return json.loads(self.path(jid).read_text(encoding='utf-8'))
+
+    def ensure(self,job):
+        jid=job['job_id']; token=job['claim_token']
+        if not re.fullmatch('[a-f0-9]{32}',token): raise ValueError('delivery_token_invalid')
+        with self.lock:
+            if self.path(jid).exists():
+                old=self.get(jid)
+                if old['claim_token'] != token or old['payload'] != job['payload']:
+                    raise ValueError('delivery_identity_conflict')
+                return
+            value={'job_id':jid,'claim_token':token,'payload':job['payload'],'phase':'claimed','started_at':time.time(),'result':{}}
+            self.write(self.path(jid),json.dumps(value,ensure_ascii=False,allow_nan=False).encode())
+
+    def update(self,jid,**fields):
+        with self.lock:
+            r=self.get(jid);r.update(fields)
+            if 'phase' in fields:
+                r.setdefault('phase_times',{}).setdefault(fields['phase'],time.time())
+            self.write(self.path(jid),json.dumps(r,ensure_ascii=False,allow_nan=False).encode())
+            return r
+
+    def next_ready(self):
+        with self.lock:
+            for p in sorted(self.root.glob('*.json')):
+                jid=p.stem
+                if jid in self.active or self.retry_at.get(jid,0)>time.monotonic():continue
+                r=self.get(jid)
+                if r['phase']=='complete':continue
+                self.active.add(jid);return r
+        return None
+
+    def release(self,jid):
+        with self.lock:
+            self.active.discard(jid);self.retry_at[jid]=time.monotonic()+10
+
+    def outstanding(self):
+        with self.lock:
+            return sum(self.get(p.stem)['phase']!='complete' for p in self.root.glob('*.json'))
+
+    @contextmanager
+    def process_lock(self):
+        path=self.root/'poller.lock'
+        if path.is_symlink():raise ValueError('delivery_lock_linked')
+        with path.open('a+b') as f:
+            f.seek(0);f.write(b'0');f.flush();f.seek(0)
+            if os.name=='nt':
+                import msvcrt
+                msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1)
+            else:
+                import fcntl
+                fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            yield
+
+
+def delivery_status(record):
+    return _call(RELAY+'/v1/delivery-status',NODE_TOKEN,'POST',body={
+        'node':NODE_NAME,'job_id':record['job_id'],'claim_token':record['claim_token']},timeout=30)
+
+
+def process_delivery(store,record):
+    jid=record['job_id'];token=record['claim_token']
+    remote=delivery_status(record)
+    if remote['status']=='failed':
+        store.update(jid,phase='complete');return
+    if remote['status']=='completed':
+        if record.get('sha256') and remote.get('artifact_sha256') and record['sha256']!=remote['artifact_sha256']:
+            raise RuntimeError('delivery_remote_artifact_conflict')
+        if not remote.get('metadata_done'):
+            report(jid,True,result=record.get('result') or {},claim_token=token)
+        store.update(jid,phase='complete')
+        store.path(jid,'.mp4').unlink(missing_ok=True)
+        return
+    if record['phase']=='claimed':
+        payload=json.loads(json.dumps(record['payload']))
+        sync_user_assets(payload, jid)
+        record=store.update(jid,phase='prepared',prepared_payload=payload)
+    if record['phase'] in {'prepared','running'}:
+        payload=record['prepared_payload']
+        result, error = run_local(payload, jid,local_id=record.get('local_id'),
+            on_accepted=lambda local_id:store.update(jid,phase='running',local_id=local_id),
+            started_at=record['started_at'],durable=True)
+        record=store.update(jid,phase='failed' if error else 'rendered',result=result or {},error=error)
+    if record['phase']=='failed':
+        report(jid,False,error=record['error'],claim_token=token)
+        store.update(jid,phase='complete');return
+    result=record['result']
+    if remote['status'] != 'completed':
+        if record['phase']=='rendered':
+            url=result.get('file_url') or ''
+            if not re.fullmatch(r'/v1/files/[A-Za-z0-9_-]+\.mp4',url):
+                raise ValueError('local_artifact_url_invalid')
+            data=_download_local_result(LOCAL+url)
+            if not isinstance(data,bytes) or not 0<len(data)<=256*1024*1024:raise ValueError('local_artifact_invalid')
+            store.write(store.path(jid,'.mp4'),data)
+            record=store.update(jid,phase='ready',sha256=hashlib.sha256(data).hexdigest())
+        data=store.path(jid,'.mp4').read_bytes()
+        if hashlib.sha256(data).hexdigest()!=record['sha256']:raise ValueError('delivery_spool_corrupt')
+        out = upload_result(jid,result.get('file_url') or '',result,claim_token=token,data=data)
+        if not out.get('ok'):raise RuntimeError('delivery_upload_unconfirmed')
+    elif record.get('sha256') and remote.get('artifact_sha256') and record['sha256'] != remote['artifact_sha256']:
+        raise RuntimeError('delivery_remote_artifact_conflict')
+    report(jid, True, result=result,claim_token=token)
+    store.update(jid,phase='complete')
+    store.path(jid,'.mp4').unlink(missing_ok=True)
+
+
+def recover_deliveries(store):
+    out=_call(RELAY+'/v1/recover',NODE_TOKEN,'POST',body={'node':NODE_NAME},timeout=30)
+    for job in out['jobs']:store.ensure(job)
+
+
+def recovery_worker(store):
+    while True:
+        try:recover_deliveries(store)
+        except Exception as exc:print('[poller] recovery_scan_error=%s'%type(exc).__name__,flush=True)
+        time.sleep(15)
+
+
+def worker(slot,store):
     """一个并发槽位：独立地「领取→渲染→回传」，循环不停。"""
     while True:
-        job = claim()
-        if not job:
+        try:
+            record=store.next_ready()
+        except Exception as exc:
+            print('[poller] journal_read_error=%s'%type(exc).__name__,flush=True)
+            time.sleep(15);continue
+        if record is None:
+            try:
+                with store.claim_lock:
+                    if store.outstanding() < CONCURRENCY:
+                        job=claim()
+                        if job:store.ensure(job)
+            except Exception as exc:
+                print('[poller] journal_claim_error=%s'%type(exc).__name__,flush=True)
             time.sleep(POLL_IDLE)
             continue
-        jid = job.get("job_id")
-        payload = job.get("payload") or {}
-        print("[poller] #%d 领取 %s template=%s" % (slot, jid, payload.get("template_id")), flush=True)
-        started = time.time()
+        jid=record['job_id']
         try:
-            sync_user_assets(payload, jid)
-            result, error = run_local(payload, jid)
-            if error:
-                print("[poller] #%d 渲染失败 %s: %s" % (slot, jid, error[:150]), flush=True)
-                report(jid, False, error=error)
-                continue
-            # /v1/result 已落盘并标记完成（file_url 由中转器生成，指向它自己），
-            # 绝不能再调 /v1/report 覆盖——那会用节点本地路径盖掉对外的正确地址。
-            out = upload_result(jid, result.get("file_url") or "", result)
-            report(jid, True, result=result)
-            print("[poller] #%d 完成 %s，用时 %.1fs，COS=%s"
-                  % (slot, jid, time.time() - started, out.get("cos_uploaded")), flush=True)
+            process_delivery(store,record)
+            print('[poller] delivery_confirmed job=%s slot=%s'%(jid,slot),flush=True)
         except Exception as exc:
-            print("[poller] #%d 异常 %s: %s" % (slot, jid, exc), flush=True)
-            try:
-                report(jid, False, error=str(exc)[:300])
-            except Exception:
-                pass
+            # Transport/acknowledgement failure is not renderer failure.
+            print('[poller] delivery_pending job=%s phase=%s error=%s'%(jid,store.get(jid)['phase'],type(exc).__name__),flush=True)
+        finally:store.release(jid)
 
 
 def main():
     print("[poller] node=%s relay=%s local=%s 并发=%d"
           % (NODE_NAME, RELAY, LOCAL, CONCURRENCY), flush=True)
-    threads = [threading.Thread(target=heartbeat, daemon=True)]
-    threads[0].start()
-    for slot in range(1, CONCURRENCY + 1):
-        t = threading.Thread(target=worker, args=(slot,), daemon=True)
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
+    store=DeliveryStore(os.environ.get('NODE_STATE_DIR',str(Path.home()/'.huangque-render-poller')))
+    with store.process_lock():
+        recover_deliveries(store)
+        threads = [threading.Thread(target=heartbeat,daemon=True),threading.Thread(target=recovery_worker,args=(store,),daemon=True)]
+        threads += [threading.Thread(target=worker,args=(slot,store),daemon=True) for slot in range(1,CONCURRENCY+1)]
+        for t in threads:t.start()
+        for t in threads:t.join()
 
 
 if __name__ == "__main__":
