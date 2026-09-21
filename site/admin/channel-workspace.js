@@ -394,6 +394,34 @@
         delete latencyResults[uid];delete latencyChoices[uid];delete latencyIdentities[uid];
       }
     }
+    // 检测结果的文案。分三层说清：地址有没有回应 / 耗时多少 / 具体是什么情况。
+    // 关键是不要把所有非 2xx 都写成「渠道异常」——基础地址返回 404（如 /api/v1）
+    // 只说明那条路径没有业务接口，不代表渠道不可用。
+    // 后端给了 reason/message 就用它（能区分 404/401/405/5xx），老后端退回 state 映射。
+    const LATENCY_NOTE='此检测仅测量 HTTP 响应耗时，不验证 Key、模型或生成能力。';
+    function latencyText(result,source){
+      const st=result?.state||'';
+      const status=Number.isFinite(Number(result?.http_status))?Number(result.http_status):null;
+      const ms=Number.isFinite(result?.latency_ms)?Math.round(result.latency_ms)+' ms':'';
+      const prose=String(result?.message||'');
+      let line;
+      if(st==='reachable'||st==='http_error'||st==='redirect_blocked'){
+        const head=st==='redirect_blocked'?'已收到重定向':'已收到响应';
+        const tail=status!=null?('HTTP '+status+(prose?('，'+prose):'')):'';
+        line=[head,ms,tail].filter(Boolean).join(' · ');
+      }else if(st==='timeout'){
+        line='检测超时 · 10 秒内未完成';
+      }else if(st==='network_error'){
+        line='地址解析失败／连接失败';
+      }else if(st==='unavailable'){
+        line=prose||'未配置可检测地址';
+      }else if(result?.sources&&result.sources.length){
+        line='请选择要检测的地址来源';
+      }else{
+        line=prose||'结果未知';
+      }
+      return source?line+' · '+source:line;
+    }
     async function detectLatency(uid,source){
       if(latencyBusy.has(uid))return;
       const identity=latencyIdentity(uid);latencyIdentities[uid]=identity;
@@ -404,10 +432,8 @@
         if(uid.startsWith('managed:')&&Number(result.version)!==Number((data.items||[]).find(c=>c.id===uid.slice(8))?.version))return;
         if(result?.ok===false)throw Error('检测未完成');
         latencyChoices[uid]=Array.isArray(result.sources)?result.sources:[];
-        const ms=Number.isFinite(result?.latency_ms)?Math.round(result.latency_ms)+' ms':'';
-        const labels={reachable:'网络可达',http_error:'HTTP '+result.http_status,redirect_blocked:'重定向未跟随',timeout:'超时',network_error:'连接失败',unavailable:'当前线路暂不支持检测'};
-        latencyResults[uid]=latencyChoices[uid].length?'请选择要检测的地址来源':[ms,source,labels[result.state]||'结果未知'].filter(Boolean).join(' · ');
-      }catch(_){if(identity===latencyIdentity(uid))latencyResults[uid]='检测失败，请重试'}
+        latencyResults[uid]=latencyChoices[uid].length?'请选择要检测的地址来源':latencyText(result,source);
+      }catch(_){if(identity===latencyIdentity(uid))latencyResults[uid]='检测接口调用失败'}
       finally{latencyBusy.delete(uid);refreshPriority()}
     }
     function livePrimaryRow(route,model,product){
