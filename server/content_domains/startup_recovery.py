@@ -196,6 +196,32 @@ def reclaim_orphaned_running(
                 logger("[startup] 查询Sora恢复信息失败，保留 running job=%s: %s" %
                        (row["id"], str(exc)[:200]), flush=True)
                 continue
+        elif row["kind"] == "matrix_template_preview":
+            provider = "Matrix template preview"
+            runtime = payload.get("_matrix_runtime") if isinstance(payload, dict) else {}
+            if not isinstance(runtime, dict):
+                runtime = {}
+            preview_id = runtime.get("preview_id")
+            if isinstance(preview_id, str) and preview_id:
+                # 渲染侧已经冻结了 prepared：按同一个预览 ID 继续轮询，重启不重开预览。
+                request_id = preview_id
+            else:
+                try:
+                    won_requeue = requeue_job(row["id"])
+                except Exception as exc:
+                    logger(
+                        "[startup] 微调预览提交前恢复异常 job=%s: %s"
+                        % (row["id"], exc), flush=True,
+                    )
+                    continue
+                if won_requeue:
+                    logger(
+                        "[startup] 微调预览提交前恢复排队 job=%s" % row["id"],
+                        flush=True,
+                    )
+                    requeued += 1
+                    handled += 1
+                continue
         elif row["kind"] == "matrix_template_video":
             provider = "Matrix template"
             runtime = payload.get("_matrix_runtime") if isinstance(payload, dict) else {}

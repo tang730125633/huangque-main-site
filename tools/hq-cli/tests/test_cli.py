@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.12", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.13", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -269,7 +269,7 @@ class HqCliTests(unittest.TestCase):
             "short-drama-completion-readiness", "short-drama-completion",
             "short-drama-completion-confirm",
         }
-        self.assertEqual(243, len(by_id))
+        self.assertEqual(245, len(by_id))
         self.assertTrue(expected <= set(by_id))
         self.assertEqual("download", by_id["dl"]["kind"])
         self.assertEqual("paid", by_id["director-production-start"]["side_effect"])
@@ -530,6 +530,7 @@ class HqCliTests(unittest.TestCase):
             "text-video-voices": "assets:read", "pricing": "profile:read",
             "matrix-template-capability": "assets:read",
             "matrix-template-templates": "assets:read",
+            "matrix-template-controls": "assets:read",
             "inspiration-catalog": "inspiration:read", "inspiration-likes": "inspiration:read",
             "leads-crm": "leads:read", "video-avatars": "assets:read", "audio-slots": "assets:read",
             "short-drama-projects": "short-drama:read", "short-drama-project": "short-drama:read",
@@ -1245,7 +1246,7 @@ class HqCliTests(unittest.TestCase):
         }
         for payload in (
             dict(base, duration=8),
-            dict(base, bgm=False),
+            dict(base, count=2),
             dict(base, template_id="../bad"),
             dict(base, font_family="x" * 81),
             dict(base, voiceover={}),
@@ -1284,6 +1285,150 @@ class HqCliTests(unittest.TestCase):
                     json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                 )
                 self.assertEqual(cli.EXIT_INPUT, code)
+                self.assertEqual("input_error", self.payload(error)["error"])
+                request.assert_not_called()
+
+    def test_matrix_template_controls_and_preview_are_registered(self):
+        controls = cli.CAPABILITIES["matrix-template-controls"]
+        self.assertEqual("read", controls["side_effect"])
+        self.assertEqual("assets:read", controls["required_scope"])
+        self.assertEqual(["template_id"], controls["input_schema"]["required"])
+        self.assertEqual(
+            "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+            controls["input_schema"]["properties"]["template_id"]["pattern"],
+        )
+        self.assertTrue(any(
+            "tunable=false" in item for item in controls["constraints"]
+        ))
+        preview = cli.CAPABILITIES["matrix-template-preview"]
+        self.assertEqual("write", preview["side_effect"])
+        self.assertEqual("generation:quote", preview["required_scope"])
+        self.assertEqual("none", preview["cost"]["kind"])
+        self.assertTrue(preview["cost"]["detail"])
+        self.assertEqual(
+            ["top_text", "bottom_text", "template_id", "template_revision"],
+            preview["input_schema"]["required"],
+        )
+        for absent in ("voiceover", "count", "duration", "preview_id"):
+            self.assertNotIn(absent, preview["input_schema"]["properties"])
+        self.assertTrue(any(
+            "matrix-template-controls" in item for item in preview["constraints"]
+        ))
+        generate = cli.CAPABILITIES["matrix-template-generate"]["input_schema"]
+        for field in ("bgm", "template_revision", "overrides", "preview_id"):
+            self.assertIn(field, generate["properties"])
+        self.assertEqual({
+            "type": "object", "additionalProperties": False,
+            "properties": generate["properties"]["overrides"]["properties"],
+            "description": generate["properties"]["overrides"]["description"],
+        }, generate["properties"]["overrides"])
+        batch = cli.CAPABILITIES["matrix-template-batch-generate"]["input_schema"]
+        for field in ("bgm", "template_revision", "overrides", "preview_id"):
+            self.assertNotIn(field, batch["properties"])
+
+    def test_matrix_template_controls_only_sends_template_id(self):
+        self.authorize()
+        result = {
+            "tunable": True, "template_id": "ref-05-changsha-white-red",
+            "template_revision": "b" * 64,
+            "overrides_schema": {
+                "version": 1, "properties": {"title_scale": {"type": "number"}},
+            },
+            "defaults": {"title_scale": 1.0}, "slots": {"max": 3},
+        }
+        raw = json.dumps({"template_id": "ref-05-changsha-white-red"}).encode()
+        with patch("hq_cli.client.request_json", return_value=(200, result)) as request:
+            code, output, error = self.invoke(
+                ["run", "matrix-template-controls", "--input", "@-"], raw,
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual("b" * 64, self.payload(output)["result"]["template_revision"])
+        self.assertEqual({
+            "action": "matrix-template-controls",
+            "input": {"template_id": "ref-05-changsha-white-red"},
+            "confirm": False,
+        }, request.call_args.kwargs["body"])
+
+    def test_matrix_template_preview_submits_same_input_once(self):
+        self.authorize()
+        value = {
+            "top_text": "模板微调预览标题", "bottom_text": "评论区领取完整方案",
+            "template_id": "ref-05-changsha-white-red",
+            "template_revision": "b" * 64,
+            "overrides": {
+                "title_scale": 0.9, "title_offset_y": -30, "accent_color": "#ffcf33",
+                "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}],
+            },
+        }
+        raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        submitted = {
+            "job_id": 95, "kind": "matrix_template_preview",
+            "status": "queued", "cost": 0,
+        }
+        with patch("hq_cli.client.request_json", return_value=(200, submitted)) as request:
+            code, output, error = self.invoke(
+                ["run", "matrix-template-preview", "--input", "@-"], raw,
+            )
+        self.assertEqual(0, code, error)
+        self.assertEqual(95, self.payload(output)["result"]["job_id"])
+        body = request.call_args.kwargs["body"]
+        self.assertEqual("matrix-template-preview", body["action"])
+        self.assertFalse(body["confirm"])
+        self.assertEqual("b" * 64, body["input"]["template_revision"])
+        self.assertEqual({"slot": 2, "x": 0.65, "y": 0.5},
+                         body["input"]["overrides"]["media_focus"][0])
+
+    def test_matrix_template_tuning_inputs_are_rejected_before_http(self):
+        self.authorize()
+        base = {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold",
+        }
+        revision = "b" * 64
+        for capability, payload in (
+            ("matrix-template-generate", dict(base, overrides={"title_scale": 0.9})),
+            ("matrix-template-generate", dict(base, overrides={})),
+            ("matrix-template-generate", dict(
+                base, template_revision=revision,
+                overrides={"title_size": 1.0})),
+            ("matrix-template-generate", dict(
+                base, template_revision=revision, overrides={"title_scale": 1.2})),
+            ("matrix-template-generate", dict(
+                base, template_revision=revision,
+                overrides={"media_focus": [
+                    {"slot": 1, "x": 0.5, "y": 0.5},
+                    {"slot": 1, "x": 0.6, "y": 0.5},
+                ]})),
+            ("matrix-template-generate", dict(
+                base, template_revision=revision,
+                overrides={"media_focus": [{"slot": 1, "x": 1.5, "y": 0.5}]})),
+            ("matrix-template-generate", dict(
+                base, template_revision=revision,
+                overrides={"media_focus": [{"slot": 1, "x": 0.5}]})),
+            ("matrix-template-generate", dict(
+                base, template_revision=revision,
+                overrides={"accent_color": "red"})),
+            ("matrix-template-generate", dict(
+                base, template_revision=revision, preview_id="../bad")),
+            ("matrix-template-generate", dict(base, template_revision="abc")),
+            ("matrix-template-preview", dict(base, overrides={"title_scale": 0.9})),
+            ("matrix-template-preview", base),
+            ("matrix-template-preview", dict(
+                base, template_revision=revision,
+                voiceover={"text": "预览不支持口播", "voice": "public_voice"})),
+            ("matrix-template-batch-generate", dict(
+                base, count=2, template_revision=revision,
+                overrides={"title_scale": 0.9})),
+            ("matrix-template-batch-generate", dict(
+                base, count=2, preview_id="preview-0001")),
+        ):
+            with self.subTest(capability=capability, payload=payload), \
+                    patch("hq_cli.client.request_json") as request:
+                code, _, error = self.invoke(
+                    ["run", capability, "--input", "@-"],
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                )
+                self.assertEqual(cli.EXIT_INPUT, code, error)
                 self.assertEqual("input_error", self.payload(error)["error"])
                 request.assert_not_called()
 

@@ -421,5 +421,108 @@ class MatrixTemplateSubmissionTests(unittest.TestCase):
                         "SELECT COUNT(*) FROM jobs WHERE kind=?", (kind,),
                     ).fetchone()[0])
 
+
+class MatrixTemplatePreviewRecordTests(unittest.TestCase):
+    """Preview credential storage: owner scoped, expiry enforced, retention pruned."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = pathlib.Path(self.temp.name) / "previews.db"
+        self.clock = {"now": 2_000_000_000}
+        with closing(self.factory()):
+            pass
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def factory(self):
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def now(self):
+        return self.clock["now"]
+
+    def test_preview_records_are_owner_scoped_and_expire(self):
+        matrix_template_submission.record_preview(
+            self.factory, "alice", "preview-1", template_id="ref-05-changsha-white-red",
+            template_revision="b" * 64, fingerprint="f" * 64,
+            overrides={"title_scale": 0.9},
+            effective_overrides={"title_scale": 0.9, "cta_scale": 1.0},
+            materials=[{"sha256": "a" * 64, "media_type": "video"}],
+            prepared_digest="d" * 64, expires_at=self.now() + 600, now=self.now(),
+        )
+        record = matrix_template_submission.get_preview(
+            self.factory, "alice", "preview-1", now=self.now(),
+        )
+        self.assertEqual("ref-05-changsha-white-red", record["template_id"])
+        self.assertEqual({"title_scale": 0.9}, record["overrides"])
+        self.assertEqual([{"sha256": "a" * 64, "media_type": "video"}],
+                         record["materials"])
+        self.assertEqual("d" * 64, record["prepared_digest"])
+        self.assertIsNone(matrix_template_submission.get_preview(
+            self.factory, "bob", "preview-1", now=self.now(),
+        ))
+        self.assertIsNone(matrix_template_submission.get_preview(
+            self.factory, "alice", "preview-1", now=self.now() + 601,
+        ))
+
+    def test_recording_the_same_preview_twice_keeps_one_row(self):
+        for scale in (0.9, 1.05):
+            matrix_template_submission.record_preview(
+                self.factory, "alice", "preview-2",
+                template_id="ref-05-changsha-white-red", template_revision="b" * 64,
+                fingerprint="f" * 64, overrides={"title_scale": scale},
+                effective_overrides={"title_scale": scale},
+                materials=[], prepared_digest="d" * 64,
+                expires_at=self.now() + 600, now=self.now(),
+            )
+        with closing(self.factory()) as connection:
+            rows = connection.execute(
+                "SELECT COUNT(*) FROM matrix_template_preview_records",
+            ).fetchone()[0]
+        self.assertEqual(1, rows)
+        self.assertEqual(1.05, matrix_template_submission.get_preview(
+            self.factory, "alice", "preview-2", now=self.now(),
+        )["overrides"]["title_scale"])
+
+    def test_prune_drops_only_rows_past_retention(self):
+        matrix_template_submission.record_preview(
+            self.factory, "alice", "preview-old",
+            template_id="ref-05-changsha-white-red", template_revision="b" * 64,
+            fingerprint="f" * 64, overrides={}, effective_overrides={},
+            materials=[], prepared_digest="",
+            expires_at=self.now() - matrix_template_submission.PREVIEW_RETENTION_SECONDS - 10,
+            now=self.now() - matrix_template_submission.PREVIEW_RETENTION_SECONDS - 10,
+        )
+        matrix_template_submission.record_preview(
+            self.factory, "alice", "preview-new",
+            template_id="ref-05-changsha-white-red", template_revision="b" * 64,
+            fingerprint="f" * 64, overrides={}, effective_overrides={},
+            materials=[], prepared_digest="", expires_at=self.now() + 600,
+            now=self.now(),
+        )
+        self.assertEqual(1, matrix_template_submission.prune_previews(
+            self.factory, now=self.now(),
+        ))
+        with closing(self.factory()) as connection:
+            remaining = connection.execute(
+                "SELECT preview_id FROM matrix_template_preview_records",
+            ).fetchall()
+        self.assertEqual(["preview-new"], [row["preview_id"] for row in remaining])
+
+    def test_record_preview_requires_owner_and_identifier(self):
+        with self.assertRaises(ValueError):
+            matrix_template_submission.record_preview(
+                self.factory, "", "preview-3", template_id="t",
+                template_revision="b" * 64, fingerprint="f" * 64,
+            )
+        with self.assertRaises(ValueError):
+            matrix_template_submission.record_preview(
+                self.factory, "alice", "", template_id="t",
+                template_revision="b" * 64, fingerprint="f" * 64,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
