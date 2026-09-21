@@ -540,10 +540,12 @@ def worker(slot,store):
                     if store.outstanding() < CONCURRENCY:
                         job=claim()
                         if job:store.ensure(job)
+                record=store.next_ready()
             except Exception as exc:
                 print('[poller] journal_claim_error=%s'%type(exc).__name__,flush=True)
-            time.sleep(POLL_IDLE)
-            continue
+            if record is None:
+                time.sleep(POLL_IDLE)
+                continue
         jid=record['job_id']
         try:
             process_delivery(store,record)
