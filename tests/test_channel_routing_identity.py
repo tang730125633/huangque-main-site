@@ -140,15 +140,25 @@ class CatalogCoverageTests(unittest.TestCase):
         self.assertEqual(item['combinations'][0]['points'], 18)
 
 
-class ClientFallbackTests(unittest.TestCase):
-    """复现：目录里找不到原选项时，页面静默回落到第一项。"""
+class ClientSwitchNoticeTests(unittest.TestCase):
+    """正确行为：原选项不在支持范围时要明确告知，且区分参数变化与点数变化。"""
 
-    def test_client_falls_back_to_first_item(self):
+    def source(self):
         import io
-        src = io.open(os.path.join(os.path.dirname(__file__), '..', 'site', 'workbench',
-                                   'channel-parameters.js'), encoding='utf-8').read()
-        # items.find(...)||items[0] —— 找不到就换成第一项，用户没有被告知
-        self.assertIn('items.find(i=>i.front===previous?.front)||items[0]', src)
+        return io.open(os.path.join(os.path.dirname(__file__), '..', 'site', 'workbench',
+                                    'channel-parameters.js'), encoding='utf-8').read()
+
+    def test_switch_is_announced_not_silent(self):
+        src = self.source()
+        # 记住原来的选择，并在下面明确告知，而不是直接 items.find(...)||items[0] 了事
+        self.assertIn('droppedFront', src)
+        self.assertIn('已不在当前渠道支持范围', src)
+        self.assertNotIn('items.find(i=>i.front===previous?.front)||items[0]', src)
+
+    def test_price_change_is_distinguished_from_parameter_change(self):
+        src = self.source()
+        self.assertIn('本次点数已变化', src)
+        self.assertIn('点数未变', src)
 
     def test_client_does_not_send_source_page_for_video(self):
         """果肉走 xiaole_video：识别不依赖 source_page，这一条不是缺陷。"""
