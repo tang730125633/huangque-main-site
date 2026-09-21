@@ -76,6 +76,72 @@ def layout_state():
     return _clean_layout(json.loads(row[0]) if row else {})
 
 
+def _operation_front(kind, spec):
+    """目录项对外暴露的 front：用户页面实际提交的那个字段值。
+
+    业务功能身份优先取识别条件里的 channel（视频）/ model（图片）/ variant（黄雀引擎）。
+    这不是「用供应商模型名反推功能」——方向相反：先有功能，front 只是它对外的一个标识。
+    """
+    task = (spec or {}).get('task_match') or {}
+    for key in ('channel', 'model', 'variant'):
+        value = str(task.get(key) or '').strip()
+        if value:
+            return value
+    return ''
+
+
+def _operation_items(existing):
+    """有【托管功能映射】的功能 → 按该功能主渠道的当前版本生成目录项。
+
+    现状缺陷：目录只读旧线路映射（mappings），于是像「纳米香蕉 2」这种只配了
+    功能映射、没有旧映射条目的功能根本拿不到参数与报价；用户在目录里选不到它，
+    页面又会静默回落到 items[0]。这里把有映射的功能补齐。
+
+    追加式：已由旧映射产出的条目原样保留，不改动它们的行为。
+    """
+    from .function_registry import operation as _operation
+    have = {(item.get('kind'), item.get('front')) for item in existing}
+    result = []
+    try:
+        mappings = store.overview().get('operation_mappings') or []
+    except Exception:
+        return result
+    for mapping in mappings:
+        if mapping.get('state') != 'managed':
+            continue
+        oid = str(mapping.get('operation_id') or '')
+        cid = str(mapping.get('channel') or '')
+        if not oid or not cid:
+            continue
+        spec = _operation(oid)
+        if not spec:
+            continue
+        # kind 在识别条件里（task_match.kind），叶子顶层没有这个字段
+        kind = str((spec.get('task_match') or {}).get('kind') or spec.get('kind') or '').strip()
+        front = _operation_front(kind, spec)
+        if not kind or not front or (kind, front) in have:
+            continue
+        try:
+            cfg = store.version(cid)
+        except Exception:
+            continue
+        params_spec = cfg.get('parameters')
+        if not params_spec or cfg.get('_lifecycle', {}).get('deleted'):
+            continue
+        have.add((kind, front))
+        result.append(dict(kind=kind, front=front,
+                           label=cfg.get('name') or spec.get('title') or oid,
+                           revision=token(cfg),
+                           fields=params_spec['fields'],
+                           combinations=params_spec['combinations'],
+                           default=params_spec['default'],
+                           reference_min=params_spec['reference_min'],
+                           reference_max=params_spec['reference_max'],
+                           count=1, mask_enabled=params_spec.get('mask') is True,
+                           operation_id=oid))
+    return result
+
+
 def _published_items():
     if channel_store.enabled():
         result=[]
@@ -87,7 +153,7 @@ def _published_items():
                 fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
                 reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
                 mask_enabled=spec.get('mask') is True))
-        return result
+        return result + _operation_items(result)
     result=[]
     with closing(store.db()) as c:
         for row in c.execute('SELECT config FROM mappings'):
@@ -103,7 +169,7 @@ def _published_items():
                 fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
                 reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
                 mask_enabled=spec.get('mask') is True))
-    return result
+    return result + _operation_items(result)
 
 
 def _lechuang_items(items):
