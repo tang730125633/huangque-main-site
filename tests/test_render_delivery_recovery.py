@@ -226,3 +226,31 @@ class DurablePollerTests(unittest.TestCase):
         with mock.patch.object(self.p,'recover_deliveries',side_effect=[ConnectionRefusedError(),None]) as recover,mock.patch.object(self.p,'claim') as claim,mock.patch.object(self.p.time,'sleep') as sleep:
             self.p.recover_before_claims(object())
         self.assertEqual(recover.call_count,2);sleep.assert_called_once();claim.assert_not_called()
+
+    def test_definitive_user_material_failure_is_reported_not_recovered_forever(self):
+        with tempfile.TemporaryDirectory() as t:
+            store=self.p.DeliveryStore(Path(t));jid='a'*32;store.ensure({'job_id':jid,'claim_token':'b'*32,'payload':{}})
+            with mock.patch.object(self.p,'delivery_status',return_value={'status':'running'}),mock.patch.object(self.p,'sync_user_assets',side_effect=RuntimeError('image conversion failed')),mock.patch.object(self.p,'run_local') as render,mock.patch.object(self.p,'report') as report:
+                self.p.process_delivery(store,store.get(jid));render.assert_not_called()
+            self.assertFalse(report.call_args.args[1]);self.assertEqual(store.get(jid)['phase'],'complete')
+
+    def test_definitive_admission_rejection_releases_slot(self):
+        with tempfile.TemporaryDirectory() as t:
+            store=self.p.DeliveryStore(Path(t));jid='a'*32;store.ensure({'job_id':jid,'claim_token':'b'*32,'payload':{}})
+            error=self.p.NodeSubmissionError(400,'invalid_request','contract_invalid')
+            with mock.patch.object(self.p,'delivery_status',return_value={'status':'running'}),mock.patch.object(self.p,'sync_user_assets'),mock.patch.object(self.p,'run_local',side_effect=error),mock.patch.object(self.p,'report') as report:
+                self.p.process_delivery(store,store.get(jid))
+            self.assertFalse(report.call_args.args[1]);self.assertEqual(store.outstanding(),0)
+
+    def test_uncertain_submission_keeps_frozen_prepared_payload(self):
+        with tempfile.TemporaryDirectory() as t:
+            store=self.p.DeliveryStore(Path(t));jid='a'*32;store.ensure({'job_id':jid,'claim_token':'b'*32,'payload':{'template_id':'test'}})
+            error=self.p.NodeSubmissionError(0,'transport_error','TimeoutError')
+            with mock.patch.object(self.p,'delivery_status',return_value={'status':'running'}),mock.patch.object(self.p,'sync_user_assets'),mock.patch.object(self.p,'run_local',side_effect=error),mock.patch.object(self.p,'report') as report:
+                with self.assertRaises(self.p.NodeSubmissionError):self.p.process_delivery(store,store.get(jid))
+                report.assert_not_called()
+            self.assertEqual(store.get(jid)['prepared_payload'],{'template_id':'test'})
+
+    def test_missing_local_ack_id_is_unknown_in_durable_mode(self):
+        with mock.patch.object(self.p,'_submit_local',return_value={}):
+            with self.assertRaisesRegex(RuntimeError,'local_submission_unconfirmed'):self.p.run_local({},'a'*32,durable=True)
