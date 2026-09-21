@@ -2477,6 +2477,15 @@ def preview_payload(payload, username="", *, allow_shared_materials=None,
         raise ValueError("预览不支持参数：" + label)
     if not str(payload.get("template_revision") or "").strip():
         raise ValueError("预览需要提供 template_revision，请先读取模板可调范围")
+    materials = payload.get("user_materials") or []
+    non_video = [
+        str(item.get("media_type") or "") for item in materials
+        if isinstance(item, dict) and str(item.get("media_type") or "") != "video"
+    ]
+    if non_video:
+        # 两版对比预览在渲染服务本机执行，不支持图片转视频（正式出片才由节点
+        # 转片）：平台层直接拒绝并给出路，避免渲染端 1 秒失败后被无限重试。
+        raise ValueError("两版对比预览需要视频素材：请发 1~3 段视频，或图片直接正式出片（无需预览）")
     return validate_payload(
         payload, username,
         allow_shared_materials=allow_shared_materials,
@@ -2568,7 +2577,10 @@ def _generate_preview(payload):
                 current.get("error") or current.get("reason")
                 or "预览生成失败"
             )[:300]
-            raise ValueError("预览未生成：" + reason)
+            # 渲染端明确失败必须抛 ProviderFailed：recover_preview_error 只对
+            # 这类错误立即终态不重试；抛普通 ValueError 会被无限 requeue 到
+            # 15 分钟超时（2026-09-21 生产事故 9791 复现）。与正式任务路径一致。
+            raise MatrixTemplateProviderFailed("预览未生成：" + reason)
         from .task_termination import sleep
         sleep(POLL_INTERVAL)
     raise RuntimeError("预览生成超时")
