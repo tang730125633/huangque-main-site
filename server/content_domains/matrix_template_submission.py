@@ -108,6 +108,118 @@ def transaction_keys(username, endpoint, idem_key):
     return charge, refund
 
 
+# 模板参数微调预览（合同 v1）：预览记录把「用户看过的那一份输入摘要 + 渲染侧冻结的
+# prepared 摘录」绑定在一起，正式提交带 preview_id 时据此复用同一份素材/参数。
+# 预览不扣点、不登记正式作品，所以这里只有一份一次性凭据表，不参与扣点尝试状态机。
+PREVIEW_RETENTION_SECONDS = 24 * 60 * 60
+
+
+def ensure_preview_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS matrix_template_preview_records(
+        username TEXT NOT NULL,
+        preview_id TEXT NOT NULL,
+        job_id INTEGER,
+        template_id TEXT NOT NULL,
+        template_revision TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        overrides_json TEXT NOT NULL DEFAULT '{}',
+        effective_overrides_json TEXT NOT NULL DEFAULT '{}',
+        materials_json TEXT NOT NULL DEFAULT '[]',
+        prepared_digest TEXT NOT NULL DEFAULT '',
+        expires_at INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(username,preview_id)
+    )""")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_matrix_preview_expiry "
+        "ON matrix_template_preview_records(expires_at)"
+    )
+
+
+def _preview_row(row):
+    if not row:
+        return None
+    value = dict(row)
+    value["overrides"] = json.loads(value.pop("overrides_json") or "{}")
+    value["effective_overrides"] = json.loads(
+        value.pop("effective_overrides_json") or "{}"
+    )
+    value["materials"] = json.loads(value.pop("materials_json") or "[]")
+    value["prepared_digest"] = str(value.get("prepared_digest") or "")
+    value["expires_at"] = int(value.get("expires_at") or 0)
+    return value
+
+
+def record_preview(db_factory, username, preview_id, *, template_id,
+                   template_revision, fingerprint, overrides=None,
+                   effective_overrides=None, materials=None,
+                   prepared_digest="", expires_at=0, job_id=None, now=None):
+    """Freeze one owner-scoped preview so the paid submit can reuse it."""
+    username = str(username or "").strip()
+    preview_id = str(preview_id or "").strip()
+    if not username or not preview_id:
+        raise ValueError("invalid preview record identity")
+    now = int(time.time() if now is None else now)
+    with closing(db_factory()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_preview_table(connection)
+        connection.execute(
+            """INSERT OR REPLACE INTO matrix_template_preview_records(
+               username,preview_id,job_id,template_id,template_revision,fingerprint,
+               overrides_json,effective_overrides_json,materials_json,prepared_digest,
+               expires_at,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                username, preview_id,
+                int(job_id) if job_id is not None else None,
+                str(template_id or ""), str(template_revision or ""),
+                str(fingerprint or ""), _json(overrides or {}),
+                _json(effective_overrides or {}), _json(materials or []),
+                str(prepared_digest or ""), int(expires_at or 0), now,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM matrix_template_preview_records "
+            "WHERE username=? AND preview_id=?",
+            (username, preview_id),
+        ).fetchone()
+        connection.commit()
+    return _preview_row(row)
+
+
+def get_preview(db_factory, username, preview_id, now=None):
+    """Read one preview record; an expired record reads as absent."""
+    now = int(time.time() if now is None else now)
+    with closing(db_factory()) as connection:
+        ensure_preview_table(connection)
+        row = connection.execute(
+            "SELECT * FROM matrix_template_preview_records "
+            "WHERE username=? AND preview_id=?",
+            (str(username or "").strip(), str(preview_id or "").strip()),
+        ).fetchone()
+    record = _preview_row(row)
+    if not record:
+        return None
+    if int(record["expires_at"] or 0) <= now:
+        return None
+    return record
+
+
+def prune_previews(db_factory, now=None):
+    """Drop preview records whose retention window has passed."""
+    now = int(time.time() if now is None else now)
+    cutoff = now - PREVIEW_RETENTION_SECONDS
+    with closing(db_factory()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        ensure_preview_table(connection)
+        changed = connection.execute(
+            "DELETE FROM matrix_template_preview_records WHERE expires_at < ?",
+            (cutoff,),
+        )
+        connection.commit()
+    return int(changed.rowcount or 0)
+
+
 def get(db_factory, username, endpoint, idem_key):
     with closing(db_factory()) as connection:
         ensure_table(connection)

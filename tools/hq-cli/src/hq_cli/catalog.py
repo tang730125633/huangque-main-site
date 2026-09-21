@@ -401,8 +401,25 @@ for identifier, name, description in (
     ("text-video-voices", "文案成片音色", "读取文案成片可用音色。"),
     ("matrix-template-capability", "模板成片可用状态", "读取模板成片功能开关和生成服务状态。"),
     ("matrix-template-templates", "模板成片模板", "读取模板成片可用视觉模板。"),
+    ("matrix-template-controls", "模板可调范围", "读取单个模板的可调参数范围、版本号与默认值。"),
 ):
     CAPABILITIES[identifier] = _api(identifier, name, identifier, description, scope="assets:read")
+CAPABILITIES["matrix-template-controls"]["input_schema"]["properties"] = {
+    "template_id": {
+        "type": "string", "minLength": 1, "maxLength": 64,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        "description": "从 matrix-template-templates 选定的 template_id",
+    },
+}
+CAPABILITIES["matrix-template-controls"]["input_schema"]["required"] = ["template_id"]
+CAPABILITIES["matrix-template-controls"]["constraints"] = [
+    "tunable=false means this template cannot be adjusted; never invent parameters for it",
+    "template_revision, overrides_schema, defaults and slots are owned by the renderer and echoed verbatim",
+    "read this before previewing; without it overrides must not be sent",
+]
+CAPABILITIES["matrix-template-controls"]["next_actions"] = [
+    "tunable=true 时按 overrides_schema 组装参数，用 matrix-template-preview 出对比预览；tunable=false 时明确告诉用户这款模板不可调。",
+]
 CAPABILITIES["pricing"] = _api(
     "pricing", "点数价格", "pricing", "读取主站当前点数价格目录。", scope="profile:read")
 CAPABILITIES["dl"] = _download(
@@ -1240,10 +1257,97 @@ MATRIX_TEMPLATE_FIELDS = {
         "description": "本人素材；先通过 image-upload 或 video-upload 取得 upload_id",
     },
 }
+MATRIX_TEMPLATE_OVERRIDES_FIELDS = {
+    "title_scale": {
+        "type": "number", "minimum": 0.85, "maximum": 1.10, "default": 1.0,
+        "description": "标题缩放；默认 1.0，范围 0.85-1.10",
+    },
+    "title_offset_y": {
+        "type": "integer", "minimum": -60, "maximum": 60, "default": 0,
+        "description": "标题上下移动像素（1080x1920 设计坐标）；负数上移，默认 0",
+    },
+    "cta_scale": {
+        "type": "number", "minimum": 0.85, "maximum": 1.10, "default": 1.0,
+        "description": "底部行动文案缩放；默认 1.0，范围 0.85-1.10",
+    },
+    "cta_offset_y": {
+        "type": "integer", "minimum": -60, "maximum": 60, "default": 0,
+        "description": "底部行动文案上下移动像素；负数上移，默认 0",
+    },
+    "accent_color": {
+        "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$",
+        "description": "强调色（只改强调层，不改正文与素材），#RRGGBB",
+    },
+    "media_focus": {
+        "type": "array", "minItems": 1, "maxItems": 21,
+        "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["slot", "x", "y"],
+            "properties": {
+                "slot": {"type": "integer", "minimum": 1, "maximum": 21,
+                         "description": "画面槽位，从 1 开始，与素材顺序一致"},
+                "x": {"type": "number", "minimum": 0, "maximum": 1,
+                      "description": "焦点横向位置 0-1"},
+                "y": {"type": "number", "minimum": 0, "maximum": 1,
+                      "description": "焦点纵向位置 0-1"},
+            },
+        },
+        "description": "画面焦点；数组项为 {slot,x,y}，槽位不重复",
+    },
+}
+MATRIX_TEMPLATE_TUNING_FIELDS = {
+    "bgm": {
+        "type": "boolean", "default": True,
+        "description": "是否带背景音乐；正式生成默认 true，带口播时默认 false，预览必须与之一致",
+    },
+    "template_revision": {
+        "type": "string", "pattern": "^[0-9a-f]{64}$",
+        "description": "matrix-template-controls 返回的模板版本号；改参数时必须原样回传",
+    },
+    "overrides": {
+        "type": "object", "additionalProperties": False,
+        "properties": MATRIX_TEMPLATE_OVERRIDES_FIELDS,
+        "description": "参数微调；只有 tunable=true 的模板可用",
+    },
+    "preview_id": {
+        "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        "description": "matrix-template-preview 结果里的预览标识；带它提交会复用预览冻结的素材/时长/运动",
+    },
+}
+MATRIX_TEMPLATE_PREVIEW_FIELDS = {
+    key: value for key, value in MATRIX_TEMPLATE_FIELDS.items()
+    if key != "voiceover"
+}
+# A preview never references another preview: preview_id stays generate-only.
+MATRIX_TEMPLATE_PREVIEW_FIELDS.update({
+    key: value for key, value in MATRIX_TEMPLATE_TUNING_FIELDS.items()
+    if key != "preview_id"
+})
 MATRIX_TEMPLATE_BATCH_FIELDS = {
     **MATRIX_TEMPLATE_FIELDS,
     "count": {"type": "integer", "minimum": 2, "maximum": 5},
 }
+CAPABILITIES["matrix-template-preview"] = _api(
+    "matrix-template-preview", "模板参数微调预览",
+    "matrix-template-preview",
+    "用与正式生成相同的输入渲染默认版与微调版对比，不扣点、不登记作品。",
+    MATRIX_TEMPLATE_PREVIEW_FIELDS,
+    ["top_text", "bottom_text", "template_id", "template_revision"],
+    "generation:quote", "write", False,
+    {"kind": "none", "detail": "预览不扣点、不算交付；确认后才走正式报价。"},
+)
+CAPABILITIES["matrix-template-preview"]["constraints"] = [
+    "read matrix-template-controls first and copy template_revision verbatim",
+    "only tunable templates can be previewed; other templates must be refused explicitly",
+    "overrides follows the vocabulary: title_scale/cta_scale 0.85-1.10, title_offset_y/cta_offset_y -60..60, accent_color #RRGGBB, media_focus [{slot,x,y}]",
+    "voiceover, duration and batch fields are rejected: a preview only compares picture and typography",
+    "bgm must be the same as the later generate call (generate defaults to true; a voiceover submit defaults to false)",
+    "the preview is not a deliverable: show both versions and their frames to the user, never promise it as the final video",
+]
+CAPABILITIES["matrix-template-preview"]["next_actions"] = [
+    "拿到 job_id 后用 task 轮询；把默认版与微调版的视频/关键帧都给用户看，等他确认后再提交正式生成。",
+    "用户确认后用完全相同的输入 + preview_id 调 matrix-template-generate，报价确认后提交。",
+]
 TIMELINE_VOICEOVER = _schema({
     "text": {"type": "string", "minLength": 1, "maxLength": 120},
     "voice": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -1418,7 +1522,14 @@ CAPABILITIES["matrix-template-generate"]["constraints"] = [
     "the first call only quotes the fixed template-video cost",
     "ordinary accounts use owner-scoped user_materials first; remaining or all visual slots use public internet materials only",
     "shared Huangque materials are restricted to authorized staff/test accounts",
+    "overrides/template_revision only work on templates whose matrix-template-controls say tunable=true",
+    "with preview_id the texts, materials, font, bgm and parameters must equal the previewed ones; the preview's frozen materials are reused when user_materials is omitted",
+    "batch generation rejects tuning fields on purpose: use matrix-template-generate for a tuned video",
 ]
+CAPABILITIES["matrix-template-generate"]["input_schema"]["properties"] = {
+    **CAPABILITIES["matrix-template-generate"]["input_schema"]["properties"],
+    **MATRIX_TEMPLATE_TUNING_FIELDS,
+}
 CAPABILITIES["matrix-template-generate"]["next_actions"] = [
     "核对报价后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
 ]
@@ -1569,6 +1680,8 @@ for identifier, website_modes in {
     "matrix-template-capability": ["matrix_template.single"],
     "matrix-template": ["matrix_template.single"],
     "matrix-template-templates": ["matrix_template.single"],
+    "matrix-template-controls": ["matrix_template.single"],
+    "matrix-template-preview": ["matrix_template.single"],
     "matrix-template-generate": ["matrix_template.single"],
     "matrix-template-batch-generate": ["matrix_template.batch"],
     "video-timeline-compose": ["matrix_template.single"],

@@ -5747,6 +5747,7 @@ class H(BaseHTTPRequestHandler):
         catalog = hq_cli_api.action_catalog(states)
         allowed = {
             "matrix-template-capability", "matrix-template-templates",
+            "matrix-template-controls", "matrix-template-preview",
             "matrix-template-generate",
         }
         catalog["actions"] = [
@@ -5817,6 +5818,7 @@ class H(BaseHTTPRequestHandler):
             action = body.get("action")
             allowed_actions = {
                 "matrix-template-capability", "matrix-template-templates",
+                "matrix-template-controls", "matrix-template-preview",
                 "matrix-template-generate", "task",
             }
             if not isinstance(action, str) or action not in allowed_actions:

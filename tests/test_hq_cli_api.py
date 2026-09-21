@@ -2119,11 +2119,47 @@ class HQCLIAPITests(unittest.TestCase):
             read = self.auth.hq_cli_api.action_plan(action, {})
             self.assertEqual(("assets:read", "proxy", path), (
                 read["scope"], read["kind"], read["path"]))
+        controls = self.auth.hq_cli_api.action_plan(
+            "matrix-template-controls", {"template_id": "native-bold"})
+        self.assertEqual(
+            ("assets:read", "proxy",
+             "/api/gen/matrix-template/controls?template_id=native-bold"),
+            (controls["scope"], controls["kind"], controls["path"]),
+        )
+        preview = self.auth.hq_cli_api.action_plan("matrix-template-preview", {
+            "top_text": "有效标题", "bottom_text": "有效行动文案",
+            "template_id": "native-bold", "template_revision": "b" * 64,
+            "overrides": {"title_scale": 0.9},
+        })
+        self.assertEqual(
+            ("generation:quote", "proxy", "POST",
+             "/api/gen/matrix-template/preview"),
+            (preview["scope"], preview["kind"], preview["method"], preview["path"]),
+        )
+        self.assertEqual("b" * 64, preview["body"]["template_revision"])
+        self.assertEqual({"title_scale": 0.9}, preview["body"]["overrides"])
+        quiet = self.auth.hq_cli_api.action_plan(
+            "matrix-template-generate", dict(value, bgm=False))
+        self.assertFalse(quiet["payload"]["bgm"])
+        tuned = self.auth.hq_cli_api.action_plan(
+            "matrix-template-generate", dict(
+                value, bgm=True, template_revision="B" * 64,
+                overrides={"accent_color": "#ffcf33"},
+            ))
+        self.assertEqual("b" * 64, tuned["payload"]["template_revision"])
+        self.assertEqual({"accent_color": "#FFCF33"}, tuned["payload"]["overrides"])
         history = self.auth.hq_cli_api.action_plan(
             "tasks", {"kind": "matrix_template_video"})
         self.assertIn("kind=matrix_template_video", history["path"])
         for invalid in (
-            dict(value, duration=8), dict(value, bgm=False),
+            dict(value, duration=8), dict(value, bgm="yes"),
+            dict(value, template_revision="abc"),
+            dict(value, overrides={"title_scale": 0.9}),
+            dict(value, template_revision="b" * 64,
+                 overrides={"title_size": 1.0}),
+            dict(value, template_revision="b" * 64,
+                 overrides={"title_scale": 1.2}),
+            dict(value, template_revision="b" * 64, preview_id="../bad"),
             dict(value, template_id="../bad"), dict(value, top_text="A"),
             dict(value, user_materials=[{
                 "sha256": "a" * 64, "media_type": "image",
@@ -2131,6 +2167,14 @@ class HQCLIAPITests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
                 self.auth.hq_cli_api.action_plan("matrix-template-generate", invalid)
+        for invalid in (
+            dict(value, count=2, template_revision="b" * 64,
+                 overrides={"title_scale": 0.9}),
+            dict(value, count=2, preview_id="preview-0001"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(self.auth.hq_cli_api.CLIAPIError):
+                self.auth.hq_cli_api.action_plan(
+                    "matrix-template-batch-generate", invalid)
         for voiceover in (
             None,
             {},

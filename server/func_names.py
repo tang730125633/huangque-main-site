@@ -60,6 +60,7 @@ _SIMPLE = {
     "leadgen": "获客",
     "dl": "无水印下载",
     "matrix_template_video": "模板成片",
+    "matrix_template_preview": "模板微调预览",
 }
 
 
