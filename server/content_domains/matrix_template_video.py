@@ -2309,6 +2309,11 @@ def public_preview_lifecycle(row, now=None):
 
 def recover_preview_error(job_id, error, requeue=None):
     """Keep one preview recoverable until its own deadline or a clear failure."""
+    # 渲染端已明确失败（如「素材数量不足」）时绝不重试：重试不会变好，只会把
+    # 任务永远卡在 retrying，让轮询方（Agent）把步数耗光。与正式任务路径
+    # recover_worker_error 的判据保持一致。
+    if isinstance(error, MatrixTemplateProviderFailed):
+        return False
     try:
         lifecycle = _durable_runtime(job_id, PREVIEW_KIND)
     except Exception:
