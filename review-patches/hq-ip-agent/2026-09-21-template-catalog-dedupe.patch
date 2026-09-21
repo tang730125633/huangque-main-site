@@ -1,0 +1,310 @@
+From daa53de4a3dd0ca6162831c788e52a373019bed0 Mon Sep 17 00:00:00 2001
+From: LU-003 <LU-003@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 16:48:39 +0800
+Subject: [PATCH] fix(ip12): dedupe template catalog widgets
+
+---
+ agent/v4/main_agent.py        | 10 +++--
+ agent/v4/state.py             | 44 +++++++++++++++++++-
+ agent/v4/subagent.py          | 12 ++++--
+ static/v4.js                  | 23 ++++++++++-
+ tests/hq-backend-pump-test.py |  2 +-
+ tests/hq-ip12-test.mjs        |  7 ++++
+ tests/hq-upload-test.py       | 78 +++++++++++++++++++++++++++++++++++
+ 7 files changed, 165 insertions(+), 11 deletions(-)
+
+diff --git a/agent/v4/main_agent.py b/agent/v4/main_agent.py
+index 0c0ebde..c386944 100644
+--- a/agent/v4/main_agent.py
++++ b/agent/v4/main_agent.py
+@@ -1137,14 +1137,18 @@ def _attach_widgets_local(sid: str, args: dict) -> dict:
+                 img = re.sub(r"^https?://huangquechuanmei\.com(?=/api/)", "", img)
+                 it["image_url"] = img
+         clean.append(w)
+-    if clean:
+-        state.add_widgets(sid, clean)
++    attached = state.add_widgets(sid, clean) if clean else 0
+     task = args.get("task")
+     if isinstance(task, dict):
+         state.set_widget_task(sid, task)
+     else:
+         state.set_widget_task_title(sid, str(args.get("task_title") or ""))
+-    return {"ok": True, "note": "已注册 %d 张交互卡片（用户点选后会以【点选】消息回来）" % len(clean)}
++    return {
++        "ok": True,
++        "attached": attached,
++        "suppressed": len(clean) - attached,
++        "note": "已注册 %d 张交互卡片（用户点选后会以【点选】消息回来）" % attached,
++    }
+
+
+ def _tool_execution_evidence(name: str, result: dict) -> bool:
+diff --git a/agent/v4/state.py b/agent/v4/state.py
+index 9b7575e..99c6e91 100644
+--- a/agent/v4/state.py
++++ b/agent/v4/state.py
+@@ -556,25 +556,65 @@ def get_active_widget_batch(sid: str) -> int | None:
+         return _active_widget_batch.get(sid)
+
+
+-def add_widgets(sid: str, widgets: list):
++def _widget_item_ids(widget: dict) -> set[str]:
++    return {
++        str(item.get("id") or "").strip()
++        for item in (widget.get("items") or [])
++        if isinstance(item, dict) and str(item.get("id") or "").strip()
++    }
++
++
++def _is_template_catalog(widget: dict) -> bool:
++    # `layout` 是展示提示，可被模型原样传入；稳定 ID 才是系统目录身份。
++    return bool(widget) and widget.get("id") == "template_catalog"
++
++
++def _duplicates_template_catalog(widget: dict, catalog: dict) -> bool:
++    """按模板 ID 判定模型自建目录；不依赖模型可自由改写的标题。"""
++    if not widget or _is_template_catalog(widget):
++        return False
++    if widget.get("type") != "option_pick" or widget.get("selection_mode") == "multiple":
++        return False
++    candidate_ids = _widget_item_ids(widget)
++    catalog_ids = _widget_item_ids(catalog)
++    return len(candidate_ids) >= 2 and candidate_ids.issubset(catalog_ids)
++
++
++def add_widgets(sid: str, widgets: list, *, trusted_template_catalog: bool = False) -> int:
+     """追加卡片；同 id 的旧卡片会被替换（避免重复渲染）。
+     每次注册同 id 卡片 gen+1：前端按 id@gen 记忆「已关闭」，
+     用户明确要求（子 Agent 重新查询注册）时 gen 变化，卡片才会重新出现。
+     同时作废「查不到」的旧选择（幽灵形象卡：素材被清理/换批次后旧选择 id
+-    已不在当批卡片里——不撤销的话前端「已选汇总」会一直把不存在的 id 报回后端）。"""
++    已不在当批卡片里——不撤销的话前端「已选汇总」会一直把不存在的 id 报回后端）。
++    返回本批次最终仍实际保留的卡片数；与标准模板目录重复的模型自建 option_pick 会被忽略。
++    template_catalog 是系统保留 ID，只允许机械目录路径显式声明可信来源后写入；
++    通用 attach_widgets 无法伪造或覆盖标准目录。
++    当标准目录后到时，也会清掉会话中已经存在的重复目录，兼容旧调用顺序。"""
+     with _lock:
+         cur = _widgets.setdefault(sid, [])
+         by_id = {w.get("id"): w for w in cur}
++        accepted = []
+         for w in widgets or []:
+             w = dict(w)
+             wid = w.get("id")
++            if _is_template_catalog(w) and not trusted_template_catalog:
++                continue
++            catalog = next((item for item in by_id.values() if _is_template_catalog(item)), None)
++            if catalog and _duplicates_template_catalog(w, catalog):
++                continue
+             old = by_id.get(wid)
+             w["gen"] = (old.get("gen") or 0) + 1 if old else 1
+             if sid in _active_widget_batch:
+                 w["batch"] = _active_widget_batch[sid]
+             by_id[wid] = w
++            accepted.append((wid, w))
++            if _is_template_catalog(w):
++                for old_id, old_widget in list(by_id.items()):
++                    if old_id != wid and _duplicates_template_catalog(old_widget, w):
++                        by_id.pop(old_id, None)
+         _widgets[sid] = list(by_id.values())
+         _prune_ghost_selections(sid)
++        return sum(1 for wid, widget in accepted if by_id.get(wid) is widget)
+
+
+ _SELECTION_WIDGET_TYPE = {"avatar": "avatar_pick", "voice": "voice_pick", "script": "script_pick"}
+diff --git a/agent/v4/subagent.py b/agent/v4/subagent.py
+index b5dab6e..858f7d1 100644
+--- a/agent/v4/subagent.py
++++ b/agent/v4/subagent.py
+@@ -1562,14 +1562,18 @@ def dispatch_tool(name: str, args: dict, sid: str, domain: str) -> dict:
+                     img = re.sub(r"^https?://huangquechuanmei\.com(?=/api/)", "", img)
+                     it["image_url"] = img
+             clean.append(w)
+-        if clean:
+-            state.add_widgets(sid, clean)
++        attached = state.add_widgets(sid, clean) if clean else 0
+         task = args.get("task")
+         if isinstance(task, dict):
+             state.set_widget_task(sid, task)
+         else:
+             state.set_widget_task_title(sid, str(args.get("task_title") or ""))
+-        return {"ok": True, "note": f"已注册 {len(clean)} 张交互卡片（用户点选后会以【点选】消息回来）"}
++        return {
++            "ok": True,
++            "attached": attached,
++            "suppressed": len(clean) - attached,
++            "note": f"已注册 {attached} 张交互卡片（用户点选后会以【点选】消息回来）",
++        }
+
+     if name == "chatcut_tools":
+         if domain != "clip":
+@@ -2056,7 +2060,7 @@ def _attach_template_catalog_widget(sid: str, templates: list) -> int:
+         "selection_mode": "single",
+         "film": False,
+         "items": items,
+-    }])
++    }], trusted_template_catalog=True)
+     return len(items)
+
+
+diff --git a/static/v4.js b/static/v4.js
+index 8f8ad01..e11a60b 100644
+--- a/static/v4.js
++++ b/static/v4.js
+@@ -3030,8 +3030,29 @@
+     });
+   }
+
++  function filterDuplicateTemplateCatalogWidgets(widgets) {
++    var catalog = (widgets || []).find(function (w) { return w && w.id === "template_catalog"; });
++    if (!catalog) {
++      catalog = (widgets || []).find(function (w) { return w && w.layout === "template_catalog"; });
++    }
++    if (!catalog) return widgets || [];
++    var catalogIds = {};
++    (catalog.items || []).forEach(function (item) {
++      var id = String((item && item.id) || "").trim();
++      if (id) catalogIds[id] = true;
++    });
++    return (widgets || []).filter(function (w) {
++      if (!w || w === catalog || w.id === "template_catalog") return true;
++      if (w.type !== "option_pick" || w.selection_mode === "multiple") return true;
++      var ids = (w.items || []).map(function (item) {
++        return String((item && item.id) || "").trim();
++      }).filter(Boolean);
++      return ids.length < 2 || !ids.every(function (id) { return catalogIds[id]; });
++    });
++  }
++
+   function renderWidgets(widgets, opts) {
+-    widgets = widgets || [];
++    widgets = filterDuplicateTemplateCatalogWidgets(widgets || []);
+     opts = opts || {};
+     // filmMode：true 只渲染出片卡（出片轮调用）；false 只渲染非出片卡
+     // （audio 域的音色/声音克隆槽位卡——非出片轮也要让用户点选，不能卸）。
+diff --git a/tests/hq-backend-pump-test.py b/tests/hq-backend-pump-test.py
+index 74efe79..1d20c03 100644
+--- a/tests/hq-backend-pump-test.py
++++ b/tests/hq-backend-pump-test.py
+@@ -29,7 +29,7 @@ v4_state.begin_widget_batch(_sid, 1)
+ v4_state.add_widgets(_sid, [{
+     "type": "option_pick", "id": "template_catalog", "title": "模板成片 · 全部模板",
+     "hint": "共 22 个", "selection_mode": "single", "film": False, "items": [{"id": "t1"}],
+-}])
++}], trusted_template_catalog=True)
+ w1 = v4_state.get_active_widgets(_sid)
+ assert_ok(any(w.get("id") == "template_catalog" for w in w1),
+           "挂卡轮：目录卡随当前批次带出")
+diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
+index 407658e..6644fa0 100644
+--- a/tests/hq-ip12-test.mjs
++++ b/tests/hq-ip12-test.mjs
+@@ -40,6 +40,10 @@ function templateWidgets() {
+     type: 'option_pick', id: 'template_catalog', title: '模板成片 · 全部模板',
+     hint: '共 22 个，横向滑动浏览', layout: 'template_catalog', selection_mode: 'single',
+     film: false, gen: 1, items,
++  }, {
++    type: 'option_pick', id: 'model-generated-template-list',
++    title: '全部模板 · 点一款（每款已标素材容量）', selection_mode: 'single',
++    film: false, gen: 1, items: items.slice(0, 6),
+   }];
+ }
+ function reportPayload() {
+@@ -554,6 +558,9 @@ async function mockRoutes(page, opts) {
+     };
+   });
+   assert(catalog.cards === 22, '模板目录完整显示 22 张横向卡（' + catalog.cards + '）');
++  assert(await page.locator('.template-catalog-box').count() === 1
++    && await page.locator('.widget-list').count() === 0,
++  '历史会话含模型重复模板卡时只显示标准横向目录');
+   assert(catalog.horizontallyScrollable, '模板卡轨道可横向滚动');
+   assert(catalog.cardActions === 0 && catalog.useButtons === 1, '卡片不重复操作，详情区只保留一组操作');
+   assert(catalog.detailTitle === '长沙白字红强调', '默认展示第一张模板详情');
+diff --git a/tests/hq-upload-test.py b/tests/hq-upload-test.py
+index 6588243..fa0d3a1 100644
+--- a/tests/hq-upload-test.py
++++ b/tests/hq-upload-test.py
+@@ -341,6 +341,84 @@ try:
+               and "左右滑动浏览" in catalog_widget.get("hint", "")
+               and "查看全部" not in catalog_widget.get("hint", ""),
+               "模板实时目录机械挂成完整目录卡，不再截六项后用正文补列表")
++    duplicate_catalog_out = subagent.dispatch_tool("attach_widgets", {"widgets": [{
++        "type": "option_pick",
++        "id": "model-generated-template-list",
++        "title": "全部模板 · 点一款（每款已标素材容量）",
++        "items": [
++            {"id": "full-overlay-bold", "title": "沉浸强标题"},
++            {"id": "nine-grid-reveal", "title": "九宫格开场·全屏展示"},
++        ],
++    }]}, catalog_sid, "compose")
++    widgets_after_duplicate = v4_state.get_widgets(catalog_sid)
++    assert_ok(duplicate_catalog_out.get("attached") == 0
++              and [w.get("id") for w in widgets_after_duplicate]
++              == ["template_catalog"],
++              "模板目录自动挂载后拒绝 Agent 重复 attach_widgets，页面只保留标准横向目录",
++              extra=str(widgets_after_duplicate))
++    reserved_payload = {"widgets": [{
++        "type": "option_pick", "id": "template_catalog",
++        "title": "伪造模板目录", "items": [
++            {"id": "full-overlay-bold", "title": "只留一个"},
++        ],
++    }]}
++    reserved_sub_out = subagent.dispatch_tool(
++        "attach_widgets", reserved_payload, catalog_sid, "compose")
++    reserved_main_out = main_agent._attach_widgets_local(catalog_sid, reserved_payload)
++    catalog_after_spoof = next(
++        w for w in v4_state.get_widgets(catalog_sid)
++        if w.get("id") == "template_catalog")
++    assert_ok(reserved_sub_out.get("attached") == 0
++              and reserved_sub_out.get("suppressed") == 1
++              and reserved_main_out.get("attached") == 0
++              and reserved_main_out.get("suppressed") == 1
++              and len(catalog_after_spoof.get("items") or []) == 2,
++              "主/子 Agent 通用 attach_widgets 均不能伪造保留 ID 覆盖标准模板目录",
++              extra=str(catalog_after_spoof))
++    reverse_sid = "template-catalog-reverse-order-test"
++    v4_state.add_widgets(reverse_sid, [{
++        "type": "option_pick", "id": "early-model-template-list",
++        "selection_mode": "single", "film": False,
++        "items": [
++            {"id": "full-overlay-bold", "title": "沉浸强标题"},
++            {"id": "nine-grid-reveal", "title": "九宫格开场·全屏展示"},
++        ],
++    }])
++    subagent._attach_template_catalog_widget(reverse_sid, [
++        {"id": "full-overlay-bold", "name": "沉浸强标题"},
++        {"id": "nine-grid-reveal", "name": "九宫格开场·全屏展示"},
++    ])
++    assert_ok([w.get("id") for w in v4_state.get_widgets(reverse_sid)]
++              == ["template_catalog"],
++              "标准模板目录后到时清理已存在的模型重复目录")
++    batch_catalog = {
++        "type": "option_pick", "id": "template_catalog",
++        "layout": "template_catalog", "selection_mode": "single",
++        "items": [
++            {"id": "full-overlay-bold", "title": "沉浸强标题"},
++            {"id": "nine-grid-reveal", "title": "九宫格开场·全屏展示"},
++        ],
++    }
++    batch_duplicate = {
++        "type": "option_pick", "id": "same-batch-model-list",
++        "selection_mode": "single", "items": [
++            {"id": "full-overlay-bold", "title": "沉浸强标题"},
++            {"id": "nine-grid-reveal", "title": "九宫格开场·全屏展示"},
++        ],
++    }
++    for label, batch in (
++        ("duplicate-first", [batch_duplicate, batch_catalog]),
++        ("catalog-first", [batch_catalog, batch_duplicate]),
++    ):
++        batch_sid = f"template-catalog-same-batch-{label}"
++        batch_attached = v4_state.add_widgets(
++            batch_sid, batch, trusted_template_catalog=True)
++        batch_widgets = v4_state.get_widgets(batch_sid)
++        assert_ok(batch_attached == 1
++                  and [w.get("id") for w in batch_widgets]
++                  == ["template_catalog"],
++                  f"同批 {label} 只统计最终保留的标准目录",
++                  extra=str(batch_widgets))
+     out_fb = subagent._annotate_template_catalog(
+         {"ok": False, "error": "upstream_unavailable"})
+     assert_ok(out_fb.get("ok") is True and out_fb["result"].get("source") == "cached"
