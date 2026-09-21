@@ -464,10 +464,10 @@ def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_k
             # Do not expose database errors or credentials in HTTP responses.
             raise PaidJobDeductError(503, "图片渠道配置暂不可用，未扣点，请稍后重试") from exc
         from .channel_parameters import quote
-        for cost,payload in items:
-            expected=quote(kind,payload)
-            if expected is not None and cost!=expected:
-                raise ValueError('参数点数已变化，请重新确认后提交')
+        # 2026-09-21 老板定调：删掉「参数点数已变化，请重新确认后提交」的确认闸门。
+        # 内测不需要二次确认；点数以服务器即时报价为准（台账仍按真实点数记录）。
+        items = [(expected if (expected := quote(kind, payload)) is not None else cost,
+                 payload) for cost, payload in items]
     except ValueError as exc:
         raise PaidJobDeductError(400, str(exc)) from exc
     total = sum(cost for cost, _ in items)
@@ -542,9 +542,9 @@ def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_co
     from . import channel_manager
     payload = channel_manager.capture(kind, payload)
     from .channel_parameters import quote
-    expected=quote(kind,payload)
-    if expected is not None and int(cost)!=expected:
-        raise ValueError('参数点数已变化，请重新确认后提交')
+    # 2026-09-21 老板定调：删掉「请重新确认后提交」的二次报价闸门。
+    # 已扣金额为准入账记录，不再要求客户端来回确认。
+    quote(kind, payload)
     now = int(time.time())
     with closing(jdb()) as connection:
         try:

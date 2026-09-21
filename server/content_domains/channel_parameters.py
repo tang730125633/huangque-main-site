@@ -392,8 +392,10 @@ def apply(cfg,payload,required=True):
         return dict(payload),None
     selection=payload.get('parameter_selection') or {}
     if not isinstance(selection,dict):raise ValueError('参数选择格式无效')
-    if required and selection.get('revision')!=token(cfg):raise ValueError('参数或点数已更新，请刷新并重新确认')
-    selected=selection.get('combination') or (None if required else spec['default'])
+    # 2026-09-21 老板定调（沿用 09-09「整个平台不需要报价确认」）：删掉
+    # 「参数或点数已更新，请刷新并重新确认」这道报价确认闸门。版本号对不上
+    # 不再拦，一律按当前渠道配置生效（组合若已失效仍会被下方校验拦截）。
+    selected=selection.get('combination') or spec['default']
     combo=next((r for r in spec['combinations'] if r['id']==selected),None)
     if combo is None:raise ValueError('该参数组合不可用，请重新选择')
     refs=payload.get('reference_images') or ([] if not payload.get('image') else [payload['image']])
