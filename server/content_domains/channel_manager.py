@@ -964,6 +964,28 @@ def overview():
             'notifications': notification_settings(), 'timezone':'Asia/Shanghai', 'stats_window':'最近24小时'}
 
 
+def run_status(rid):
+    """按任务 ID 读一条 run 的当前状态（只读），行不存在返回 None。"""
+    with closing(db()) as c:
+        row = c.execute('SELECT * FROM runs WHERE id=?', (str(rid),)).fetchone()
+    return dict(row) if row else None
+
+
+def find_active(cid, version, kind, within=1800):
+    """查找同渠道、同配置版本、同检测类型的进行中任务。
+
+    用作提交去重：重复点击、或提交响应丢失后重试，都不该再创建一条新任务——
+    完整生成是收费的，重复创建等于重复扣费。
+    """
+    with closing(db()) as c:
+        row = c.execute(
+            "SELECT * FROM runs WHERE channel=? AND version=? AND kind=? "
+            "AND state IN ('queued','running') AND started>? ORDER BY started DESC LIMIT 1",
+            (cid, version, kind, time.time() - within),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
     if channel_store.enabled():
         return channel_store.reserve(cid, kind, job_id, snapshot, execution_snapshot)

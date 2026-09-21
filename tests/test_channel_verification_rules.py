@@ -8,6 +8,7 @@ HEAD 连接失败记录，把「能用」的渠道判成了异常。修复后：
   3. 历史的不适用记录保留、仍然展示，只是不参与总体判定。
 """
 import base64
+import json
 import os
 import tempfile
 import unittest
@@ -33,7 +34,10 @@ class RuleDeclarationTests(unittest.TestCase):
 
 class StartTestRejectionTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # 提交验证会起后台守护线程执行任务，Windows 上临时库文件可能仍被它打开。
+        # 这是夹具与守护线程的清理竞态，不是被测行为；显式忽略清理错误，
+        # 但断言本身照常严格执行。
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         self.env = patch.dict(os.environ, {
             'HQ_CHANNEL_DB': self.tmp.name + '/channels.db',
@@ -91,7 +95,10 @@ class StartTestRejectionTests(unittest.TestCase):
 
 class OverviewCarriesRulesTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        # 提交验证会起后台守护线程执行任务，Windows 上临时库文件可能仍被它打开。
+        # 这是夹具与守护线程的清理竞态，不是被测行为；显式忽略清理错误，
+        # 但断言本身照常严格执行。
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         self.env = patch.dict(os.environ, {
             'HQ_CHANNEL_DB': self.tmp.name + '/channels.db',
@@ -116,3 +123,137 @@ class OverviewCarriesRulesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SubmitIdempotencyTests(unittest.TestCase):
+    """验证提交去重：重复点击、响应丢失后重试都不该重复创建（完整生成是收费的）。"""
+
+    def setUp(self):
+        # 提交验证会起后台守护线程执行任务，Windows 上临时库文件可能仍被它打开。
+        # 这是夹具与守护线程的清理竞态，不是被测行为；显式忽略清理错误，
+        # 但断言本身照常严格执行。
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        self.env = patch.dict(os.environ, {
+            'HQ_CHANNEL_DB': self.tmp.name + '/channels.db',
+            'HQ_OBSERVABILITY_DB': self.tmp.name + '/trace.db',
+            'HQ_PROVIDER_KEYS_MASTER_KEY': base64.urlsafe_b64encode(b'a' * 32).decode(),
+        })
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.cid = cm.save('tester', dict(
+            name='去重测试', adapter='lechuang_image', kind='image', model='m',
+            base_url='https://api.lechuang.chat/api/v1', secret='sk-test', enabled=True,
+            fixture={'prompt': 'a', 'reference_images': []},
+        ))['id']
+
+    def run_count(self, kind):
+        with __import__('contextlib').closing(cm.db()) as c:
+            return c.execute('SELECT COUNT(*) FROM runs WHERE channel=? AND kind=?', (self.cid, kind)).fetchone()[0]
+
+    def test_repeated_submit_reuses_one_run(self):
+        first = runtime.start_test('tester', {'id': self.cid, 'kind': 'connection'})
+        for _ in range(3):
+            again = runtime.start_test('tester', {'id': self.cid, 'kind': 'connection'})
+            self.assertEqual(again['run_id'], first['run_id'])
+            self.assertTrue(again.get('deduplicated'))
+        self.assertEqual(self.run_count('connection'), 1)
+
+    def test_different_kind_is_not_deduplicated(self):
+        a = runtime.start_test('tester', {'id': self.cid, 'kind': 'connection'})
+        b = runtime.start_test('tester', {'id': self.cid, 'kind': 'auth'})
+        self.assertNotEqual(a['run_id'], b['run_id'])
+
+    def test_changed_version_is_not_deduplicated(self):
+        a = runtime.start_test('tester', {'id': self.cid, 'kind': 'connection'})
+        cur = [r for r in cm.overview()['items'] if r['id'] == self.cid][0]['version']
+        cm.save('tester', dict(id=self.cid, name='去重测试', adapter='lechuang_image', kind='image',
+                               model='m2', base_url='https://api.lechuang.chat/api/v1',
+                               secret='sk-test', enabled=True, version=cur,
+                               fixture={'prompt': 'a', 'reference_images': []}))
+        b = runtime.start_test('tester', {'id': self.cid, 'kind': 'connection'})
+        self.assertNotEqual(a['run_id'], b['run_id'])
+
+
+class RunStateSafetyTests(unittest.TestCase):
+    """⑦ run_state 保留管理员鉴权，且不暴露密钥。"""
+
+    def setUp(self):
+        # 提交验证会起后台守护线程执行任务，Windows 上临时库文件可能仍被它打开。
+        # 这是夹具与守护线程的清理竞态，不是被测行为；显式忽略清理错误，
+        # 但断言本身照常严格执行。
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        self.env = patch.dict(os.environ, {
+            'HQ_CHANNEL_DB': self.tmp.name + '/channels.db',
+            'HQ_OBSERVABILITY_DB': self.tmp.name + '/trace.db',
+            'HQ_PROVIDER_KEYS_MASTER_KEY': base64.urlsafe_b64encode(b'a' * 32).decode(),
+        })
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_route_is_inside_authenticated_admin_branch(self):
+        import io as _io
+        with _io.open(os.path.join(os.path.dirname(__file__), '..', 'server', 'admin_api.py'),
+                      encoding='utf-8') as fh:
+            src = fh.read()
+        guard = src.index("startswith('/api/admin/channel-manager/')")
+        route = src.index("'run-state':channel_runtime.run_state")
+        self.assertGreater(route, guard, 'run-state 必须在管理员鉴权分支内注册')
+
+    def test_response_never_carries_secrets(self):
+        cid = cm.save('tester', dict(
+            name='密钥不外泄', adapter='lechuang_image', kind='image', model='m',
+            base_url='https://api.lechuang.chat/api/v1', secret='sk-super-secret-value',
+            enabled=True, fixture={'prompt': 'a', 'reference_images': []},
+        ))['id']
+        rid = runtime.start_test('tester', {'id': cid, 'kind': 'connection'})['run_id']
+        blob = json.dumps(runtime.run_state('tester', {'run_id': rid}), ensure_ascii=False, default=str)
+        self.assertNotIn('sk-super-secret-value', blob)
+        for key in ('secret', 'api_key', 'apikey', 'token', 'password'):
+            self.assertNotIn('"%s"' % key, blob.lower())
+
+
+class VersionAttributionTests(unittest.TestCase):
+    """⑤ 验证期间修改配置，结果仍归属被测版本。"""
+
+    def setUp(self):
+        # 提交验证会起后台守护线程执行任务，Windows 上临时库文件可能仍被它打开。
+        # 这是夹具与守护线程的清理竞态，不是被测行为；显式忽略清理错误，
+        # 但断言本身照常严格执行。
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        self.env = patch.dict(os.environ, {
+            'HQ_CHANNEL_DB': self.tmp.name + '/channels.db',
+            'HQ_OBSERVABILITY_DB': self.tmp.name + '/trace.db',
+            'HQ_PROVIDER_KEYS_MASTER_KEY': base64.urlsafe_b64encode(b'a' * 32).decode(),
+        })
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.body = dict(name='归属测试', adapter='lechuang_image', kind='image', model='m',
+                         base_url='https://api.lechuang.chat/api/v1', secret='sk-test', enabled=True,
+                         fixture={'prompt': 'a', 'reference_images': []})
+
+    def test_submitted_version_is_frozen_and_kept_after_config_change(self):
+        cid = cm.save('tester', self.body)['id']
+        submitted = runtime.start_test('tester', {'id': cid, 'kind': 'connection'})
+        self.assertEqual(submitted['version'], 1)
+        # 验证进行中修改配置
+        cur = [r for r in cm.overview()['items'] if r['id'] == cid][0]['version']
+        cm.save('tester', dict(self.body, id=cid, version=cur, model='m2'))
+        # 结果仍归属被测版本 1
+        st = runtime.run_state('tester', {'run_id': submitted['run_id']})
+        self.assertEqual(st['version'], 1)
+        # 之后按 v2 提交会是一条新任务，不会复用 v1 那条
+        again = runtime.start_test('tester', {'id': cid, 'kind': 'connection'})
+        self.assertEqual(again['version'], 2)
+        self.assertNotEqual(again['run_id'], submitted['run_id'])
+
+    def test_checks_are_reported_with_their_version(self):
+        cid = cm.save('tester', self.body)['id']
+        rid = runtime.start_test('tester', {'id': cid, 'kind': 'connection'})['run_id']
+        cm.finish(rid, 'passed', '连接可达')
+        item = [r for r in cm.overview()['items'] if r['id'] == cid][0]
+        row = [c for c in item['checks'] if c['kind'] == 'connection'][0]
+        # 前端靠 version 归属，缺了就会显示「验证记录未标注配置版本」
+        self.assertEqual(row['version'], item['version'])

@@ -1084,6 +1084,17 @@ def start_test(actor,body):
             '此协议不支持「%s」检测，无法生成有效证据（当前协议支持的检测项：%s）'
             % (label, '、'.join({'connection': '连接', 'auth': '鉴权', 'full': '完整生成'}.get(k, k) for k in supported))
         )
+    # 提交去重：进行中的同渠道/同版本/同类型任务直接复用，不新建。
+    # 重复点击、提交响应丢失后重试都不会重复创建收费任务。
+    active = (channel_store.find_active(cid, cfg['version'], kind) if channel_store.enabled()
+              else store.find_active(cid, cfg['version'], kind))
+    if active:
+        return {'run_id': active['id'], 'state': active.get('state') or 'queued',
+                'channel': cid, 'version': cfg['version'], 'kind': kind,
+                'adapter': cfg.get('adapter'),
+                'required': list(verification_required(cfg.get('adapter'))),
+                'supported': list(supported), 'deduplicated': True,
+                'started': active.get('started')}
     if kind=='full':
         validate_payload(cfg,cfg['fixture'])
     rid = store.reserve(cid,kind)
@@ -1101,7 +1112,7 @@ def start_test(actor,body):
     threading.Thread(target=work,daemon=True).start()
     # 返回足够前端立即显示「排队中」并据此轮询的字段：
     # 任务 ID、渠道 ID、被测配置版本、检测类型、初始状态。
-    return {'run_id':rid,'state':'queued','channel':cid,'version':cfg['version'],
+    return {'run_id':rid,'state':'queued','channel':cid,'version':cfg['version'],'started':time.time(),
             'kind':kind,'adapter':cfg.get('adapter'),
             'required':list(verification_required(cfg.get('adapter'))),
             'supported':list(supported)}
@@ -1113,13 +1124,7 @@ def run_state(actor, body):
     if not rid:
         raise ValueError('缺少验证任务 ID')
     row = None
-    if channel_store.enabled():
-        row = channel_store.run_status(rid)
-    else:
-        with closing(store.db()) as c:
-            found = c.execute('SELECT * FROM runs WHERE id=?', (rid,)).fetchone()
-            if found:
-                row = {k: found[k] for k in found.keys()}
+    row = channel_store.run_status(rid) if channel_store.enabled() else store.run_status(rid)
     if not row:
         raise ValueError('找不到这条验证任务')
     state = str(row.get('state') or '')

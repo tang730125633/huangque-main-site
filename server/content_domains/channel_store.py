@@ -1345,6 +1345,16 @@ def try_start_run(rid, cfg, stale_before):
             return None
 
 
+def find_active(cid, version, kind, within=1800):
+    """同渠道同版本同类型的进行中任务（提交去重）。"""
+    with _pool_instance().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM routing.runs WHERE channel=%s AND version=%s AND kind=%s "
+            "AND state IN ('queued','running') AND started>%s ORDER BY started DESC LIMIT 1",
+            (str(cid), int(version), kind, time.time() - within),
+        ).fetchone()
+
+
 def run_status(rid):
     """按任务 ID 读一条 run 的当前状态（只读），行不存在返回 None。"""
     with _pool_instance().connection() as conn:

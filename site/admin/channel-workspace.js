@@ -326,6 +326,35 @@
     // 已验证过的检测项提交状态，按渠道 uid 记，用来显示「排队中 / 执行中」。
     var channelTestRuns={};
     var TEST_KIND_LABEL={connection:'网络连接',auth:'鉴权',full:'完整生成'};
+    var TEST_STORE_KEY='hq.channelTestRuns';
+    // 验证任务记在 localStorage：刷新页面后还能接着看进度，不用重新提交
+    // （完整生成是收费的，重提交等于重复扣费）。
+    function loadTestRuns(){
+      try{
+        if(typeof localStorage==='undefined')return;
+        var raw=localStorage.getItem(TEST_STORE_KEY);
+        if(raw)channelTestRuns=JSON.parse(raw)||{};
+      }catch(e){channelTestRuns={}}
+    }
+    function saveTestRuns(){
+      try{
+        var keep={};
+        Object.keys(channelTestRuns).forEach(function(k){
+          var r=channelTestRuns[k];
+          // 只留最近 12 小时内的，避免无限堆积
+          if(r&&r.started&&(Date.now()/1000-r.started)<43200)keep[k]=r;
+        });
+        localStorage.setItem(TEST_STORE_KEY,JSON.stringify(keep));
+      }catch(e){}
+    }
+    function elapsedText(run){
+      if(!run||!run.started)return '';
+      // 终态用 ended 收口，不是用「现在」——否则结果出来以后耗时会一直涨。
+      var end=run.ended||(Date.now()/1000);
+      var secs=Math.max(0,Math.floor(end-run.started));
+      if(secs<60)return secs+' 秒';
+      return Math.floor(secs/60)+' 分 '+(secs%60)+' 秒';
+    }
     function channelTestButtons(uid,channel){
       if(!uid)return '';
       // 协议支持的检测项由后端下发（channel.checks_supported）。
@@ -347,11 +376,31 @@
       return '<details class="cm-row-tools"><summary>验证</summary>'+buttons+line+'</details>';
     }
     function renderTestRun(run){
-      var bits=[('「'+(TEST_KIND_LABEL[run.kind]||run.kind)+'」'),(run.label||run.state)];
-      if(run.phase)bits.push(run.phase);
+      if(!run)return '';
+      var bits=[('「'+(TEST_KIND_LABEL[run.kind]||run.kind)+'」'),(run.label||run.state||'')];
+      if(run.phase)bits.push('阶段：'+run.phase);
       if(run.detail)bits.push(run.detail);
-      bits.push('任务 '+String(run.run_id||'').slice(0,8)+' · 配置 v'+(run.version==null?'—':run.version));
+      if(run.misses)bits.push('查询中断，重试中（第 '+run.misses+' 次）');
+      var tail='任务 '+String(run.run_id||'').slice(0,8)+' · 配置 v'+(run.version==null?'—':run.version);
+      if(!run.finished)tail+=' · 已用时 '+elapsedText(run);
+      else if(run.started&&run.ended)tail+=' · 耗时 '+elapsedText({started:run.started,ended:run.ended});
+      bits.push(tail);
       return bits.join(' · ');
+    }
+    // 未完成的任务每秒重画一次，让「已用时」持续走。
+    if(typeof setInterval==='function'){
+      setInterval(function(){
+        Object.keys(channelTestRuns).forEach(function(uid){
+          if(channelTestRuns[uid]&&!channelTestRuns[uid].finished)paintTestRun(uid);
+        });
+      },1000);
+    }
+    // 刷新后恢复：把没结束的任务接着查下去。
+    function resumeTestRuns(){
+      Object.keys(channelTestRuns).forEach(function(uid){
+        var r=channelTestRuns[uid];
+        if(r&&r.run_id&&!r.finished)pollChannelTest(uid,r.run_id,true);
+      });
     }
     function paintTestRun(uid){
       var run=channelTestRuns[uid];
@@ -372,25 +421,40 @@
         // 后端返回验证任务 ID、渠道 ID、被测配置版本、检测类型、初始状态。
         // 立刻显示「排队中」，之后只按任务 ID 查状态，不再靠人工刷新。
         channelTestRuns[uid]={run_id:res.run_id,kind:res.kind||kind,state:res.state||'queued',
-          label:'排队中',detail:'',phase:'',version:res.version,finished:false};
-        paintTestRun(uid);
+          label:res.deduplicated?'已有进行中的任务，复用':'排队中',detail:'',phase:'',
+          version:res.version,started:res.started||Date.now()/1000,finished:false,misses:0};
+        saveTestRuns();paintTestRun(uid);
         toast('「'+label+'」已提交，任务 '+String(res.run_id||'').slice(0,8)+'（配置 v'+(res.version==null?'—':res.version)+'）');
         pollChannelTest(uid,res.run_id);
       }catch(e){toast('提交失败：'+(e&&e.message||e))}
     }
     // 轮询：3 秒一次，最多 20 分钟。终态后刷新一次列表，让状态灯跟上。
-    async function pollChannelTest(uid,runId){
+    // 查询本身失败（网络中断、接口 5xx）**不算验证失败**——那只是没看到结果，
+    // 任务还在跑。继续重试，恢复后接着查；只有后端明确给出终态才收尾。
+    async function pollChannelTest(uid,runId,resumed){
       var terminal=['passed','failed','unknown','terminated','blocked'];
+      var misses=0;
       for(var i=0;i<400;i++){
         await new Promise(function(r){setTimeout(r,3000)});
         var st;
         try{
           st=await api('/api/admin/channel-manager/run-state',{method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({run_id:runId})});
-        }catch(e){channelTestRuns[uid]={...channelTestRuns[uid],label:'查询失败',detail:String(e&&e.message||e),finished:true};paintTestRun(uid);return}
-        var run={run_id:runId,kind:st.kind||channelTestRuns[uid].kind,state:st.state,label:st.label||st.state,
-          phase:st.phase||'',detail:st.detail||'',version:st.version,finished:!!st.finished};
-        channelTestRuns[uid]=run;paintTestRun(uid);
+          misses=0;
+        }catch(e){
+          // 中断：不写 state、不写 label，只标注在重试。任务状态保持原样。
+          misses++;
+          var cur=channelTestRuns[uid]||{run_id:runId,kind:'full',state:'unknown',label:'状态未知',
+            started:Date.now()/1000,version:null};
+          channelTestRuns[uid]=Object.assign({},cur,{misses:misses});
+          saveTestRuns();paintTestRun(uid);
+          continue;
+        }
+        var run={run_id:runId,kind:st.kind||(channelTestRuns[uid]||{}).kind,state:st.state,label:st.label||st.state,
+          phase:st.phase||'',detail:st.detail||'',version:st.version,misses:0,
+          started:st.started||(channelTestRuns[uid]||{}).started||Date.now()/1000,
+          finished:!!st.finished,ended:st.finished?Date.now()/1000:null};
+        channelTestRuns[uid]=run;saveTestRuns();paintTestRun(uid);
         if(terminal.indexOf(String(st.state))>=0){
           if(String(st.state)==='passed')toast('「'+(TEST_KIND_LABEL[run.kind]||run.kind)+'」通过');
           else toast('「'+(TEST_KIND_LABEL[run.kind]||run.kind)+'」'+(st.label||st.state)+(st.detail?('：'+st.detail):''));
@@ -398,7 +462,8 @@
           return;
         }
       }
-      channelTestRuns[uid]={...channelTestRuns[uid],label:'超时未结束',finished:true};paintTestRun(uid);
+      channelTestRuns[uid]=Object.assign({},channelTestRuns[uid],{label:'超时未结束',finished:true,ended:Date.now()/1000});
+      saveTestRuns();paintTestRun(uid);
     }
     // 与拖动发布同一份映射：都走 publishPriority，不存在第二条发布路径。
     async function setPrimary(operationId,channelId){
@@ -866,6 +931,9 @@
     if(window.ChannelPriorityDrag)window.ChannelPriorityDrag(root,selectPriority,()=>priorityBusy||priorityUncertain);
     [['cmSearch','q','input'],['cmSupplier','supplier','change'],['cmTransport','transport','change'],['cmState','status','change'],['cmHistory','history','change']].forEach(([id,key,event])=>el(id).addEventListener(event,()=>{filters[key]=key==='history'?el(id).checked:el(id).value;list()}));
     el('cmDrawer').addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();close()}if(e.key==='Tab'){const nodes=Array.from(el('cmDrawer').querySelectorAll('button,input,select,textarea,a[href]')).filter(n=>!n.disabled&&n.getClientRects().length);if(!nodes.length)return;const first=nodes[0],last=nodes[nodes.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
+    // 启动时读回上次未完成的验证任务并接着查（刷新页面不丢进度）。
+    loadTestRuns();
+    resumeTestRuns();
     return {render,open,close,editor,showTab,addCreatedChannel,setCloseGuard:guard=>{closeGuard=guard}};
   };
 })();
