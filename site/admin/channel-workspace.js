@@ -317,8 +317,41 @@
       const item=route.original;if(!item)return '';
       const uid=item.management?.uid||'',usable=item.enabled&&item.configured;
       const address=(item.base_urls||[])[0]||item.base_host||'地址未配置';
-      return '<div class="cm-priority-channel cm-original-channel" draggable="true" data-cm-original-channel="'+esc(item.id)+'" data-cm-priority-channel="@original" data-cm-priority-operation="'+esc(route.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(item.name||'原厂线路')+'">⋮⋮</button><span class="cm-priority-rank">'+(index+1)+'</span><div class="cm-priority-info"><strong>'+esc(item.name||'原厂线路')+'</strong><small>'+esc(item.model||'')+'</small><code>'+esc(address)+'</code><small>原厂线路 · '+(current?'已选中':'未选中')+' · Key '+(item.configured?'已配置':'未配置')+'</small></div><span class="cm-priority-role '+(current?'primary':'')+'">'+(current?(ready?'当前主渠道':'已配置主线路 · 未就绪'):'可选渠道')+'</span><div class="cm-priority-actions">'+latencyControls(uid)+(uid?'<button type="button" class="mini" data-cm-live-detail="'+esc(uid)+'">编辑</button>':'')+'<details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(route.operation_id)+'" data-channel="@original" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(item.name||'原厂线路')+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(route.operation_id)+'" data-channel="@original" '+(index===(total||1)-1?'disabled':'')+' aria-label="下移 '+esc(item.name||'原厂线路')+'">↓</button></details></div></div>';
+      return '<div class="cm-priority-channel cm-original-channel" draggable="true" data-cm-original-channel="'+esc(item.id)+'" data-cm-priority-channel="@original" data-cm-priority-operation="'+esc(route.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(item.name||'原厂线路')+'">⋮⋮</button><span class="cm-priority-rank">'+(index+1)+'</span><div class="cm-priority-info"><strong>'+esc(item.name||'原厂线路')+'</strong><small>'+esc(item.model||'')+'</small><code>'+esc(address)+'</code><small>原厂线路 · '+(current?'已选中':'未选中')+' · Key '+(item.configured?'已配置':'未配置')+'</small></div><span class="cm-priority-role '+(current?'primary':'')+'">'+(current?(ready?'当前主渠道':'已配置主线路 · 未就绪'):'可选渠道')+'</span><div class="cm-priority-actions">'+latencyControls(uid)+channelTestButtons(uid)+(current?'':'<button type="button" class="mini" data-cm-set-primary="@original" data-operation="'+esc(route.operation_id)+'">设为主渠道</button>')+(uid?'<button type="button" class="mini" data-cm-live-detail="'+esc(uid)+'">编辑</button>':'')+'<details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(route.operation_id)+'" data-channel="@original" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(item.name||'原厂线路')+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(route.operation_id)+'" data-channel="@original" '+(index===(total||1)-1?'disabled':'')+' aria-label="下移 '+esc(item.name||'原厂线路')+'">↓</button></details></div></div>';
     }
+    // 验证入口：三项分开跑，各自在服务端留下带「被测配置版本」的记录。
+    // 网络可达不等于鉴权通过，鉴权通过也不等于能出成品，所以不合并成一个按钮。
+    function channelTestButtons(uid){
+      if(!uid)return '';
+      return '<details class="cm-row-tools"><summary>验证</summary>'
+        +'<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="connection">网络连接</button>'
+        +'<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="auth">鉴权</button>'
+        +'<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="full">完整生成（可能收费）</button>'
+        +'</details>';
+    }
+    async function runChannelTest(uid,kind){
+      var labels={connection:'网络连接',auth:'鉴权',full:'完整生成'};
+      var label=labels[kind]||kind;
+      var cid=String(uid).replace(/^managed:/,'');
+      if(kind==='full'&&!confirm('完整生成会真实调用供应商并可能产生费用。渠道：'+cid+'。继续吗？'))return;
+      try{
+        await api('/api/admin/channel-manager/test',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({id:cid,kind:kind})});
+        toast('「'+label+'」已排队，稍后刷新查看结果');
+      }catch(e){toast('提交失败：'+(e&&e.message||e))}
+    }
+    // 与拖动发布同一份映射：都走 publishPriority，不存在第二条发布路径。
+    async function setPrimary(operationId,channelId){
+      if(!confirm('把这条渠道设为主渠道？仅影响新任务，已创建的任务继续用原渠道。'))return;
+      var draft=priorityDrafts[operationId];
+      if(!draft){toast('请先在该功能下打开优先级面板');return}
+      draft.order=[channelId].concat((draft.order||[]).filter(function(x){return x!==channelId}));
+      if(channelId!=='@original'){
+        draft.channels=[channelId].concat((draft.channels||[]).filter(function(x){return x!==channelId}));
+      }
+      await publishPriority(operationId);
+    }
+
     function movePriority(operationId,channelId,targetId,direction){
       const draft=priorityDrafts[operationId];if(!draft)return;
       const from=draft.channels.indexOf(channelId);if(from<0)return;
@@ -425,7 +458,7 @@
         const healthOk=channel.enabled&&proof.state==='ok';
         const healthTone=healthOk?'ok':'bad';
         const healthLabel=!channel.enabled?'异常 · 已停用':(healthOk?'正常':'异常 · '+(proof.label||'待验证'));
-        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.order.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
+        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+channelTestButtons(id)+(index===0?'':'<button type="button" class="mini" data-cm-set-primary="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">设为主渠道</button>')+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.order.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
       }).join('');
       const available=candidates.filter(item=>!draft.channels.includes(item.id));
       const routeTabs=routes.length>1?'<nav class="cm-priority-route-tabs" aria-label="模型能力">'+routes.map(route=>'<button type="button" data-cm-priority-route="'+esc(route.operation_id)+'" class="'+(route.operation_id===active.operation_id?'active':'')+'" aria-pressed="'+String(route.operation_id===active.operation_id)+'">'+esc(route.capability||route.operation_id)+'</button>').join('')+'</nav>':'';
@@ -684,6 +717,8 @@
       if(b.dataset.cmPriorityMove){const draft=priorityDrafts[b.dataset.operation];if(!draft)return;const order=[...draft.order],from=order.indexOf(b.dataset.channel),to=from+Number(b.dataset.cmPriorityMove);if(from<0||to<0||to>=order.length)return;[order[from],order[to]]=[order[to],order[from]];await selectPriority(b.dataset.operation,order);return}
       if(b.dataset.cmPriorityRemove){const draft=priorityDrafts[b.dataset.operation];if(draft){draft.channels=draft.channels.filter(id=>id!==b.dataset.cmPriorityRemove);draft.order=draft.order?.filter(id=>id!==b.dataset.cmPriorityRemove);}refreshPriority();return}
       if(b.dataset.cmPriorityAdd){const editor=b.closest('.cm-priority-editor'),choice=editor?.querySelector('[data-cm-priority-add-choice]')?.value,draft=priorityDrafts[b.dataset.cmPriorityAdd];if(choice&&draft&&!draft.channels.includes(choice)){draft.channels.push(choice);if(draft.order)draft.order.push(choice);refreshPriority()}return}
+      if(b.dataset.cmChannelTest!=null&&b.dataset.testKind){await runChannelTest(b.dataset.cmChannelTest,b.dataset.testKind);return}
+      if(b.dataset.cmSetPrimary){await setPrimary(b.dataset.operation,b.dataset.cmSetPrimary);return}
       if(b.dataset.cmPriorityTest){const operationId=b.dataset.cmPriorityTest,draft=priorityDrafts[operationId],status=el('cmMatrix').querySelector('[data-cm-priority-status="'+operationId+'"]');b.disabled=true;if(status)status.textContent='正在提交连接检测…';try{for(const id of draft?.channels||[])await api('/api/admin/channel-manager/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,kind:'connection'})});if(status)status.textContent='全部连接检测已排队，请稍后刷新查看结果。';toast('渠道连接检测已排队')}catch(error){if(status)status.textContent=error.message;toast(error.message)}finally{b.disabled=false}return}
       if(b.dataset.cmPrioritySave){if(!confirm('发布此模型的渠道优先级？仅影响新任务。'))return;await publishPriority(b.dataset.cmPrioritySave);return}
       if(b.dataset.cmPriorityRollback){const operationId=b.dataset.operation;if(!confirm('恢复 '+operationId+' 到 r'+b.dataset.cmPriorityRollback+'？恢复会发布一个新修订。'))return;b.disabled=true;try{await api('/api/admin/channel-manager/operation-mapping-rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({operation_id:operationId,target_revision:Number(b.dataset.cmPriorityRollback),expected_revision:Number(b.dataset.expectedRevision)})});delete priorityDrafts[operationId];toast('历史优先级已恢复');await env.refresh()}catch(error){toast(error.message)}finally{b.disabled=false}return}
