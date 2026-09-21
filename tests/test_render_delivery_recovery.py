@@ -202,3 +202,14 @@ class DurablePollerTests(unittest.TestCase):
             with store.process_lock():
                 with self.assertRaises(OSError):
                     with self.p.DeliveryStore(Path(t)).process_lock():pass
+
+    def test_completed_journals_leave_hot_queue_and_drop_private_payload(self):
+        with tempfile.TemporaryDirectory() as t:
+            store=self.p.DeliveryStore(Path(t));job={'job_id':'a'*32,'claim_token':'b'*32,'payload':{'private_text':'private-input'}};store.ensure(job)
+            store.update(job['job_id'],phase='complete')
+            self.assertEqual(list(Path(t).glob('*.json')),[])
+            self.assertEqual(store.outstanding(),0)
+            completed=store.get(job['job_id']);self.assertEqual(completed['phase'],'complete')
+            self.assertNotIn('private-input',json.dumps(completed));self.assertNotIn(job['claim_token'],json.dumps(completed))
+            store.ensure(job)
+            with self.assertRaisesRegex(ValueError,'identity_conflict'):store.ensure({**job,'payload':{'private_text':'changed'}})

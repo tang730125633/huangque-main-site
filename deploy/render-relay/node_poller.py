@@ -368,6 +368,9 @@ class DeliveryStore:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         if os.name != 'nt': os.chmod(self.root,0o700)
+        self.finished=self.root/'finished'
+        if self.finished.is_symlink():raise ValueError('delivery_archive_linked')
+        self.finished.mkdir(exist_ok=True,mode=0o700)
         self.lock = threading.RLock()
         self.active = set()
         self.retry_at = {}
@@ -390,15 +393,23 @@ class DeliveryStore:
 
     def get(self,jid):
         with self.lock:
-            return json.loads(self.path(jid).read_text(encoding='utf-8'))
+            p=self.path(jid)
+            if not p.exists():p=self.finished/p.name
+            if p.is_symlink():raise ValueError('delivery_path_linked')
+            return json.loads(p.read_text(encoding='utf-8'))
+
+    def identity(self,token,payload):
+        return {'token_sha256':hashlib.sha256(token.encode()).hexdigest(),
+                'payload_sha256':hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False,allow_nan=False).encode()).hexdigest()}
 
     def ensure(self,job):
         jid=job['job_id']; token=job['claim_token']
         if not re.fullmatch('[a-f0-9]{32}',token): raise ValueError('delivery_token_invalid')
         with self.lock:
-            if self.path(jid).exists():
+            if self.path(jid).exists() or (self.finished/(jid+'.json')).exists():
                 old=self.get(jid)
-                if old['claim_token'] != token or old['payload'] != job['payload']:
+                previous=old.get('identity') if old['phase']=='complete' else self.identity(old['claim_token'],old['payload'])
+                if previous != self.identity(token,job['payload']):
                     raise ValueError('delivery_identity_conflict')
                 return
             value={'job_id':jid,'claim_token':token,'payload':job['payload'],'phase':'claimed','started_at':time.time(),'result':{}}
@@ -409,6 +420,12 @@ class DeliveryStore:
             r=self.get(jid);r.update(fields)
             if 'phase' in fields:
                 r.setdefault('phase_times',{}).setdefault(fields['phase'],time.time())
+            if r['phase']=='complete':
+                compact={'job_id':jid,'phase':'complete','phase_times':r.get('phase_times',{}),
+                         'identity':r.get('identity') or self.identity(r['claim_token'],r['payload'])}
+                self.write(self.finished/(jid+'.json'),json.dumps(compact).encode())
+                self.path(jid).unlink(missing_ok=True)
+                return compact
             self.write(self.path(jid),json.dumps(r,ensure_ascii=False,allow_nan=False).encode())
             return r
 

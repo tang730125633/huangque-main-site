@@ -59,8 +59,7 @@ _LAST_CLAIM = {}          # node -> 最近一次来领活的时间（内存态�
 _LAST_HEARTBEAT = {}      # node -> 最近一次独立遥测心跳，不参与“是否有空位”判断
 _NODE_GPU = {}            # node -> 最近一次 GPU 遥测
 _NODE_RENDER = {}         # node -> verified renderer contract plus server receipt time
-_DELIVERY_LOCKS = {}
-_DELIVERY_LOCK_GUARD = threading.Lock()
+_DELIVERY_LOCKS = tuple(threading.RLock() for _ in range(1024))
 # 节点心跳：轮询器空闲时每 POLL_IDLE(默认 5) 秒来问一次，所以「90 秒没来过」= 掉线。
 # 以前中转器只能靠 PRIORITY_WINDOW(20 秒) 猜「它还有没有空位」，**看不出节点死活** ——
 # 节点挂了，任务就静静躺在队列里，没有任何信号。现在 /health 直接报每台节点的
@@ -258,6 +257,7 @@ def init_db():
             job_id TEXT PRIMARY KEY, node TEXT NOT NULL, token TEXT NOT NULL,
             created_at INTEGER NOT NULL, metadata_done INTEGER NOT NULL DEFAULT 0
         )""")
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_delivery_owner ON delivery_claims(node,metadata_done,created_at)')
         conn.commit()
 
 
@@ -266,8 +266,7 @@ def _now():
 
 
 def _delivery_lock(jid):
-    with _DELIVERY_LOCK_GUARD:
-        return _DELIVERY_LOCKS.setdefault(jid, threading.RLock())
+    return _DELIVERY_LOCKS[int(hashlib.sha256(jid.encode()).hexdigest()[:8],16) % len(_DELIVERY_LOCKS)]
 
 
 def _delivery_claim(conn, jid):
@@ -310,8 +309,8 @@ def _durable_upload(handler, jid):
         try:
             encoded = handler.headers.get('X-HQ-GPU-Render', '')
             if len(encoded) > 8192: raise ValueError()
-            gpu = _clean_render_evidence(json.loads(base64.b64decode(encoded, validate=True)))
             expected = json.loads(row['gpu_contract']) if row['gpu_contract'] else None
+            gpu = _clean_render_evidence(json.loads(base64.b64decode(encoded, validate=True))) if encoded else None
             if expected and (gpu is None or gpu['runtime_sha256'] != expected['runtime_sha256']):
                 raise ValueError()
             duration = float(handler.headers.get('X-HQ-Duration') or 0)
