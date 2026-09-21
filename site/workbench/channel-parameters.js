@@ -8,6 +8,9 @@
   // 只在“命中托管映射提交”或“存在待确认提交”时出现。
   let managedActive=false;
   let items=[],current=null,controls=null,busy=false,owner='',pending=null,pollTimer=null,ready=false,fetching=false;
+  // 当前选择的功能身份：功能条目取 operation_id，兼容条目取 legacy:<kind>:<front>。
+  // 用身份而不是 front 查找——同一个 front 可能对应多个业务功能。
+  let currentKey='';
   let layoutApplied=false;
   host.className='cp-panel';
   const request=async(url,options={})=>{const r=await fetch(url,{credentials:'same-origin',cache:'no-store',...options});const d=await r.json();if(!r.ok){const e=Error(d.detail||'请求失败');e.status=r.status;throw e}return d};
@@ -53,21 +56,75 @@
       }
     }catch(error){}
   }
+  // ── 条目身份 ────────────────────────────────────────────────────────────
+  // 同一个 front 可能对应多个业务功能（纳米香蕉 2 的文生图与参考图都提交
+  // model=nb2；grok 对应文生视频与参考图生视频）。所以身份用 operation_id，
+  // 不能用 front 查找，否则两个功能会串用彼此的配置。
+  const keyOf=e=>e?(e.operation_id||('legacy:'+(e.kind||'')+':'+(e.front||''))):'';
+  const isCompat=e=>!!(e&&e.legacy_compat);
+  // 兼容条目只服务明确的旧入口，不参与任何自动选择
+  const autoSelectable=()=>items.filter(i=>!isCompat(i));
+
+  // ── 「选择失效」是持续状态 ────────────────────────────────────────────
+  // 刷新一次就又替你选中第一项，等于把用户的处境抹掉。这里把它存起来，
+  // 直到用户自己明确重新选择为止。
+  const invalidStorageKey=()=>'hq_parameter_invalid:'+owner+':'+kind;
+  const invalidKey=()=>{try{return sessionStorage.getItem(invalidStorageKey())||''}catch(error){return ''}};
+  const markInvalid=k=>{try{sessionStorage.setItem(invalidStorageKey(),k||'1')}catch(error){}};
+  const clearInvalid=()=>{try{sessionStorage.removeItem(invalidStorageKey())}catch(error){}};
+
+  // 原选择失效时用的界面：保留提示词与可兼容的输入，给出明确的重新选择入口。
+  // 不清空整个表单、不自动替用户选一个，也不自动提交。
+  function renderChooser(invalidated){
+    const prompt=host.querySelector('#cpPrompt')?.value||'';
+    const options=items.map(i=>'<option value="'+esc(keyOf(i))+'">'+esc(i.label)
+      +(isCompat(i)?'（旧线路）':'')+'</option>').join('');
+    return '<div class="cp-actions"><h2>模型与生成参数</h2></div>'
+      +'<div id="cpManagedBody"><p class="cp-note">'+(invalidated
+        ?'原模型已不在当前渠道支持范围，请选择当前功能支持的配置。提示词已保留；'
+         +'未重新选择前不会生成，也不会自动提交。'
+        :'请选择当前功能支持的配置。')+'</p>'
+      +'<div class="cp-fields"><label>模型<select id="cpModel">'+options+'</select></label></div>'
+      +'<textarea id="cpPrompt" maxlength="7000" aria-label="生成提示词">'+esc(prompt)+'</textarea>'
+      +'<p id="cpRefHint" class="cp-note">选择后即可看到该功能当前渠道支持的参数与点数。</p></div>';
+  }
+  function bindChooser(){
+    const sel=host.querySelector('#cpModel');
+    if(sel)sel.onchange=e=>{
+      current=items.find(i=>keyOf(i)===e.target.value)||null;
+      currentKey=current?keyOf(current):'';
+      controls=null;clearInvalid();render();
+    };
+  }
+
   function render(){
     if(!managedActive){if(legacy)legacy.hidden=false;host.hidden=true;host.innerHTML='';return}
-    const previous=current;const matched=items.find(i=>i.front===previous?.front);
-    // 两种情况要分开：
-    //   * 首次进入（没有原选择）—— 用默认条目；
-    //   * 原选择已不在支持范围 —— 【不要】自动换成第一项，那会让用户以为还是原来
-    //     那个。保持未选中，由用户明确选择；未选中时生成按钮是禁用的（见 sync）。
-    const firstVisit=!previous;
-    const droppedFront=(previous&&!matched&&items.length)?previous:null;
-    current=firstVisit?(items[0]||null):(matched||null);
-    if(!current&&!pending){if(legacy)legacy.hidden=false;host.hidden=!previous;host.textContent=previous?'当前模型已停用或映射已变更，请稍后刷新。':'';return}
+    const previous=current,previousKey=currentKey;
+    const matched=items.find(i=>keyOf(i)===previousKey);
+    // 三种情况分开：
+    //   * 首次进入（没有原选择、也没有失效记录）—— 用第一个【非兼容】条目；
+    //   * 原选择失效 —— 记为持续状态，保持未选中，等用户明确重选；
+    //     【不】自动换成第一项，也【不】因为排列靠前或查找失败就落到兼容条目；
+    //   * 已有选择 —— 按 operation_id 找回同一条。
+    const invalidated=!!(previousKey&&!matched);
+    if(invalidated)markInvalid(previousKey);
+    else if(matched)clearInvalid();
+    const firstVisit=!previousKey&&!invalidKey();
+    const droppedFront=invalidated?previous:null;
+    current=firstVisit?(autoSelectable()[0]||null):(matched||null);
+    currentKey=current?keyOf(current):'';
+    if(!current&&!pending){
+      if(legacy)legacy.hidden=false;
+      host.hidden=false;
+      // 不提前 return 清空整个表单：保留提示词、可兼容素材和重新选择入口
+      host.innerHTML=renderChooser(invalidated);
+      bindChooser();
+      return;
+    }
     host.hidden=false;
     const prompt=host.querySelector('#cpPrompt')?.value||'',oldChoice=controls?.value();
     if(legacy)legacy.hidden=!showLegacy;
-    host.innerHTML='<div class="cp-actions"><h2>模型与生成参数</h2>'+(kind==='image'?'<button id="cpInpaintEntry">涂抹局部修图（黄雀引擎 2）</button>':'')+'<button id="cpLegacyToggle">'+(showLegacy?'返回平台配置模型':'其他模型与工具')+'</button></div><div id="cpManagedBody" '+(showLegacy?'hidden':'')+'><p class="cp-note">选择模型和参数，确认本次点数后生成。参数由平台统一维护。</p><div class="cp-fields"><label>模型<select id="cpModel">'+items.map(i=>'<option value="'+esc(i.front)+'" '+(i.front===current?.front?'selected':'')+'>'+esc(i.label)+'</option>').join('')+'</select></label></div><div id="cpUserControls"></div><textarea id="cpPrompt" maxlength="7000" placeholder="描述你希望生成的内容" aria-label="生成提示词">'+esc(prompt)+'</textarea><label id="cpUploadLabel">参考图片<input id="cpUpload" type="file" accept="image/png,image/jpeg" multiple></label><p id="cpRefHint" class="cp-note"></p>'+(current&&current.mask_enabled&&current.reference_max>=1?'<label id="cpMaskLabel" class="cp-mask-label">蒙版图片（可选 · 局部修图）<input id="cpMaskUpload" type="file" accept="image/png,image/jpeg"><small>上传与参考图同尺寸的蒙版，白色区域将被重绘；需要 1 张参考图</small></label>':'')+'<div class="cp-actions"><button class="primary" id="cpGenerate">确认点数并生成</button><button id="cpRetry" hidden>使用原编号重试提交</button><a href="assets.html">查看我的作品与任务</a></div><p id="cpUserNote" role="status"></p><div id="cpUserResult"></div></div>';
+    host.innerHTML='<div class="cp-actions"><h2>模型与生成参数</h2>'+(kind==='image'?'<button id="cpInpaintEntry">涂抹局部修图（黄雀引擎 2）</button>':'')+'<button id="cpLegacyToggle">'+(showLegacy?'返回平台配置模型':'其他模型与工具')+'</button></div><div id="cpManagedBody" '+(showLegacy?'hidden':'')+'><p class="cp-note">选择模型和参数，确认本次点数后生成。参数由平台统一维护。</p><div class="cp-fields"><label>模型<select id="cpModel">'+items.map(i=>'<option value="'+esc(keyOf(i))+'" '+(keyOf(i)===keyOf(current)?'selected':'')+'>'+esc(i.label)+(isCompat(i)?'（旧线路）':'')+'</option>').join('')+'</select></label></div><div id="cpUserControls"></div><textarea id="cpPrompt" maxlength="7000" placeholder="描述你希望生成的内容" aria-label="生成提示词">'+esc(prompt)+'</textarea><label id="cpUploadLabel">参考图片<input id="cpUpload" type="file" accept="image/png,image/jpeg" multiple></label><p id="cpRefHint" class="cp-note"></p>'+(current&&current.mask_enabled&&current.reference_max>=1?'<label id="cpMaskLabel" class="cp-mask-label">蒙版图片（可选 · 局部修图）<input id="cpMaskUpload" type="file" accept="image/png,image/jpeg"><small>上传与参考图同尺寸的蒙版，白色区域将被重绘；需要 1 张参考图</small></label>':'')+'<div class="cp-actions"><button class="primary" id="cpGenerate">确认点数并生成</button><button id="cpRetry" hidden>使用原编号重试提交</button><a href="assets.html">查看我的作品与任务</a></div><p id="cpUserNote" role="status"></p><div id="cpUserResult"></div></div>';
     if(current){
       const preserved=current.combinations.find(c=>JSON.stringify(c.values)===JSON.stringify(oldChoice?.values));
       controls=mount(host.querySelector('#cpUserControls'),current,null,preserved?.id,{billingEnabled});
@@ -77,11 +134,17 @@
         +'」已不在当前渠道支持范围，请选择当前功能支持的配置。'
         +'未重新选择前不会生成，也不会自动提交。');
       else if(previous&&current&&previous.revision!==current.revision){
-        // 比的是【用户原先选中的组合】与重新匹配后的组合，不是两个默认组合。
-        const pick=(it,id)=>{const list=it?.combinations||[]
-          return list.find(x=>x.id===id)||list.find(x=>x.id===it.default)||list[0]||null};
-        const was=pick(previous,oldChoice?.combination||oldChoice?.combination_id||previous.default);
-        const now=pick(current,current.default);
+        // 对比用的是【控件实际返回的选择】在旧条目里的那条组合，
+        // 以及新条目里真正保留（按 values 命中）或重选（按 id 命中）的那条。
+        // 不拿 current.default 代替当前选择——那会在组合对不上时给出错误的点数结论。
+        const list=it=>it?.combinations||[];
+        const was=list(previous).find(x=>x.id===oldChoice?.id)
+          ||list(previous).find(x=>JSON.stringify(x.values)===JSON.stringify(oldChoice?.values))
+          ||null;
+        const now=list(current).find(x=>x.id===oldChoice?.id)
+          ||list(current).find(x=>JSON.stringify(x.values)===JSON.stringify(oldChoice?.values))
+          ||list(current).find(x=>x.id===current.default)&&null
+          ||null;
         if(!was||!now){
           note('生成配置已更新，需要重新选择并确认费用。提示词已保留；如需参考图，请重新选择。');
         }else if(was.points!==now.points){
@@ -100,7 +163,7 @@
       note('已切到黄雀引擎 2 的涂抹局部修图：先上传 1 张参考图，再涂抹要修改的区域。');
       legacy?.scrollIntoView?.({behavior:'smooth',block:'start'});
     };
-    host.querySelector('#cpModel').onchange=e=>{current=items.find(i=>i.front===e.target.value);controls=null;render()};
+    host.querySelector('#cpModel').onchange=e=>{current=items.find(i=>keyOf(i)===e.target.value)||null;currentKey=current?keyOf(current):'';controls=null;clearInvalid();render()};
     host.querySelector('#cpGenerate').onclick=submit;
     host.querySelector('#cpRetry').onclick=()=>send();
     sync();
@@ -135,7 +198,18 @@
       const readFile=file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)});
       const refs=await Promise.all(files.map(readFile));
       const payload={prompt,count:1,parameter_selection:{revision:current.revision,combination:choice.id}};
-      if(kind==='image'){payload.model=current.front;payload.provider='openai'}else payload.channel=current.front;
+      // 请求字段按后端下发的识别条件填写 —— 前后端用同一个功能身份，
+      // 不再让前端自己拼 provider/model 去猜是哪个功能。
+      const match=current.match||{};
+      Object.keys(match).forEach(function(k){
+        if(k==='kind'||k==='reference_count'||k==='mask_present')return;
+        if(match[k]===null||match[k]===undefined||match[k]==='')return;
+        payload[k]=match[k];
+      });
+      if(!payload.model&&!payload.channel){
+        // 明确的旧入口（兼容条目）：沿用它自己的旧字段
+        if(kind==='image'){payload.model=current.front;payload.provider='openai'}else payload.channel=current.front;
+      }
       if(refs.length)payload.reference_images=refs;
       if(maskFile)payload.mask=await readFile(maskFile);
       pending={key:crypto.randomUUID(),payload,owner};
@@ -182,7 +256,11 @@
     finally{fetching=false}
   }
   window.PublishedChannelParameters={redirect:(k,front)=>{
-    if(k!==kind)return false;const found=items.find(i=>i.front===front);if(!found)return false;
+    if(k!==kind)return false;
+    // 调用方可能给 front，也可能给 operation_id；两者都按身份解析，
+    // 并且只接受非兼容条目
+    const found=autoSelectable().find(i=>keyOf(i)===front||i.front===front||i.operation_id===front);
+    if(!found)return false;
     managedActive=true;showLegacy=false;current=found;render();host.scrollIntoView({behavior:'smooth',block:'start'});note('该模型已启用新的参数配置，请在此选择参数并提交。');return true;
   }};
   (async()=>{try{owner=await identity();pending=JSON.parse(sessionStorage.getItem(storageKey())||'null')}catch(e){}await load();if(pending){managedActive=true;render();sync();if(pending.job_id)poll()}})();
