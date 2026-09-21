@@ -20,7 +20,10 @@
 
   const mappingChannels=m=>Array.isArray(m?.channels)?m.channels:[m?.channel,m?.backup].filter(Boolean);
 
-  const num=v=>Number.isFinite(Number(v))?Number(v):null;
+  // 严格数字：'' / 空白 / null / undefined / 非数字 一律视为缺失。
+  // 之前用 Number(v)，空字符串会变成 0 —— 版本号 0 会被当成有效版本，
+  // 于是「没标版本」的记录被误认成「属于版本 0 的当前配置」。
+  const num=v=>{if(typeof v==='number')return Number.isFinite(v)?v:null;if(typeof v==='string'){const t=v.trim();if(!t||!/^-?\d+(\.\d+)?$/.test(t))return null;const n=Number(t);return Number.isFinite(n)?n:null;}return null;};
 
   // 单个验证维度（connection/auth/full）的证据解析。返回：state/label/time/version，绝不把旧版本或无法归属的证据当成当前版本通过。
   function resolveCheck(c,kind,now=Date.now()/1000){
@@ -55,21 +58,23 @@
     // 要求来自后端 ADAPTERS[adapter].verification，前端不再硬编码三项。
     const required=(Array.isArray(c.verification)&&c.verification.length)?c.verification:['connection','auth','full'];
     const all=required.map(k=>parts[k]).filter(Boolean);
-    const okAll=all.every(p=>p.state==='ok');
-    const currentChecks=(c.checks||[]).filter(r=>num(r.version)!=null&&num(r.version)===num(c.version));
-    const newest=currentChecks.slice().sort((a,b)=>(num(b.updated)||0)-(num(a.updated)||0))[0];
+    // 只在「协议要求的项」里判结论。不要求的项（如 MCP 协议不做 HEAD 连接探测、
+    // 配音协议没有鉴权端点）只展示事实，不参与总体判定 —— 否则一条不适用的
+    // 探测失败会把已经通过完整生成的渠道标成异常。
+    const order=['failed','blocked','expired','unattributed','stale-version','unknown','running','queued','missing'];
+    const worst=order.map(s=>all.find(p=>p.state===s)).find(Boolean);
     let overall;
-    if(okAll&&(!newest||newest.state==='passed')){
-      overall={state:'ok',label:'当前版本验证通过'};
-    }else if(okAll&&newest&&['failed','unknown'].includes(newest.state)){
-      overall={state:'attention',label:'存在较新异常：'+(newest.state==='failed'?'失败':'结果未知')};
+    if(!all.length){
+      // 要求为空 → 没有可依据的证据，不能默认通过
+      overall={state:'missing',label:'未验证'};
+    }else if(all.every(p=>p.state==='ok')){
+      overall={state:'ok',label:'当前配置验证通过'};
+    }else if(worst){
+      overall={state:worst.state,label:worst.label,kind:worst.kind};
     }else{
-      const order=['failed','unknown','blocked','expired','unattributed','stale-version','running','queued','missing'];
-      const worst=order.map(s=>all.find(p=>p.state===s)).find(Boolean);
-      if(worst)overall={state:worst.state,label:worst.label,kind:worst.kind};
-      else overall={state:'neutral',label:'待验证'};
+      overall={state:'neutral',label:'待验证'};
     }
-    return {overall,parts,version:c.version};
+    return {overall,parts,required,version:c.version};
   }
 
   // 配置维度：必要字段是否完整；密钥只给“已配置/未配置/未知”，绝不出现明文。

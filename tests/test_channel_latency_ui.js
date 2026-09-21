@@ -6,7 +6,7 @@ function harness(api){
 }
 test('检测仅调用延迟接口，HTTP错误不会显示生成可用',async()=>{
  let input;const ctx=harness(async(url,opts)=>{input={url,body:JSON.parse(opts.body)};return {version:2,state:'http_error',http_status:401,latency_ms:238.2}});
- await ctx.detectLatency('managed:a');assert.equal(input.url,'/api/admin/channel-manager/latency');assert.deepEqual(input.body,{uid:'managed:a'});assert.equal(ctx.latencyResults['managed:a'],'238 ms · HTTP 401');
+ await ctx.detectLatency('managed:a');assert.equal(input.url,'/api/admin/channel-manager/latency');assert.deepEqual(input.body,{uid:'managed:a'});assert.equal(ctx.latencyResults['managed:a'],'已收到响应 · 238 ms · HTTP 401');assert.match(ctx.latencyResults['managed:a'],/已收到响应/);assert.doesNotMatch(ctx.latencyResults['managed:a'],/可用|通过|正常/);
 });
 test('同渠道并发点击只发送一次，刷新后旧响应不污染新配置',async()=>{
  let done,calls=0;const ctx=harness(()=>{calls++;return new Promise(r=>done=r)});
