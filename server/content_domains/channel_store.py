@@ -938,6 +938,12 @@ def overview():
             cfg = _fetch_version(conn, channel['id'], channel['version'])
             channel.update(cfg)
             channel['configured'] = True
+            # 与 SQLite 侧一致：判定规则随渠道下发（见 channel_manager.verification_required）
+            from .channel_manager import verification_required, checks_supported, ADAPTERS as _AD
+            _a = channel.get('adapter')
+            channel['verification'] = list(verification_required(_a))
+            channel['checks_supported'] = list(checks_supported(_a))
+            channel['rules_known'] = _a in _AD
             channel['fixture'] = {k: v for k, v in cfg['fixture'].items() if k != 'reference_images'}
             channel['material_count'] = len(cfg['fixture'].get('reference_images') or [])
             channel['history'] = [dict(r) for r in conn.execute(
@@ -1337,6 +1343,12 @@ def try_start_run(rid, cfg, stale_before):
                 _audit(conn, 'runtime.dispatch', str(cfg['id']), 'runtime')
                 return True
             return None
+
+
+def run_status(rid):
+    """按任务 ID 读一条 run 的当前状态（只读），行不存在返回 None。"""
+    with _pool_instance().connection() as conn:
+        return conn.execute('SELECT * FROM routing.runs WHERE id=%s', (str(rid),)).fetchone()
 
 
 def execution_phase(rid):

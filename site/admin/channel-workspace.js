@@ -109,7 +109,9 @@
     }
     function catalogRoute(c){
       const baseUrls=unique([c.base_url,c.env_base_url,c.pool_base_url,c.image_primary_base_url,c.image_fallback_base_url]);
-      const management={kind:c.source==='managed'?'managed_channel':(c.pool_provider?'provider_pool':'server_env'),uid:c.uid,provider:c.pool_provider||''};
+      const management={kind:c.source==='managed'?'managed_channel':(c.pool_provider?'provider_pool':'server_env'),uid:c.uid,provider:c.pool_provider||'',
+        verification:Array.isArray(c.verification)?c.verification:null,
+        checks_supported:Array.isArray(c.checks_supported)?c.checks_supported:null};
       const v=c._verification||{},cfg=c._config||{};
       const auth=v.parts?.auth?partToProof(v.parts.auth):catalogProof(c);
       const full=v.parts?.full?partToProof(v.parts.full):{state:'unverified',label:'请进入测试与健康查看完整证据'};
@@ -321,13 +323,43 @@
     }
     // 验证入口：三项分开跑，各自在服务端留下带「被测配置版本」的记录。
     // 网络可达不等于鉴权通过，鉴权通过也不等于能出成品，所以不合并成一个按钮。
-    function channelTestButtons(uid){
+    // 已验证过的检测项提交状态，按渠道 uid 记，用来显示「排队中 / 执行中」。
+    var channelTestRuns={};
+    var TEST_KIND_LABEL={connection:'网络连接',auth:'鉴权',full:'完整生成'};
+    function channelTestButtons(uid,channel){
       if(!uid)return '';
-      return '<details class="cm-row-tools"><summary>验证</summary>'
-        +'<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="connection">网络连接</button>'
-        +'<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="auth">鉴权</button>'
-        +'<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="full">完整生成（可能收费）</button>'
-        +'</details>';
+      // 协议支持的检测项由后端下发（channel.checks_supported）。
+      // 不支持的项不给可提交的按钮——否则会造出一条误导性的失败记录。
+      // 区分「判定必需」和「协议支持」：非必需但支持的项照样可以手动测。
+      var supported=(channel&&Array.isArray(channel.checks_supported))?channel.checks_supported:['connection','auth','full'];
+      var required=(channel&&Array.isArray(channel.verification))?channel.verification:[];
+      var buttons=['connection','auth','full'].map(function(k){
+        var label=TEST_KIND_LABEL[k]+(k==='full'?'（可能收费）':'');
+        if(supported.indexOf(k)<0){
+          return '<span class="cm-test-na" title="此协议没有可用的'+(TEST_KIND_LABEL[k])+'探测，故不提供按钮">'+TEST_KIND_LABEL[k]+'：不适用</span>';
+        }
+        var need=(k==='full'||required.indexOf(k)>=0)?'':'（非必需）';
+        return '<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="'+k+'">'+esc(label+need)+'</button>';
+      }).join('');
+      var live=channelTestRuns[uid];
+      var line=live?'<span class="cm-test-run" data-cm-test-state="'+esc(uid)+'">'+esc(renderTestRun(live))+'</span>'
+                    :'<span class="cm-test-run" data-cm-test-state="'+esc(uid)+'"></span>';
+      return '<details class="cm-row-tools"><summary>验证</summary>'+buttons+line+'</details>';
+    }
+    function renderTestRun(run){
+      var bits=[('「'+(TEST_KIND_LABEL[run.kind]||run.kind)+'」'),(run.label||run.state)];
+      if(run.phase)bits.push(run.phase);
+      if(run.detail)bits.push(run.detail);
+      bits.push('任务 '+String(run.run_id||'').slice(0,8)+' · 配置 v'+(run.version==null?'—':run.version));
+      return bits.join(' · ');
+    }
+    function paintTestRun(uid){
+      var run=channelTestRuns[uid];
+      if(!run)return;
+      var nodes=document.querySelectorAll('[data-cm-test-state]');
+      for(var i=0;i<nodes.length;i++){
+        if(nodes[i].getAttribute('data-cm-test-state')===uid)nodes[i].textContent=renderTestRun(run);
+      }
     }
     async function runChannelTest(uid,kind){
       var labels={connection:'网络连接',auth:'鉴权',full:'完整生成'};
@@ -335,10 +367,38 @@
       var cid=String(uid).replace(/^managed:/,'');
       if(kind==='full'&&!confirm('完整生成会真实调用供应商并可能产生费用。渠道：'+cid+'。继续吗？'))return;
       try{
-        await api('/api/admin/channel-manager/test',{method:'POST',headers:{'Content-Type':'application/json'},
+        var res=await api('/api/admin/channel-manager/test',{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({id:cid,kind:kind})});
-        toast('「'+label+'」已排队，稍后刷新查看结果');
+        // 后端返回验证任务 ID、渠道 ID、被测配置版本、检测类型、初始状态。
+        // 立刻显示「排队中」，之后只按任务 ID 查状态，不再靠人工刷新。
+        channelTestRuns[uid]={run_id:res.run_id,kind:res.kind||kind,state:res.state||'queued',
+          label:'排队中',detail:'',phase:'',version:res.version,finished:false};
+        paintTestRun(uid);
+        toast('「'+label+'」已提交，任务 '+String(res.run_id||'').slice(0,8)+'（配置 v'+(res.version==null?'—':res.version)+'）');
+        pollChannelTest(uid,res.run_id);
       }catch(e){toast('提交失败：'+(e&&e.message||e))}
+    }
+    // 轮询：3 秒一次，最多 20 分钟。终态后刷新一次列表，让状态灯跟上。
+    async function pollChannelTest(uid,runId){
+      var terminal=['passed','failed','unknown','terminated','blocked'];
+      for(var i=0;i<400;i++){
+        await new Promise(function(r){setTimeout(r,3000)});
+        var st;
+        try{
+          st=await api('/api/admin/channel-manager/run-state',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({run_id:runId})});
+        }catch(e){channelTestRuns[uid]={...channelTestRuns[uid],label:'查询失败',detail:String(e&&e.message||e),finished:true};paintTestRun(uid);return}
+        var run={run_id:runId,kind:st.kind||channelTestRuns[uid].kind,state:st.state,label:st.label||st.state,
+          phase:st.phase||'',detail:st.detail||'',version:st.version,finished:!!st.finished};
+        channelTestRuns[uid]=run;paintTestRun(uid);
+        if(terminal.indexOf(String(st.state))>=0){
+          if(String(st.state)==='passed')toast('「'+(TEST_KIND_LABEL[run.kind]||run.kind)+'」通过');
+          else toast('「'+(TEST_KIND_LABEL[run.kind]||run.kind)+'」'+(st.label||st.state)+(st.detail?('：'+st.detail):''));
+          try{await load()}catch(e){}
+          return;
+        }
+      }
+      channelTestRuns[uid]={...channelTestRuns[uid],label:'超时未结束',finished:true};paintTestRun(uid);
     }
     // 与拖动发布同一份映射：都走 publishPriority，不存在第二条发布路径。
     async function setPrimary(operationId,channelId){
@@ -447,7 +507,7 @@
       const action=managed
         ?'<button type="button" data-cm-managed-edit="'+esc((management.uid||'').replace(/^managed:/,''))+'">编辑</button>'
         :management.uid?'<button type="button" data-cm-live-detail="'+esc(management.uid)+'">编辑</button>':'';
-      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'" data-cm-priority-anchor="'+esc(route.operation_id||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(label)+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+latencyControls(management.uid)+channelTestButtons(management.uid)+action+'</div></div>';
+      return '<div class="cm-priority-channel cm-live-primary" data-cm-live-primary="'+esc(item.id||management.uid||'')+'" data-cm-priority-anchor="'+esc(route.operation_id||'')+'"><span aria-hidden="true">●</span><span class="cm-priority-rank">1</span><div class="cm-priority-info"><strong>'+esc(item.name||'当前线路')+'</strong><small>'+esc((item.supplier||'未标注供应商')+' · '+(item.model||route.capability||'模型按功能配置'))+'</small><small class="cm-live-label">'+esc(label)+'</small></div><span class="cm-priority-role primary">'+(ready?'当前主渠道':'未就绪')+'</span><div class="cm-priority-actions">'+latencyControls(management.uid)+channelTestButtons(management.uid,management)+action+'</div></div>';
     }
     function priorityEditor(product,model){
       const routes=(model.routes||[]).filter(route=>{
@@ -486,7 +546,7 @@
         const healthLabel=!channel.enabled?'已停用 · 不能使用'
           :(healthOk?'当前配置验证通过'
           :(proof.label||'未验证')+(proof.kind?('（'+proof.kind+'）'):''));
-        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+channelTestButtons(id)+(index===0?'':'<button type="button" class="mini" data-cm-set-primary="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">设为主渠道</button>')+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.order.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
+        return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+channelTestButtons(id,channel)+(index===0?'':'<button type="button" class="mini" data-cm-set-primary="'+esc(id)+'" data-operation="'+esc(active.operation_id)+'">设为主渠道</button>')+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.order.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
       }).join('');
       const available=candidates.filter(item=>!draft.channels.includes(item.id));
       const routeTabs=routes.length>1?'<nav class="cm-priority-route-tabs" aria-label="模型能力">'+routes.map(route=>'<button type="button" data-cm-priority-route="'+esc(route.operation_id)+'" class="'+(route.operation_id===active.operation_id?'active':'')+'" aria-pressed="'+String(route.operation_id===active.operation_id)+'">'+esc(route.capability||route.operation_id)+'</button>').join('')+'</nav>':'';
@@ -672,12 +732,15 @@
     }
     function health(){
       const tone=v=>({ok:'ok',failed:'bad',unknown:'warn',running:'neutral',queued:'neutral',blocked:'warn',expired:'warn',missing:'neutral',unattributed:'warn','stale-version':'neutral',attention:'warn',neutral:'neutral',off:'muted'}[v]||'neutral');
-      const cell=p=>'<span class="cm-evidence '+tone(p.state)+'">'+esc(p.label)+'</span>'+((p.time&&p.state!=='missing'&&p.state!=='unattributed')?'<small>'+esc(date(p.time))+(p.version!=null?' · v'+esc(p.version):'')+'</small>':'');
+      const cell=p=>(p.state==='na'?'<span class="cm-evidence cm-na">'+esc(p.label)+'</span>'
+          :'<span class="cm-evidence '+tone(p.state)+'">'+esc(p.label)+'</span>'+((p.time&&p.state!=='missing'&&p.state!=='unattributed')?'<small>'+esc(date(p.time))+(p.version!=null?' · v'+esc(p.version):'')+'</small>':''));
       el('cmHealth').innerHTML=table(['渠道','配置','连接','鉴权','完整生成','生产路由','巡检计划','操作'],rows.filter(c=>!c.retired).map(c=>{
         const v=c._verification||{},cfg=c._config||{},prod=c._production||{},parts=v.parts||{};
         const keyLabel={configured:'密钥已配置',missing:'密钥未配置',unknown:'密钥状态未知'}[cfg.key]||'密钥状态未知';
         const configLine=c.source==='legacy'?'内置线路':(cfg.complete?'完整':'缺字段')+' · '+keyLabel;
-        const conn=parts.connection||{state:'missing',label:'未验证'},auth=parts.auth||{state:'missing',label:'未验证'},full=parts.full||{state:'missing',label:'未验证'};
+        // 协议不支持的检测项显示「不适用」，不伪造通过、也不当成失败。
+        const sup=Array.isArray(c.checks_supported)?c.checks_supported:['connection','auth','full'];
+        const proofOf=k=>sup.indexOf(k)>=0?(parts[k]||{state:'missing',label:'未验证'}):{state:'na',label:'不适用'};const conn=proofOf('connection'),auth=proofOf('auth'),full=proofOf('full');
         const prodLine=c.source==='legacy'?'按关联功能':(prod.summary||'未接入');
         return '<tr><td><b>'+esc(c.name)+'</b><small>'+esc(c.source==='legacy'?c.health:'配置 v'+c.version)+'</small></td>'
           +'<td>'+esc(configLine)+'</td>'
