@@ -59,6 +59,7 @@ _LAST_CLAIM = {}          # node -> 最近一次来领活的时间（内存态�
 _LAST_HEARTBEAT = {}      # node -> 最近一次独立遥测心跳，不参与“是否有空位”判断
 _NODE_GPU = {}            # node -> 最近一次 GPU 遥测
 _NODE_RENDER = {}         # node -> verified renderer contract plus server receipt time
+_DELIVERY_LOCKS = tuple(threading.RLock() for _ in range(1024))
 # 节点心跳：轮询器空闲时每 POLL_IDLE(默认 5) 秒来问一次，所以「90 秒没来过」= 掉线。
 # 以前中转器只能靠 PRIORITY_WINDOW(20 秒) 猜「它还有没有空位」，**看不出节点死活** ——
 # 节点挂了，任务就静静躺在队列里，没有任何信号。现在 /health 直接报每台节点的
@@ -252,11 +253,99 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at)")
         if "gpu_contract" not in {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}:
             conn.execute("ALTER TABLE jobs ADD COLUMN gpu_contract TEXT NOT NULL DEFAULT ''")
+        conn.execute("""CREATE TABLE IF NOT EXISTS delivery_claims(
+            job_id TEXT PRIMARY KEY, node TEXT NOT NULL, token TEXT NOT NULL,
+            created_at INTEGER NOT NULL, metadata_done INTEGER NOT NULL DEFAULT 0
+        )""")
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_delivery_owner ON delivery_claims(node,metadata_done,created_at)')
         conn.commit()
 
 
 def _now():
     return int(time.time())
+
+
+def _delivery_lock(jid):
+    return _DELIVERY_LOCKS[int(hashlib.sha256(jid.encode()).hexdigest()[:8],16) % len(_DELIVERY_LOCKS)]
+
+
+def _delivery_claim(conn, jid):
+    return conn.execute("SELECT * FROM delivery_claims WHERE job_id=?", (jid,)).fetchone()
+
+
+def _delivery_owner(claim, node, token):
+    return bool(claim and node == claim['node'] and isinstance(token, str)
+                and hmac.compare_digest(token, claim['token']))
+
+
+def _durable_upload(handler, jid):
+    """Return False for legacy claims; durable claims never cross nodes implicitly."""
+    with _db() as conn:
+        lease = _delivery_claim(conn, jid)
+    if lease is None:
+        return False
+    with _delivery_lock(jid):
+        if not _delivery_owner(lease, handler.headers.get('X-HQ-Node'), handler.headers.get('X-HQ-Claim-Token')):
+            handler._send(409, {'error':'delivery_owner_mismatch'}); return True
+        with _db() as conn:
+            row = conn.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone()
+        if not row or row['node'] != lease['node'] or row['status'] not in {'running','completed'}:
+            handler._send(409, {'error':'delivery_state_conflict'}); return True
+        sha = handler.headers.get('X-HQ-Artifact-Sha256', '')
+        try:
+            n = int(handler.headers.get('Content-Length', '0'))
+            if not re.fullmatch('[a-f0-9]{64}', sha) or not 0 < n <= MAX_BODY:
+                raise ValueError()
+        except ValueError:
+            handler._send(400, {'error':'delivery_artifact_invalid'}); return True
+        data = handler.rfile.read(n)
+        if len(data) != n or hashlib.sha256(data).hexdigest() != sha:
+            handler._send(400, {'error':'delivery_artifact_invalid'}); return True
+        existing = json.loads(row['result'] or '{}')
+        if row['status'] == 'completed':
+            if existing.get('artifact_sha256') != sha:
+                handler._send(409, {'error':'delivery_artifact_conflict'}); return True
+            handler._send(200, {'ok':True,'cos_uploaded':bool(existing.get('cos_key')), 'replayed':True}); return True
+        try:
+            encoded = handler.headers.get('X-HQ-GPU-Render', '')
+            if len(encoded) > 8192: raise ValueError()
+            expected = json.loads(row['gpu_contract']) if row['gpu_contract'] else None
+            gpu = _clean_render_evidence(json.loads(base64.b64decode(encoded, validate=True))) if encoded else None
+            if expected and (gpu is None or gpu['runtime_sha256'] != expected['runtime_sha256']):
+                raise ValueError()
+            duration = float(handler.headers.get('X-HQ-Duration') or 0)
+            width = int(handler.headers.get('X-HQ-Width') or 1080)
+            height = int(handler.headers.get('X-HQ-Height') or 1920)
+            if not 0 <= duration <= 3600 or not 1 <= width <= 8192 or not 1 <= height <= 8192:
+                raise ValueError()
+        except (ValueError, TypeError, KeyError):
+            handler._send(409, {'error':'gpu_evidence_required'}); return True
+        out = Path(OUT_DIR); out.mkdir(parents=True,exist_ok=True)
+        target = out/(jid+'.mp4'); temp = out/(jid+'.'+uuid.uuid4().hex+'.part')
+        try:
+            with temp.open('xb') as f:
+                f.write(data); f.flush(); os.fsync(f.fileno())
+            os.replace(temp,target)
+        finally:
+            temp.unlink(missing_ok=True)
+        cos_key = 'huangque/render/%s.mp4' % jid
+        uploaded = False
+        try:
+            import subprocess
+            uploaded = subprocess.run(['/usr/bin/python3','-c',_COS_UPLOAD_SNIPPET,str(target),cos_key],timeout=300).returncode == 0
+        except Exception as exc:
+            print('[render-relay] durable COS transfer error=%s' % type(exc).__name__,flush=True)
+        result = {'duration':duration,'width':width,'height':height,
+                  'template_id':handler.headers.get('X-HQ-Template') or '',
+                  'engine':handler.headers.get('X-HQ-Engine') or '',
+                  'file_url':'/v1/files/%s.mp4' % jid,'file_size':n,
+                  'artifact_sha256':sha,'cos_key':cos_key if uploaded else ''}
+        if gpu: result['gpu_render'] = gpu
+        with _db() as conn:
+            conn.execute("UPDATE jobs SET status='completed',result=?,updated_at=? WHERE id=? AND node=? AND status='running'",
+                         (json.dumps(result),_now(),jid,lease['node']))
+        _node_record(lease['node'],True,_now())
+        handler._send(200,{'ok':True,'cos_uploaded':uploaded}); return True
 
 
 _NODE_RESULT_METADATA_FIELDS = {
@@ -427,6 +516,8 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0]
                 running = conn.execute(
                     "SELECT COUNT(*) FROM jobs WHERE status='running'").fetchone()[0]
+                delivery_waiting = conn.execute("SELECT COUNT(*) FROM delivery_claims d JOIN jobs j ON j.id=d.job_id WHERE j.status='completed' AND d.metadata_done=0").fetchone()[0]
+                delivery_stalled = conn.execute("SELECT COUNT(*) FROM delivery_claims d JOIN jobs j ON j.id=d.job_id WHERE j.status='running' AND j.claimed_at < ?",(_now()-CLAIM_TIMEOUT,)).fetchone()[0]
                 # 心跳的第二半：光知道「它最近来过」不够，还要看得出它在干活还是空转
                 per_node = {
                     str(row[0]): int(row[1])
@@ -476,6 +567,9 @@ class Handler(BaseHTTPRequestHandler):
                 "nodes_total": len(nodes),
                 # 这两个是中转器**自己**的真实队列长度，不是透传
                 "pending_jobs": pending, "running_jobs": running,
+                "delivery_protocol": 2,
+                "delivery_metadata_pending": delivery_waiting,
+                "delivery_recovery_required": delivery_stalled,
             }
             # 上游的真实状态如实透传；上游没给就不出现这个键，不编常量。
             for field in _UPSTREAM_HEALTH_FIELDS:
@@ -696,6 +790,27 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # ---- 节点侧 ----
+        if p in {'/v1/recover','/v1/delivery-status'}:
+            if not self._auth(NODE_TOKEN):
+                return self._send(401, {'error':'unauthorized'})
+            body = self._body() or {}
+            node = body.get('node')
+            if not isinstance(node,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',node):
+                return self._send(400, {'error':'invalid_request'})
+            with _db() as conn:
+                if p == '/v1/recover':
+                    rows = conn.execute("SELECT j.id,j.payload,d.token FROM jobs j JOIN delivery_claims d ON d.job_id=j.id WHERE d.node=? AND j.node=d.node AND (j.status='running' OR (j.status='completed' AND d.metadata_done=0)) ORDER BY d.created_at LIMIT 100",(node,)).fetchall()
+                    return self._send(200, {'jobs':[{'job_id':r['id'],'payload':json.loads(r['payload']),'claim_token':r['token']} for r in rows]})
+                jid = str(body.get('job_id') or '')
+                lease = _delivery_claim(conn,jid)
+                if not _delivery_owner(lease,node,body.get('claim_token')):
+                    return self._send(409,{'error':'delivery_owner_mismatch'})
+                row = conn.execute('SELECT status,node,result FROM jobs WHERE id=?',(jid,)).fetchone()
+                if not row or row['node'] != node:
+                    return self._send(409,{'error':'delivery_state_conflict'})
+                result = json.loads(row['result'] or '{}')
+                return self._send(200,{'status':row['status'],'metadata_done':bool(lease['metadata_done']), 'artifact_sha256':result.get('artifact_sha256')})
+
         if p == "/v1/heartbeat":
             if not self._auth(NODE_TOKEN):
                 return self._send(401, {"error": "unauthorized"})
@@ -730,8 +845,16 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute(
                     "UPDATE jobs SET status='pending', node=NULL, updated_at=?,"
                     " gpu_contract=CASE WHEN gpu_contract!='' THEN 'required' ELSE '' END"
-                    " WHERE status='running' AND claimed_at < ?",
+                    " WHERE status='running' AND claimed_at < ?"
+                    " AND NOT EXISTS (SELECT 1 FROM delivery_claims d WHERE d.job_id=jobs.id)",
                     (now, now - CLAIM_TIMEOUT))
+                if body.get('delivery_protocol') == 2:
+                    slots=body.get('slots',5)
+                    if type(slots) is not int or not 1 <= slots <= 20:
+                        return self._send(400,{'error':'invalid_slots'})
+                    owned=conn.execute("SELECT COUNT(*) FROM delivery_claims d JOIN jobs j ON j.id=d.job_id WHERE d.node=? AND (j.status='running' OR (j.status='completed' AND d.metadata_done=0))",(node,)).fetchone()[0]
+                    if owned >= slots:
+                        return self._send(200,{'job':None,'deferred':'delivery_capacity'})
                 rows = conn.execute(
                     "SELECT id,payload,gpu_contract FROM jobs WHERE status='pending'"
                     " ORDER BY created_at LIMIT ?", (MAX_GPU_PENDING,)).fetchall()
@@ -752,17 +875,25 @@ class Handler(BaseHTTPRequestHandler):
                     "UPDATE jobs SET status='running', node=?, claimed_at=?, updated_at=?,gpu_contract=?"
                     " WHERE id=? AND status='pending'",
                     (node, now, now, contract, row["id"]))
+                token = None
+                if cur.rowcount == 1 and body.get('delivery_protocol') == 2:
+                    token = uuid.uuid4().hex
+                    conn.execute('INSERT INTO delivery_claims(job_id,node,token,created_at) VALUES(?,?,?,?)',
+                                 (row['id'],node,token,now))
                 conn.commit()
                 if cur.rowcount != 1:
                     return self._send(200, {"job": None})
             return self._send(200, {"job": {"job_id": row["id"],
-                                            "payload": json.loads(row["payload"])}})
+                                            "payload": json.loads(row["payload"]),
+                                            **({'claim_token':token} if token else {})}})
 
         if p.startswith("/v1/result/"):
             # 节点回传成品视频（原始字节）。中转器落盘 + 上传 COS，避免节点持有 COS 凭证。
             if not self._auth(NODE_TOKEN):
                 return self._send(401, {"error": "unauthorized"})
             jid = p[len("/v1/result/"):].strip()
+            if _durable_upload(self,jid):
+                return
             with _db() as conn:
                 row = conn.execute(
                     "SELECT status, node, gpu_contract FROM jobs WHERE id=?", (jid,)).fetchone()
@@ -828,6 +959,32 @@ class Handler(BaseHTTPRequestHandler):
             jid = str(body.get("job_id") or "").strip()
             ok = bool(body.get("ok"))
             now = _now()
+            with _db() as conn:
+                lease = _delivery_claim(conn,jid)
+            if lease is not None:
+                with _delivery_lock(jid), _db() as conn:
+                    if not _delivery_owner(lease,body.get('node'),body.get('claim_token')):
+                        return self._send(409,{'error':'delivery_owner_mismatch'})
+                    row = conn.execute('SELECT * FROM jobs WHERE id=?',(jid,)).fetchone()
+                    if not row or row['node'] != lease['node']:
+                        return self._send(409,{'error':'delivery_state_conflict'})
+                    if ok:
+                        if row['status'] != 'completed':
+                            return self._send(409,{'error':'delivery_output_not_received'})
+                        existing = json.loads(row['result'] or '{}')
+                        incoming = body.get('result') or {}
+                        if row['gpu_contract']:
+                            evidence = _clean_render_evidence(incoming.get('gpu_render') or existing.get('gpu_render'))
+                            if not evidence or evidence['runtime_sha256'] != json.loads(row['gpu_contract'])['runtime_sha256']:
+                                return self._send(409,{'error':'gpu_output_not_verified'})
+                        conn.execute('UPDATE jobs SET result=? WHERE id=?',
+                                     (json.dumps(_merge_completed_result(existing,incoming)),jid))
+                        conn.execute('UPDATE delivery_claims SET metadata_done=1 WHERE job_id=?',(jid,))
+                    elif row['status'] == 'running':
+                        conn.execute("UPDATE jobs SET status='failed',error=?,updated_at=? WHERE id=?",
+                                     (str(body.get('error') or '')[:500],now,jid))
+                        _node_record(lease['node'],False,now,'durable_render_failed')
+                return self._send(200,{'ok':True})
             with _db() as conn:
                 _row = conn.execute(
                     "SELECT node,status,result,gpu_contract FROM jobs WHERE id=?", (jid,)).fetchone()
