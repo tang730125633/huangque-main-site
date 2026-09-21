@@ -966,6 +966,8 @@ def overview():
 
 def run_status(rid):
     """按任务 ID 读一条 run 的当前状态（只读），行不存在返回 None。"""
+    if channel_store.enabled():
+        return channel_store.run_status(rid)
     with closing(db()) as c:
         row = c.execute('SELECT * FROM runs WHERE id=?', (str(rid),)).fetchone()
     return dict(row) if row else None
@@ -977,6 +979,9 @@ def find_active(cid, version, kind, within=1800):
     用作提交去重：重复点击、或提交响应丢失后重试，都不该再创建一条新任务——
     完整生成是收费的，重复创建等于重复扣费。
     """
+    # PG 模式下 SQLite 不再是权威：公开 API 必须自动分发，绝不回落到旧库。
+    if channel_store.enabled():
+        return channel_store.find_active(cid, version, kind, within)
     with closing(db()) as c:
         row = c.execute(
             "SELECT * FROM runs WHERE channel=? AND version=? AND kind=? "

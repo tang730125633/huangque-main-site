@@ -1124,7 +1124,8 @@ def run_state(actor, body):
     if not rid:
         raise ValueError('缺少验证任务 ID')
     row = None
-    row = channel_store.run_status(rid) if channel_store.enabled() else store.run_status(rid)
+    # store 是 channel_manager；它在 PG 模式下会把调用分发给 channel_store。
+    row = store.run_status(rid)
     if not row:
         raise ValueError('找不到这条验证任务')
     state = str(row.get('state') or '')
