@@ -4795,6 +4795,46 @@ class MatrixTemplateTuningTests(unittest.TestCase):
         self.assertNotIn("duration", payload)
         request.assert_not_called()
 
+    def test_preview_payload_resolves_semantic_layout_for_hyperframes(self):
+        # 渲染侧 /v1/preview-jobs 对 HyperFrames 模板要求 AI 语义排版
+        # （与 /v1/jobs 相同的单条生成字段，合同 §3.2）；预览同样必须先解析再转发。
+        template = {
+            "id": TUNABLE_ID, "name": "长沙白字红强调", "description": "说明",
+            "tags": ["HyperFrames"], "engine": "hyperframes",
+            "font_mode": "template_locked", "font_selectable": False,
+            "variant": "v05", "required_visuals": 3,
+            "required_visuals_max": 5, "duration_mode": "random_integer_8_15",
+            "tunable": True, "template_revision": REVISION,
+            "overrides_schema": overrides_schema(),
+            "semantic_layout": {
+                "version": 1, "max_width_px": 996,
+                "layers": {"top1": {"font_size_px": 102}},
+            },
+        }
+        resolved = {
+            "version": 1, "model": "unit", "source_sha256": "s" * 64,
+            "top1_end": 3, "top_break_after": [3], "bottom_break_after": [],
+        }
+        self.module._CACHE["controls"][TUNABLE_ID] = {
+            "template_revision": REVISION,
+            "overrides_schema": overrides_schema(),
+        }
+        with mock.patch.object(
+            self.module, "public_templates", return_value=[template],
+        ), mock.patch.object(
+            self.module, "require_available",
+        ), mock.patch.object(
+            self.module.matrix_template_semantics, "resolve",
+            return_value=(resolved, None),
+        ) as resolve:
+            payload = self.module.preview_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "template_revision": REVISION,
+                "overrides": {"title_scale": 0.9},
+            }, "alice")
+        self.assertEqual(resolved, payload["semantic_layout"])
+        resolve.assert_called_once()
+
     def test_preview_worker_renders_two_versions_and_records_identity(self):
         self.load_catalog()
         preview_id = "preview-" + "d" * 16

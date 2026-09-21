@@ -1409,13 +1409,6 @@ def validate_payload(
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
-    if for_preview:
-        # 预览不在这里做断句与预检：渲染侧 /v1/preview-jobs 自己冻结 prepared
-        # （素材顺序/切片/总时长/运动种子）并跑真实渲染（合同 §3.2）。
-        result = dict(candidate)
-        if result.get("duration") is None:
-            result.pop("duration", None)
-        return result
     response = None
     if semantic_contract is not None:
         def validate_semantic_layout(semantic_layout):
@@ -1522,6 +1515,14 @@ def validate_payload(
                     "AI 断句失败，视频任务未创建且未扣点，请重试"
                 )
             ) from exc
+    if for_preview:
+        # 预览不做独立预检：渲染侧 /v1/preview-jobs 自己冻结 prepared
+        # （素材顺序/切片/总时长/运动种子）并跑真实渲染（合同 §3.2）。
+        # 但 AI 语义断句仍是渲染侧必需字段，已在上面解析进 candidate 随请求转发。
+        result = dict(candidate)
+        if result.get("duration") is None:
+            result.pop("duration", None)
+        return result
     if response is None:
         try:
             response = _request("POST", "/v1/preflight", candidate, timeout=10)
