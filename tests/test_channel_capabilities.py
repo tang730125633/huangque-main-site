@@ -146,3 +146,25 @@ class ChannelCapabilityTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+class VerificationRequirementTests(unittest.TestCase):
+    """验证要求必须按协议声明，不能硬编码三项：
+    无独立鉴权端点的协议（配音走 WebSocket、换装/HeyGen 走工作流或 OAuth）
+    用 GET /models 去探只会得到 404 或「模型不在列表」，那不是凭据被拒。"""
+
+    def test_bespoke_protocols_do_not_require_auth(self):
+        from content_domains import channel_manager as cm
+        for adapter in ('cosyvoice_tts', 'wavespeed_tryon', 'heygen_mcp_video',
+                        'heygen_mcp_cinematic', 'sora_video', 'minimax_h3'):
+            spec = cm.ADAPTERS.get(adapter) or {}
+            req = spec.get('verification')
+            self.assertIsNotNone(req, adapter + ' 必须声明验证要求')
+            self.assertNotIn('auth', req, adapter + ' 不该要求鉴权探测')
+            self.assertIn('full', req, adapter + ' 必须要求完整生成')
+
+    def test_model_list_protocols_still_require_auth(self):
+        from content_domains import channel_manager as cm
+        for adapter in ('openai_image', 'gemini_image', 'lechuang_image', 'lechuang_video'):
+            spec = cm.ADAPTERS.get(adapter) or {}
+            req = spec.get('verification') or ('connection', 'auth', 'full')
+            self.assertIn('auth', req, adapter + ' 有模型列表端点，应保留鉴权探测')
