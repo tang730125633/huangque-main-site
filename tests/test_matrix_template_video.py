@@ -5022,8 +5022,27 @@ class MatrixTemplateTuningTests(unittest.TestCase):
                          result["user_materials"])
         self.assertEqual(record["preview_id"], result["preview_id"])
         self.assertEqual("d" * 64, result["_prepared_digest"])
-        # 生效值：预览时冻结的参数 + 合同默认值（渲染端回显为准）。
-        self.assertEqual(record["effective_overrides"], result["overrides"])
+        # 带 preview_id 按预览冻结的发送版转发（渲染端据此复用 prepared）；
+        # 生效版（默认值补齐）只存在于预览记录供展示。
+        self.assertEqual(record["overrides"], result["overrides"])
+
+    def test_generate_with_preview_id_accepts_effective_overrides_replay(self):
+        # 执行期重放存过的载荷时 overrides 已是生效版（预检回显补齐默认值）；
+        # 只要发送过的字段值没变，就应认定为同一份输入（生产 E2E 实锤修复）。
+        self.load_catalog()
+        record = self.preview_record()
+        effective = dict(record["effective_overrides"])
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(self.module, "_request", side_effect=self.preflight):
+            result = self.module.validate_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "bgm": True,
+                "template_revision": REVISION,
+                "preview_id": record["preview_id"],
+                "overrides": effective,
+            }, "alice", preview_lookup=lambda user, pid: record)
+        self.assertEqual(record["preview_id"], result["preview_id"])
+        self.assertEqual(record["overrides"], result["overrides"])
 
     def test_generate_with_preview_id_rejects_mismatched_input(self):
         self.load_catalog()

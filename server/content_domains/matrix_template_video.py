@@ -1144,8 +1144,14 @@ def _resolve_template_tuning(body, template, username, preview_lookup=None):
         frozen_overrides = record.get("overrides")
         if not isinstance(frozen_overrides, dict):
             frozen_overrides = {}
-        if overrides and overrides != frozen_overrides:
-            raise ValueError("预览参数与本次提交不一致，请重新预览或沿用预览参数")
+        if overrides:
+            # 提交载荷可能是渲染端补齐默认值后的生效版（执行期重放存过的载荷）；
+            # 只要预览冻结的发送值全部保留就算同一份输入（合同 §3.5）。
+            if not (
+                overrides == frozen_overrides
+                or _overrides_agree(frozen_overrides, overrides)
+            ):
+                raise ValueError("预览参数与本次提交不一致，请重新预览或沿用预览参数")
         overrides = frozen_overrides
     return overrides, revision, record
 
@@ -1576,7 +1582,14 @@ def validate_payload(
         raise RuntimeError("模板成片预检时长无效")
     result = dict(payload, duration=float(authoritative_duration))
     result.pop("effective_overrides", None)
-    if effective_overrides is not None:
+    if preview_record is not None:
+        # 带 preview_id 的正式任务必须按预览冻结的发送版参数转发：渲染端以
+        # overrides 参与输入摘要核对并复用 prepared（合同 §3.5）。生效版
+        # （默认值补齐）已存在预览记录里供展示，不覆盖发送版。
+        result["overrides"] = (
+            candidate["overrides"] if "overrides" in candidate else {}
+        )
+    elif effective_overrides is not None:
         # 生效值规范化后回显（合同 §1）：默认值补齐，渲染端回显为准。
         result["overrides"] = effective_overrides
     if template_revision:
