@@ -194,7 +194,7 @@ _LATEST_FULL = (
     "ORDER BY started DESC,updated DESC,id LIMIT 1"
 )
 _LATEST_CHECK = (
-    "SELECT kind,state,updated,detail FROM routing.runs WHERE channel=%s AND version=%s AND kind=%s "
+    "SELECT kind,state,updated,detail,version FROM routing.runs WHERE channel=%s AND version=%s AND kind=%s "
     "ORDER BY started DESC,updated DESC,id LIMIT 1"
 )
 

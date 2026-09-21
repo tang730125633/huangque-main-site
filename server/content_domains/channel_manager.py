@@ -901,7 +901,7 @@ def overview():
             channel['stats'] = dict(stats)
             channel['checks'] = []
             for check_kind in ('connection', 'auth', 'full'):
-                check_row = c.execute("SELECT kind,state,updated,detail FROM runs WHERE channel=? AND version=? AND kind=? ORDER BY started DESC,rowid DESC LIMIT 1", (channel['id'],channel['version'],check_kind)).fetchone()
+                check_row = c.execute("SELECT kind,state,updated,detail,version FROM runs WHERE channel=? AND version=? AND kind=? ORDER BY started DESC,rowid DESC LIMIT 1", (channel['id'],channel['version'],check_kind)).fetchone()
                 if check_row:
                     channel['checks'].append(dict(check_row))
     from .function_registry import operation_catalog
