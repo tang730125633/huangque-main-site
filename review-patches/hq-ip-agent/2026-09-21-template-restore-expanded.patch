@@ -1,0 +1,100 @@
+From ab7020f295d118b90b32e45237e7bba8f1254546 Mon Sep 17 00:00:00 2001
+From: LU-003 <293645289+LU-003@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 17:55:48 +0800
+Subject: [PATCH] fix(ip12): keep pending template catalog expanded on restore
+
+---
+ static/v4.js           | 27 ++++++++++++++++++++++-----
+ tests/hq-ip12-test.mjs | 19 ++++++++++++++++++-
+ 2 files changed, 40 insertions(+), 6 deletions(-)
+
+diff --git a/static/v4.js b/static/v4.js
+index e11a60b..fc0730e 100644
+--- a/static/v4.js
++++ b/static/v4.js
+@@ -3650,7 +3650,8 @@
+     makeWidgetHead(box, w.title || "请选择", function () {
+       dismissCard(widgetDismissKey(w), kind, box, w);
+     });
+-    if (opts && opts.collapsed) box.classList.add("collapsed");
++    var restoreExpanded = opts && opts.expandedWidgetIds && opts.expandedWidgetIds[w.id];
++    if (opts && opts.collapsed && !restoreExpanded) box.classList.add("collapsed");
+     if (w.hint) {
+       var hint = document.createElement("div");
+       hint.className = "widget-hint";
+@@ -5154,11 +5155,27 @@
+         renderActionCards(data.delegations, data.film === true, false); // 恢复后待办卡片默认收起成一行（先看对话；出片提问卡按意图门控）
+         // 旧素材卡只在「最后意图仍是出片」时按收起态恢复（该条消息的附件）；
+         // 最后在聊别的（哪怕会话里出过片）→ 不渲染任何出片卡，连收起态都不留。
+-        if (data.film === true) {
+-          renderWidgets(data.widgets, { collapsed: true, filmMode: true, scroll: false, batchKeys: {} });
+-        } else {
+-          renderWidgets(data.widgets, { collapsed: true, filmMode: false, scroll: false, batchKeys: {} });
++        var expandedWidgetIds = {};
++        var compose = data.delegations && data.delegations.compose;
++        var templateCatalog = (data.widgets || []).find(function (w) {
++          return w && (w.id === "template_catalog" || w.layout === "template_catalog");
++        });
++        var selectedScript = data.selected_choices && data.selected_choices.script;
++        var hasSelectedTemplate = !!(templateCatalog && selectedScript && selectedScript.id
++          && (templateCatalog.items || []).some(function (item) {
++            return item && String(item.id || "") === String(selectedScript.id);
++          }));
++        if (templateCatalog && compose && compose.state === "needs_user_input" && !hasSelectedTemplate) {
++          expandedWidgetIds.template_catalog = true;
+         }
++        var restoreWidgetOptions = {
++          collapsed: true,
++          filmMode: data.film === true,
++          scroll: false,
++          batchKeys: {},
++          expandedWidgetIds: expandedWidgetIds,
++        };
++        renderWidgets(data.widgets, restoreWidgetOptions);
+         renderReport(data.report);
+         setBadge(data.mode);
+         intro.style.display = "none";
+diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
+index 6644fa0..fca2174 100644
+--- a/tests/hq-ip12-test.mjs
++++ b/tests/hq-ip12-test.mjs
+@@ -126,7 +126,7 @@ async function mockRoutes(page, opts) {
+           ? [{ role: 'assistant', content: '你好，说说你想要什么成果。' }]
+           : null;
+       if (!history) return route.fulfill({ json: { ok: false } });
+-      return route.fulfill({ json: { ok: true, read_only: !!opts.readOnly, owner: opts.readOnly ? { username: 'observed-user' } : null, history, widgets: opts.restoreWidgets || [], selected_choices: opts.selectedChoices || {}, delegations: {}, report: null, film: false, mode: { llm_mode: 'mock', llm_model: 'test' } } });
++      return route.fulfill({ json: { ok: true, read_only: !!opts.readOnly, owner: opts.readOnly ? { username: 'observed-user' } : null, history, widgets: opts.restoreWidgets || [], selected_choices: opts.selectedChoices || {}, delegations: opts.restoreDelegations || {}, report: null, film: false, mode: { llm_mode: 'mock', llm_model: 'test' } } });
+     }
+     if (url.includes('/api/v4/tasks/')) return route.fulfill({ json: { ok: true, tasks: opts.readOnly ? [{ job_id: '8979', kind: 'video', state: 'completed', products: ['https://media.example.com/result.mp4'], msg_index: 1 }] : [] } });
+     if (url.includes('/api/report/')) return route.fulfill({ json: reportPayload() });
+@@ -643,6 +643,22 @@ async function mockRoutes(page, opts) {
+   assert(!errors.some((e) => e.startsWith('I pageerror:')), '模板确认、收起和重开没有页面异常');
+   await page.close();
+ }
++{
++  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
++  page.on('pageerror', (e) => errors.push('I-restore-pending pageerror: ' + e.message));
++  await page.addInitScript(() => localStorage.setItem('hq-v4-session-id', 'restored-pending-template-session'));
++  await mockRoutes(page, {
++    restoreHistory: 'user',
++    restoreWidgets: templateWidgets(),
++    selectedChoices: { script: { id: 'draft-b', label: '此前选择的文案', film: false } },
++    restoreDelegations: { compose: { state: 'needs_user_input', question: '请选择模板' } },
++  });
++  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
++  await page.waitForSelector('.template-catalog-box .template-card', { state: 'attached', timeout: 8000 });
++  assert(!(await page.$eval('.template-catalog-box', (n) => n.classList.contains('collapsed'))), '待选择模板的恢复会话保持模板目录展开');
++  assert(!errors.some((e) => e.startsWith('I-restore-pending pageerror:')), '待选择模板的恢复会话没有页面异常');
++  await page.close();
++}
+ {
+   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+   page.on('pageerror', (e) => errors.push('I-restore pageerror: ' + e.message));
+@@ -654,6 +670,7 @@ async function mockRoutes(page, opts) {
+   });
+   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+   await page.waitForSelector('.template-catalog-box .template-card', { state: 'attached', timeout: 8000 });
++  assert(await page.$eval('.template-catalog-box', (n) => n.classList.contains('collapsed')), '已选择模板的恢复会话保持模板目录收起');
+   assert(await page.$eval('.template-card[data-item-id="template-3"]', (n) => n.classList.contains('picked')), '恢复会话时按后端权威选择还原已选模板标记');
+   assert((await page.$eval('.template-detail-title', (n) => n.textContent.trim())) === '深圳 AI 橙色主标题', '恢复会话时详情定位到已选模板');
+   assert(!errors.some((e) => e.startsWith('I-restore pageerror:')), '恢复模板目录没有页面异常');
