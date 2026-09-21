@@ -367,7 +367,9 @@
         if(supported.indexOf(k)<0){
           return '<span class="cm-test-na" title="此协议没有可用的'+(TEST_KIND_LABEL[k])+'探测，故不提供按钮">'+TEST_KIND_LABEL[k]+'：不适用</span>';
         }
-        var need=(k==='full'||required.indexOf(k)>=0)?'':'（非必需）';
+        // 规则没下发时不要乱标「非必需」——那会让人以为这项可以不管。
+        var rulesKnown=required.length>0;
+        var need=(!rulesKnown||k==='full'||required.indexOf(k)>=0)?'':'（非必需）';
         return '<button type="button" class="mini" data-cm-channel-test="'+esc(uid)+'" data-test-kind="'+k+'">'+esc(label+need)+'</button>';
       }).join('');
       var live=channelTestRuns[uid];

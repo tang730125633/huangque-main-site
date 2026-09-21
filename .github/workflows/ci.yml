@@ -113,6 +113,7 @@ jobs:
           node tests/test_admin_task_refresh.js
           node tests/test_channel_catalog.js
           node tests/test_channel_status_truth.js
+          node tests/test_channel_test_progress.js
           node tests/test_channel_latency_ui.js
           node tests/test_channel_category_drawer.js
           node tests/test_channel_priority_publish.js

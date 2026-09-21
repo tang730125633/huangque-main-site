@@ -62,7 +62,9 @@
     const VALID_CHECKS=['connection','auth','full'];
     const declared=Array.isArray(c.verification)?c.verification.filter(k=>VALID_CHECKS.indexOf(k)>=0):null;
     const rulesUsable=!!(declared&&declared.length)&&(c.rules_known!==false);
-    if(c.source==='managed'&&!rulesUsable){
+    // 注意：渠道行调用本函数时传的是 data.items 的原始项，它没有 source 字段。
+    // 只有内置线路（legacy）不走协议规则，其余一律要求显式声明。
+    if(c.source!=='legacy'&&!rulesUsable){
       return {overall:{state:'rules-unavailable',label:'验证规则不可用：该协议未在后台登记验证要求，无法判定'},
               parts,required:null,version:c.version,rulesUnusable:true};
     }
