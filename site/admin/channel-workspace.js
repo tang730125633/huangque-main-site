@@ -418,9 +418,13 @@
         const isPublished=draft.state===mapping?.state&&published[index]===id;
         const role=liveInline&&isPublished?(index===0?(ready?'当前主渠道':'已配置主线路 · 未就绪'):'已发布候补 '+index):'候选 '+(index+1)+(isPublished?' · 未接管':' · 未发布');
         const proof=C.verificationStatus(channel).overall||{state:'neutral',label:'待验证'};
-        const tone={ok:'ok',failed:'bad',unknown:'warn',running:'neutral',queued:'neutral',blocked:'warn',expired:'warn',missing:'neutral',unattributed:'warn','stale-version':'neutral',attention:'warn',neutral:'neutral',off:'muted'};
-        const healthTone=channel.enabled?tone[proof.state]||'neutral':'off';
-        const healthLabel=channel.enabled?proof.label:'已停用';
+        // 状态灯只有两种颜色：真正正常=绿色，其余一律红色。
+        // 判定「真正正常」的唯一依据是成品级证据（proof.state==='ok'），
+        // 网络可达、鉴权通过都不能算——它们不代表能出成品。
+        // 具体原因由文案说清，不靠颜色深浅表达程度。
+        const healthOk=channel.enabled&&proof.state==='ok';
+        const healthTone=healthOk?'ok':'bad';
+        const healthLabel=!channel.enabled?'异常 · 已停用':(healthOk?'正常':'异常 · '+(proof.label||'待验证'));
         return '<div class="cm-priority-channel" draggable="true" data-cm-priority-channel="'+esc(id)+'" data-cm-priority-operation="'+esc(active.operation_id)+'"><button type="button" class="cm-priority-drag" aria-label="拖动 '+esc(channel.name)+'">⋮⋮</button><span class="cm-priority-rank">'+(index+(prefix&&active.primary&&active.control_state!=='paused'?2:1))+'</span><div class="cm-priority-info"><strong>'+esc(channel.name)+'</strong><small>'+esc((channel.supplier||'未标注供应商')+' · '+(channel.model||'模型待配置'))+'</small>'+(index===0&&liveInline&&!ready?'<small class="cm-live-label">已配置主线路 · 功能未开放或就绪状态待核对</small>':'')+'<code>'+esc(channel.base_url||'Base URL 未配置')+'</code></div><span class="cm-priority-role '+(index===0?'primary':'')+'">'+role+'</span><span class="cm-priority-health '+healthTone+'">'+esc(healthLabel)+'</span><div class="cm-priority-actions">'+latencyControls('managed:'+id)+'<button type="button" class="mini" data-cm-managed-edit="'+esc(id)+'">'+(simpleView?'编辑':'修改 Key / URL')+'</button><details class="cm-row-tools"><summary>更多</summary><button type="button" class="mini" data-cm-priority-move="-1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===0?'disabled':'')+' aria-label="上移 '+esc(channel.name)+'">↑</button><button type="button" class="mini" data-cm-priority-move="1" data-operation="'+esc(active.operation_id)+'" data-channel="'+esc(id)+'" '+(index===draft.order.length-1?'disabled':'')+' aria-label="下移 '+esc(channel.name)+'">↓</button><button type="button" data-cm-channel-history="'+esc(id)+'">配置回滚</button></details></div></div>';
       }).join('');
       const available=candidates.filter(item=>!draft.channels.includes(item.id));
