@@ -148,17 +148,25 @@ class ClientSwitchNoticeTests(unittest.TestCase):
         return io.open(os.path.join(os.path.dirname(__file__), '..', 'site', 'workbench',
                                     'channel-parameters.js'), encoding='utf-8').read()
 
-    def test_switch_is_announced_not_silent(self):
+    def test_invalid_selection_stops_instead_of_switching(self):
         src = self.source()
-        # 记住原来的选择，并在下面明确告知，而不是直接 items.find(...)||items[0] 了事
+        # 原选择失效时保持未选中、由用户明确选择，不自动换功能
         self.assertIn('droppedFront', src)
-        self.assertIn('已不在当前渠道支持范围', src)
+        self.assertIn('请选择当前功能支持的配置', src)
+        self.assertIn('firstVisit', src)
+        # 既不能静默替换，也不能自动选第一项
         self.assertNotIn('items.find(i=>i.front===previous?.front)||items[0]', src)
+        self.assertNotIn('current=matched||items[0]', src)
+        # 未选中时生成按钮禁用（sync 里的既有逻辑）
+        self.assertIn("disabled=busy||!!pending||!current", src)
 
     def test_price_change_is_distinguished_from_parameter_change(self):
         src = self.source()
         self.assertIn('本次点数已变化', src)
         self.assertIn('点数未变', src)
+        # 比的是用户原先选中的组合与重新匹配后的组合，不是两个默认组合
+        self.assertIn('oldChoice', src)
+        self.assertIn('需要重新选择并确认费用', src)
 
     def test_client_does_not_send_source_page_for_video(self):
         """果肉走 xiaole_video：识别不依赖 source_page，这一条不是缺陷。"""

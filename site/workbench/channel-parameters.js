@@ -56,10 +56,13 @@
   function render(){
     if(!managedActive){if(legacy)legacy.hidden=false;host.hidden=true;host.innerHTML='';return}
     const previous=current;const matched=items.find(i=>i.front===previous?.front);
-    // 原选项已不在当前渠道支持范围时，不能偷偷换成第一项——那会让用户以为
-    // 自己选的还是原来那个。先记下来，下面明确告知。
+    // 两种情况要分开：
+    //   * 首次进入（没有原选择）—— 用默认条目；
+    //   * 原选择已不在支持范围 —— 【不要】自动换成第一项，那会让用户以为还是原来
+    //     那个。保持未选中，由用户明确选择；未选中时生成按钮是禁用的（见 sync）。
+    const firstVisit=!previous;
     const droppedFront=(previous&&!matched&&items.length)?previous:null;
-    current=matched||items[0];
+    current=firstVisit?(items[0]||null):(matched||null);
     if(!current&&!pending){if(legacy)legacy.hidden=false;host.hidden=!previous;host.textContent=previous?'当前模型已停用或映射已变更，请稍后刷新。':'';return}
     host.hidden=false;
     const prompt=host.querySelector('#cpPrompt')?.value||'',oldChoice=controls?.value();
@@ -70,15 +73,22 @@
       controls=mount(host.querySelector('#cpUserControls'),current,null,preserved?.id,{billingEnabled});
       host.querySelector('#cpUploadLabel').hidden=current.reference_max===0;
       host.querySelector('#cpRefHint').textContent=current.reference_max?'参考图 '+current.reference_min+'～'+current.reference_max+' 张，总大小不超过8MB。'+(current.mask_enabled?'可选上传蒙版进行局部修改。':''):'当前模型为文生图模式，无需参考图。';
-      if(droppedFront)note('原模型「'+droppedFront.label+'」已不在当前渠道支持范围，已切换到「'+current.label
-        +'」。请核对参数与点数后重新提交；不会自动提交。');
-      else if(previous&&previous.revision!==current.revision){
-        // 只有点数确实变了才说点数变，参数变化不要一律说成「点数已更新」。
-        const ptsOf=it=>{const list=it?.combinations||[];const c=list.find(x=>x.id===it.default)||list[0];return c?c.points:null};
-        const was=ptsOf(previous),now=ptsOf(current);
-        note((was!=null&&now!=null&&was!==now)
-          ?('本次点数已变化（'+was+' → '+now+' 点），请核对参数及点数后重新提交。提示词已保留；如需参考图，请重新选择。')
-          :'模型参数已更新（点数未变），请核对参数后提交。提示词已保留；如需参考图，请重新选择。');
+      if(droppedFront)note('原模型「'+droppedFront.label
+        +'」已不在当前渠道支持范围，请选择当前功能支持的配置。'
+        +'未重新选择前不会生成，也不会自动提交。');
+      else if(previous&&current&&previous.revision!==current.revision){
+        // 比的是【用户原先选中的组合】与重新匹配后的组合，不是两个默认组合。
+        const pick=(it,id)=>{const list=it?.combinations||[]
+          return list.find(x=>x.id===id)||list.find(x=>x.id===it.default)||list[0]||null};
+        const was=pick(previous,oldChoice?.combination||oldChoice?.combination_id||previous.default);
+        const now=pick(current,current.default);
+        if(!was||!now){
+          note('生成配置已更新，需要重新选择并确认费用。提示词已保留；如需参考图，请重新选择。');
+        }else if(was.points!==now.points){
+          note('本次点数已变化（'+was.points+' → '+now.points+' 点），请核对参数及点数后重新提交。提示词已保留；如需参考图，请重新选择。');
+        }else{
+          note('模型参数已更新（点数未变），请核对参数后提交。提示词已保留；如需参考图，请重新选择。');
+        }
       }
     }
     host.querySelector('#cpLegacyToggle').onclick=()=>{showLegacy=!showLegacy;host.querySelector('#cpManagedBody').hidden=showLegacy;if(legacy)legacy.hidden=!showLegacy;host.querySelector('#cpLegacyToggle').textContent=showLegacy?'返回平台配置模型':'其他模型与工具'};
