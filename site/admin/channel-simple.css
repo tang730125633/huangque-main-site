@@ -11,7 +11,7 @@
 .cm-live-primary{border-color:var(--gold)!important}.cm-live-label{color:var(--gold)!important}.cm-live-status{padding:12px;border:1px solid var(--line);border-radius:8px}
 #cmForm[data-compact] .cm-fields{grid-template-columns:1fr}
 .cm-row-tools{display:inline-block}.cm-row-tools>summary{cursor:pointer;color:var(--muted);font-size:11px;padding:6px}.cm-row-tools[open]{display:flex;gap:5px}
-.cm-selected-model .cm-priority-health{display:none}
+.cm-selected-model .cm-priority-health{display:inline-block;flex:0 0 auto;align-self:center;width:auto;max-width:100%;white-space:normal;line-height:1.5}
 #cmMatrix #cmModelPriority .cm-priority-channel{grid-template-columns:30px 24px minmax(0,1fr) auto auto}
 #cmMatrix #cmModelPriority .cm-priority-info{grid-column:3;grid-row:1}
 #cmMatrix #cmModelPriority .cm-priority-role{grid-column:4;grid-row:1}
@@ -25,5 +25,9 @@
 #cmMatrix .cm-model-strip>button strong,#cmMatrix .cm-model-strip>button small{display:block;flex:none;line-height:1.5;margin:0;white-space:nowrap}
 #cmMatrix .cm-model-strip>button:focus-visible{outline:2px solid var(--gold);outline-offset:-3px}
 @media(prefers-reduced-motion:reduce){.cm-sort-moving{transition:none}.cm-sort-ghost{transform:none}}
-#cmModelPriority .cm-priority-channel{grid-template-columns:30px 24px minmax(0,1fr) auto;min-width:0}#cmModelPriority .cm-priority-info{min-width:0}#cmModelPriority .cm-priority-info code{overflow-wrap:anywhere}#cmModelPriority .cm-priority-health{grid-column:3}#cmModelPriority .cm-priority-actions{grid-column:3/-1;flex-wrap:wrap}#cmModelPriority .cm-priority-state{display:flex;gap:12px;align-items:center}#cmModelPriority .cm-priority-published{margin:12px 0}#cmModelPriority pre{white-space:pre-wrap;overflow-wrap:anywhere}
+#cmModelPriority .cm-priority-channel{grid-template-columns:30px 24px minmax(0,1fr) auto;min-width:0}#cmModelPriority .cm-priority-info{min-width:0}#cmModelPriority .cm-priority-info code{overflow-wrap:anywhere}#cmModelPriority .cm-priority-health{grid-column:3;justify-self:start;width:fit-content;max-width:100%;padding:3px 9px;border-radius:999px;font-size:11px;white-space:normal;text-align:left}#cmModelPriority .cm-priority-actions{grid-column:3/-1;flex-wrap:wrap}#cmModelPriority .cm-priority-state{display:flex;gap:12px;align-items:center}#cmModelPriority .cm-priority-published{margin:12px 0}#cmModelPriority pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .cm-latency{display:inline-flex;flex-direction:column;gap:4px;align-items:center}.cm-latency small{font-size:11px;max-width:180px;white-space:normal;color:var(--muted)}
+
+/* 状态灯：只有两种颜色。绿=有成品级证据；红=其余一切（原因见文案） */
+.cm-priority-health.ok{color:#2ea043;background:rgba(46,160,67,.12);border:1px solid rgba(46,160,67,.35)}
+.cm-priority-health.bad{color:#e5534b;background:rgba(229,83,75,.12);border:1px solid rgba(229,83,75,.35)}
