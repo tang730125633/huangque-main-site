@@ -17,16 +17,26 @@ test('功能未开放时，原厂及托管主线路都不能宣称正在生产',
     assert.match(html,/就绪状态待核对/);
   }
 });
-test('内置主渠道保留配置入口，切换主渠道只靠拖动',()=>{
+test('内置主渠道保留配置入口，拖动与「设为主渠道」两个入口都在',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../site/admin/channel-workspace.js'),'utf8');
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
   route.control_state='shadow';
   route.primary={id:'legacy:gemini',name:'Google Gemini API',supplier:'Google',model:'gemini-3.1-flash-image',management:{kind:'server_env',uid:'legacy:gemini'}};
   const {elements}=build({},data),html=elements.cmMatrix.innerHTML;
   // 「查看配置 / Key」与「编辑」本是同一动作，现在统一叫「编辑」
   assert.match(html,/data-cm-live-detail="legacy:gemini">编辑</);
-  // 「设为主渠道」按钮已删除：拖动就是切换主渠道的入口
-  assert.doesNotMatch(html,/data-cm-priority-first/,'切换主渠道只剩拖动，不应再有统一切换按钮');
-  assert.doesNotMatch(html,/设为主渠道/);
+  // 两个等效入口都在：拖动排序 + 「设为主渠道」精确定位，且共用同一条发布路径
+  assert.match(html,/class="cm-priority-drag"/,'拖动入口必须存在');
+  // 非第一位的候选渠道要有「设为主渠道」；已经是第一位的不显示（没有意义）
+  assert.match(html,/data-cm-set-primary="ch-engine2"/,'非首位的候选渠道要有设为主渠道入口');
+  assert.doesNotMatch(html,/data-cm-set-primary="ch-banana"/,'已在第一位的不该再显示设为主渠道');
+  // 都走 publishPriority，不存在第二条发布路径
+  assert.match(source,/data-cm-set-primary/);
+  assert.match(source,/async function setPrimary/);
+  assert.match(source,/cmSetPrimary/);
+  assert.match(source,/await publishPriority\(operationId\)/);
+  // 旧属性名已废弃
+  assert.doesNotMatch(html,/data-cm-priority-first/);
 });
 test('影子候选不能冒充主渠道，生产原厂线路排在最前',()=>{
   const data=workspaceData(),route=data.frontend_matrix.pages[0].products[0].models[0].routes[0];
