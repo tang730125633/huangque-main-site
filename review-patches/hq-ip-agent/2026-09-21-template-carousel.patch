@@ -1,0 +1,630 @@
+From 2d5a957165609fb504135a1fcea66dd05d32ff1f Mon Sep 17 00:00:00 2001
+From: LU-003 <293645289+LU-003@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 13:35:43 +0800
+Subject: [PATCH] feat(ip12): redesign template picker as horizontal gallery
+
+---
+ agent/v4/subagent.py    |   4 +-
+ static/style.css        |  68 ++++++++++
+ static/v4.html          |   1 +
+ static/v4.js            | 267 +++++++++++++++++++++++++++++++++++++++-
+ tests/hq-ip12-test.mjs  | 110 ++++++++++++++++-
+ tests/hq-upload-test.py |   4 +-
+ 6 files changed, 441 insertions(+), 13 deletions(-)
+
+diff --git a/agent/v4/subagent.py b/agent/v4/subagent.py
+index 0e0c514..b5dab6e 100644
+--- a/agent/v4/subagent.py
++++ b/agent/v4/subagent.py
+@@ -2051,7 +2051,7 @@ def _attach_template_catalog_widget(sid: str, templates: list) -> int:
+         "type": "option_pick",
+         "id": "template_catalog",
+         "title": "模板成片 · 全部模板",
+-        "hint": f"共 {len(items)} 个，常用模板优先；左右滑动浏览，点“查看全部”可展开完整目录。",
++        "hint": f"共 {len(items)} 个；左右滑动浏览，点击卡片在下方查看详情。",
+         "layout": "template_catalog",
+         "selection_mode": "single",
+         "film": False,
+@@ -2100,7 +2100,7 @@ def _annotate_template_catalog(out: dict) -> dict:
+         if by_id:
+             payload["preview_guide"] = (
+                 "每个模板已附 preview（小样视频）与 poster（封面图）；运行时会自动把实时完整目录"
+-                "挂成一张可横滑、可同页展开的模板卡。不要再调用 attach_widgets，也不要在正文"
++                "挂成一张可横滑、可在下方查看详情的模板卡。不要再调用 attach_widgets，也不要在正文"
+                 "重复罗列模板；只用一句话提示用户在卡片里挑选。没带预览的模板也会照常列出。")
+         out["result"] = payload
+         return out
+diff --git a/static/style.css b/static/style.css
+index 0617918..e3b80a7 100644
+--- a/static/style.css
++++ b/static/style.css
+@@ -717,6 +717,74 @@ button { font-family: inherit; }
+ .widget-card .wc-act button:hover { border-color: var(--brand-600); }
+ .widget-card .wc-act button.pick { border-color: var(--brand-600); color: var(--brand-700, var(--brand-600)); }
+ .widget-list { display: flex; flex-direction: column; gap: 8px; }
++
++/* 模板目录：横向封面浏览 + 单一详情操作区，避免 22 张纵向大卡重复按钮。 */
++.template-catalog-box { padding: 15px 16px 16px; overflow: hidden; }
++.template-catalog-box .widget-title { font-size: 16px; font-weight: 750; }
++.template-catalog-box .widget-hint { margin: 4px 0 8px; }
++.template-catalog { min-width: 0; }
++.template-catalog-toolbar { display: flex; align-items: center; justify-content: space-between;
++  gap: 10px; margin-bottom: 8px; }
++.template-catalog-position { color: var(--fg-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
++.template-catalog-nav { display: flex; gap: 6px; }
++.template-catalog-arrow { width: 32px; height: 32px; display: inline-flex; align-items: center;
++  justify-content: center; border: 1px solid var(--border); border-radius: 9px;
++  background: var(--surface); color: var(--fg); cursor: pointer; font-size: 17px; }
++.template-catalog-arrow:hover:not(:disabled) { border-color: var(--brand-600); color: var(--brand-600); }
++.template-catalog-arrow:disabled { opacity: .35; cursor: default; }
++.template-card-rail { display: grid; grid-auto-flow: column;
++  grid-auto-columns: minmax(176px, calc((100% - 36px) / 4)); gap: 12px;
++  overflow-x: auto; overscroll-behavior-inline: contain; scroll-snap-type: x mandatory;
++  scrollbar-width: thin; scrollbar-color: var(--control-border) transparent;
++  padding: 3px 3px 10px; margin: 0 -3px; }
++.template-card { position: relative; min-width: 0; display: flex; flex-direction: column;
++  scroll-snap-align: start; overflow: hidden; text-align: left; padding: 0;
++  border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--fg);
++  cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
++.template-card:hover { border-color: var(--brand-600); transform: translateY(-1px); }
++.template-card.active { border-color: var(--brand-600); box-shadow: 0 0 0 2px rgba(26, 115, 232, .12); }
++.template-card.picked { border: 2px solid var(--brand-600); background: var(--brand-50, #eef5ff); }
++.template-card-image { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover;
++  background: var(--gray-100, #f2f4f7); border-bottom: 1px solid var(--border); }
++.template-card-placeholder { display: flex; align-items: center; justify-content: center;
++  color: var(--fg-faint); font-size: 12px; }
++.template-card-name { display: block; padding: 9px 10px 2px; font-size: 13px; line-height: 1.4;
++  font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.template-card-meta { display: -webkit-box; padding: 0 10px 10px; color: var(--fg-muted); font-size: 11px;
++  line-height: 1.35; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
++.template-card-check { position: absolute; top: 7px; right: 7px; width: 23px; height: 23px;
++  display: none; align-items: center; justify-content: center; border-radius: 999px;
++  color: #fff; background: var(--brand-600); box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
++.template-card-check .ui-icon { width: 14px; height: 14px; }
++.template-card.picked .template-card-check { display: inline-flex; }
++.template-detail { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(260px, 1.1fr);
++  gap: 18px; margin-top: 12px; padding: 14px; border: 1px solid var(--border);
++  border-radius: 13px; background: var(--bg); }
++.template-detail-media { min-width: 0; aspect-ratio: 16 / 9; overflow: hidden;
++  border-radius: 10px; background: #111; }
++.template-detail-media video, .template-detail-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
++.template-detail-media-empty { width: 100%; height: 100%; display: flex; align-items: center;
++  justify-content: center; color: #adb5bd; font-size: 13px; }
++.template-detail-copy { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
++.template-detail-title { font-size: 17px; line-height: 1.35; font-weight: 750; }
++.template-detail-meta { margin-top: 5px; color: var(--fg-muted); font-size: 12px; line-height: 1.5; }
++.template-detail-description { margin-top: 10px; color: var(--fg-muted); font-size: 12.5px; line-height: 1.65;
++  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
++.template-detail-description.expanded { display: block; overflow: visible; }
++.template-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 13px; }
++.template-detail-actions button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center;
++  gap: 5px; padding: 7px 13px; border: 1px solid var(--border); border-radius: 8px;
++  background: var(--surface); color: var(--fg); font: inherit; font-size: 12.5px; cursor: pointer; }
++.template-detail-actions button:hover { border-color: var(--brand-600); }
++.template-detail-actions .template-detail-use { border-color: var(--brand-600); background: var(--brand-600);
++  color: #fff; font-weight: 700; }
++@media (max-width: 760px) {
++  .template-catalog-box { padding: 13px 12px 14px; }
++  .template-card-rail { grid-auto-columns: clamp(244px, 78vw, 292px); gap: 10px; }
++  .template-detail { grid-template-columns: 1fr; gap: 12px; padding: 11px; }
++  .template-detail-actions { width: 100%; }
++  .template-detail-actions button { flex: 1 1 130px; min-height: 44px; }
++}
+ /* 样音采集组件（voice_sample，2026-09-15 结构化改造）：跟读稿 + 动作按钮 */
+ .voice-sample-body { display: flex; flex-direction: column; gap: 10px; }
+ .voice-sample-body .vs-script { font-size: 13px; line-height: 1.7; color: var(--fg);
+diff --git a/static/v4.html b/static/v4.html
+index d0e9c88..3c3b9d0 100644
+--- a/static/v4.html
++++ b/static/v4.html
+@@ -40,6 +40,7 @@
+     <symbol id="icon-audio" viewBox="0 0 24 24"><path d="M4 13v-2M8 16V8M12 19V5M16 16V8M20 13v-2"/></symbol>
+     <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M10 14v6"/></symbol>
+     <symbol id="icon-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4z"/></symbol>
++    <symbol id="icon-pause" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 8.5v7M14.5 8.5v7"/></symbol>
+     <symbol id="icon-download" viewBox="0 0 24 24"><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14"/></symbol>
+     <symbol id="icon-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+     <symbol id="icon-arrow-down" viewBox="0 0 24 24"><path d="M12 4v15M6.5 13.5 12 19l5.5-5.5"/></symbol>
+diff --git a/static/v4.js b/static/v4.js
+index 4d6a901..13cb89a 100644
+--- a/static/v4.js
++++ b/static/v4.js
+@@ -77,7 +77,7 @@
+   // ---- 统一 SVG 功能图标（复用原型 symbol sprite；白名单外一律落到 sparkles）----
+   var svgIconNames = ["document", "list", "video", "package", "image", "bulb", "wrench",
+     "scissors", "sparkles", "mic", "user", "phone", "film", "chart",
+-    "upload", "audio", "settings", "play", "download", "eye", "arrow-down", "check"];
++    "upload", "audio", "settings", "play", "pause", "download", "eye", "arrow-down", "check"];
+   function svgIcon(name, extraClass) {
+     var safe = svgIconNames.indexOf(name) >= 0 ? name : "sparkles";
+     return '<svg class="ui-icon' + (extraClass ? " " + extraClass : "") + '" aria-hidden="true"><use href="#icon-' + safe + '"></use></svg>';
+@@ -1104,7 +1104,8 @@
+   // 返回最新对话：翻历史（脱离粘底）时出现，点击回底部
+   function updateBackBottom() {
+     if (!backBottom) return;
+-    backBottom.hidden = scrollSticky;
++    var templateCatalogOpen = document.querySelector(".template-catalog-box:not(.collapsed)");
++    backBottom.hidden = scrollSticky || !!templateCatalogOpen;
+   }
+   backBottom.addEventListener("click", function () {
+     forceScrollBottom();
+@@ -2867,6 +2868,7 @@
+     }
+     updateSummaryCard();
+     renderStrip();
++    updateBackBottom();
+   }
+ 
+   // ---- 意图门控：出片区（音色/形象/文案卡 + 出片配置卡）只是「出片那条消息」的附件，
+@@ -3109,6 +3111,7 @@
+       anyNew = true;
+       lastNewBox = box;
+     });
++    updateBackBottom();
+     autoPickDefaults(widgets);
+     // 文案卡/形象卡已出现：配置卡立刻按「必选文案/必选形象」口径刷新
+     if (scriptWidgetsOffered || avatarWidgetsOffered) updateSummaryCard({ scroll: false });
+@@ -3219,6 +3222,7 @@
+     head.addEventListener("click", function (e) {
+       if (e.target.closest(".widget-close")) return;
+       box.classList.toggle("collapsed");
++      updateBackBottom();
+     });
+     box.appendChild(head);
+     return head;
+@@ -3356,6 +3360,252 @@
+     return row;
+   }
+ 
++  function templateItemMedia(it) {
++    var imgUrl = it.image_url || "";
++    if (imgUrl.indexOf("/api/") === 0) imgUrl = relUrl(imgUrl);
++    if (imgUrl.indexOf("https://huangquechuanmei.com/api/") === 0) {
++      imgUrl = relUrl(imgUrl.replace("https://huangquechuanmei.com", ""));
++    }
++    if (imgUrl.indexOf("/workbench/ip12/api/") === 0) {
++      imgUrl = relUrl(imgUrl.replace("/workbench/ip12", ""));
++    }
++    if (imgUrl.indexOf("https://huangquechuanmei.com/workbench/ip12/api/") === 0) {
++      imgUrl = relUrl(imgUrl.replace("https://huangquechuanmei.com/workbench/ip12", ""));
++    }
++    var previewUrl = it.preview_url || "";
++    if (previewUrl.indexOf("/api/") === 0) previewUrl = relUrl(previewUrl);
++    if (previewUrl.indexOf("https://huangquechuanmei.com/api/") === 0) {
++      previewUrl = relUrl(previewUrl.replace("https://huangquechuanmei.com", ""));
++    }
++    if (previewUrl.indexOf("/workbench/ip12/api/") === 0) {
++      previewUrl = relUrl(previewUrl.replace("/workbench/ip12", ""));
++    }
++    if (previewUrl.indexOf("https://huangquechuanmei.com/workbench/ip12/api/") === 0) {
++      previewUrl = relUrl(previewUrl.replace("https://huangquechuanmei.com/workbench/ip12", ""));
++    }
++    return { image: imgUrl, preview: previewUrl };
++  }
++
++  // 模板目录是浏览型组件：横向挑封面，详情与操作集中在下方；不把 22 组按钮重复铺满页面。
++  function renderTemplateCatalogWidget(w, box) {
++    var items = (w.items || []).filter(function (it) { return it && (it.id || it.title); });
++    if (!items.length) return null;
++    box.classList.add("template-catalog-box", "nonfilm-panel");
++
++    var catalog = document.createElement("div");
++    catalog.className = "template-catalog";
++
++    var toolbar = document.createElement("div");
++    toolbar.className = "template-catalog-toolbar";
++    var position = document.createElement("span");
++    position.className = "template-catalog-position";
++    toolbar.appendChild(position);
++    var nav = document.createElement("div");
++    nav.className = "template-catalog-nav";
++    var previous = document.createElement("button");
++    previous.type = "button";
++    previous.className = "template-catalog-arrow";
++    previous.setAttribute("aria-label", "上一个模板");
++    previous.innerHTML = "&#8592;";
++    var next = document.createElement("button");
++    next.type = "button";
++    next.className = "template-catalog-arrow";
++    next.setAttribute("aria-label", "下一个模板");
++    next.innerHTML = "&#8594;";
++    nav.appendChild(previous);
++    nav.appendChild(next);
++    toolbar.appendChild(nav);
++    catalog.appendChild(toolbar);
++
++    var rail = document.createElement("div");
++    rail.className = "template-card-rail";
++    rail.tabIndex = 0;
++    rail.setAttribute("role", "listbox");
++    rail.setAttribute("aria-label", "模板列表");
++    catalog.appendChild(rail);
++
++    var detail = document.createElement("div");
++    detail.className = "template-detail";
++    catalog.appendChild(detail);
++
++    var cards = [];
++    var activeIndex = 0;
++    if (pickedChoices.script) {
++      items.some(function (it, index) {
++        if (String(it.id || "") !== String(pickedChoices.script.id || "")) return false;
++        activeIndex = index;
++        return true;
++      });
++    }
++
++    function renderDetail() {
++      var it = items[activeIndex];
++      var media = templateItemMedia(it);
++      position.textContent = (activeIndex + 1) + " / " + items.length;
++      previous.disabled = activeIndex === 0;
++      next.disabled = activeIndex === items.length - 1;
++      cards.forEach(function (card, index) {
++        var active = index === activeIndex;
++        card.classList.toggle("active", active);
++        card.setAttribute("aria-selected", active ? "true" : "false");
++        card.tabIndex = active ? 0 : -1;
++      });
++
++      detail.innerHTML = "";
++      var visual = document.createElement("div");
++      visual.className = "template-detail-media";
++      var video = null;
++      if (media.preview) {
++        video = document.createElement("video");
++        video.controls = true;
++        video.preload = "none";
++        video.playsInline = true;
++        video.src = media.preview;
++        if (media.image) video.poster = media.image;
++        visual.appendChild(video);
++      } else if (media.image) {
++        var largeImage = document.createElement("img");
++        largeImage.src = media.image;
++        largeImage.alt = it.title || "模板预览";
++        largeImage.loading = "lazy";
++        visual.appendChild(largeImage);
++      } else {
++        var empty = document.createElement("div");
++        empty.className = "template-detail-media-empty";
++        empty.textContent = "暂无预览";
++        visual.appendChild(empty);
++      }
++      detail.appendChild(visual);
++
++      var copy = document.createElement("div");
++      copy.className = "template-detail-copy";
++      var title = document.createElement("div");
++      title.className = "template-detail-title";
++      title.textContent = it.title || it.name || String(it.id || "模板");
++      copy.appendChild(title);
++      if (it.summary) {
++        var meta = document.createElement("div");
++        meta.className = "template-detail-meta";
++        meta.textContent = it.summary;
++        copy.appendChild(meta);
++      }
++      var description = document.createElement("div");
++      description.className = "template-detail-description";
++      description.textContent = it.body || "点击播放小样查看模板效果，确认后即可使用。";
++      copy.appendChild(description);
++
++      var actions = document.createElement("div");
++      actions.className = "template-detail-actions";
++      if (video) {
++        var preview = document.createElement("button");
++        preview.type = "button";
++        preview.className = "template-detail-preview";
++        preview.innerHTML = svgIcon("play") + " 播放小样";
++        preview.addEventListener("click", function () {
++          if (video.paused) {
++            var playResult = video.play();
++            if (playResult && playResult.catch) playResult.catch(function () {});
++            preview.innerHTML = svgIcon("pause") + " 暂停预览";
++          } else {
++            video.pause();
++            preview.innerHTML = svgIcon("play") + " 播放小样";
++          }
++        });
++        video.addEventListener("pause", function () {
++          preview.innerHTML = svgIcon("play") + " 播放小样";
++        });
++        actions.appendChild(preview);
++      }
++      if (it.body) {
++        var full = document.createElement("button");
++        full.type = "button";
++        full.className = "template-detail-full";
++        full.textContent = "查看完整说明";
++        full.addEventListener("click", function () {
++          description.classList.toggle("expanded");
++          full.textContent = description.classList.contains("expanded") ? "收起说明" : "查看完整说明";
++        });
++        actions.appendChild(full);
++      }
++      var use = document.createElement("button");
++      use.type = "button";
++      use.className = "pick template-detail-use";
++      use.textContent = "使用此模板";
++      use.addEventListener("click", function () {
++        pickWidget(w, it, cards[activeIndex]);
++        updateBackBottom();
++      });
++      actions.appendChild(use);
++      copy.appendChild(actions);
++      detail.appendChild(copy);
++    }
++
++    function select(index, scrollCard) {
++      activeIndex = Math.max(0, Math.min(items.length - 1, index));
++      renderDetail();
++      if (scrollCard && cards[activeIndex] && cards[activeIndex].scrollIntoView) {
++        cards[activeIndex].scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
++      }
++    }
++
++    items.forEach(function (it, index) {
++      var media = templateItemMedia(it);
++      var card = document.createElement("button");
++      card.type = "button";
++      card.className = "template-card";
++      card.dataset.itemId = String(it.id || "");
++      card.setAttribute("role", "option");
++      card.setAttribute("aria-label", "查看模板：" + (it.title || it.name || it.id || ""));
++      if (media.image) {
++        var image = document.createElement("img");
++        image.className = "template-card-image";
++        image.src = media.image;
++        image.alt = "";
++        image.loading = "lazy";
++        card.appendChild(image);
++      } else {
++        var placeholder = document.createElement("span");
++        placeholder.className = "template-card-image template-card-placeholder";
++        placeholder.textContent = "模板预览";
++        card.appendChild(placeholder);
++      }
++      var name = document.createElement("span");
++      name.className = "template-card-name";
++      name.textContent = it.title || it.name || String(it.id || "模板");
++      card.appendChild(name);
++      if (it.summary) {
++        var sub = document.createElement("span");
++        sub.className = "template-card-meta";
++        sub.textContent = it.summary;
++        card.appendChild(sub);
++      }
++      var check = document.createElement("span");
++      check.className = "template-card-check";
++      check.innerHTML = svgIcon("check");
++      card.appendChild(check);
++      card.addEventListener("click", function () { select(index, false); });
++      rail.appendChild(card);
++      cards.push(card);
++    });
++
++    previous.addEventListener("click", function () { select(activeIndex - 1, true); });
++    next.addEventListener("click", function () { select(activeIndex + 1, true); });
++    rail.addEventListener("keydown", function (event) {
++      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
++      event.preventDefault();
++      select(activeIndex + (event.key === "ArrowRight" ? 1 : -1), true);
++      cards[activeIndex].focus();
++    });
++    rail.addEventListener("wheel", function (event) {
++      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || rail.scrollWidth <= rail.clientWidth) return;
++      event.preventDefault();
++      rail.scrollLeft += event.deltaY;
++    }, { passive: false });
++
++    renderDetail();
++    return catalog;
++  }
++
+   function renderWidget(w, opts) {
+     var box = document.createElement("div");
+     box.className = "widget-box";
+@@ -3373,6 +3623,13 @@
+       box.appendChild(hint);
+     }
+ 
++    if ((w.layout === "template_catalog" || w.id === "template_catalog") && w.selection_mode !== "multiple") {
++      var templateCatalog = renderTemplateCatalogWidget(w, box);
++      if (!templateCatalog) return null;
++      box.appendChild(templateCatalog);
++      return box;
++    }
++
+     var body = document.createElement("div");
+     if (w.type === "avatar_pick") {
+       body.className = "widget-grid";
+@@ -3700,10 +3957,10 @@
+   }
+ 
+   function markPickedById(kind, itemId) {
+-    Array.prototype.forEach.call(document.querySelectorAll(".widget-card, .widget-row"), function (n) {
++    Array.prototype.forEach.call(document.querySelectorAll(".widget-card, .widget-row, .template-card"), function (n) {
+       if (n.dataset.itemId !== itemId) return;
+       var pb = n.querySelector("button.pick");
+-      if (!pb) return;
++      if (!pb && !n.classList.contains("template-card")) return;
+       n.dataset.kind = kind;
+       n.dataset.origText = pb.textContent || "选这个";
+       markPickedEl(n, pb);
+@@ -3716,7 +3973,7 @@
+   }
+ 
+   function clearPickedMarks(kind) {
+-    Array.prototype.forEach.call(document.querySelectorAll(".widget-card.picked, .widget-row.picked"), function (n) {
++    Array.prototype.forEach.call(document.querySelectorAll(".widget-card.picked, .widget-row.picked, .template-card.picked"), function (n) {
+       if (n.dataset.kind !== kind) return;
+       n.classList.remove("picked");
+       var b = n.querySelector("button.pick");
+diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
+index e6f015f..0618b84 100644
+--- a/tests/hq-ip12-test.mjs
++++ b/tests/hq-ip12-test.mjs
+@@ -26,6 +26,22 @@ function filmWidgets() {
+     { type: 'voice_pick', id: 'voice_pick:voices', title: '音色（点选使用）', gen: 1, items: VOICE_SYS },
+   ];
+ }
++function templateWidgets() {
++  const names = ['长沙白字红强调', '成都绿描边手写', '深圳 AI 橙色主标题'];
++  const items = Array.from({ length: 22 }, (_, index) => ({
++    id: 'template-' + (index + 1),
++    title: names[index] || ('模板样式 ' + (index + 1)),
++    summary: 'HyperFrames · 固定排版 · ' + (10 + index) + ' 秒',
++    body: '适合门店营销、知识分享和个人 IP 的横版模板说明 ' + (index + 1) + '。',
++    image_url: '/api/v4/template-previews/template-' + (index + 1) + '.jpg',
++    preview_url: '/api/v4/template-previews/template-' + (index + 1) + '.mp4',
++  }));
++  return [{
++    type: 'option_pick', id: 'template_catalog', title: '模板成片 · 全部模板',
++    hint: '共 22 个，横向滑动浏览', layout: 'template_catalog', selection_mode: 'single',
++    film: false, gen: 1, items,
++  }];
++}
+ function reportPayload() {
+   return { status: 'final', phase: '报告定稿',
+     files: { pdf: 'api/download/顾言_IP人设定位_定稿.pdf', md: null, json: null },
+@@ -56,16 +72,22 @@ async function mockRoutes(page, opts) {
+       calls.chat += 1;
+       calls.chatBodies.push(req.postDataJSON());
+       chatSeq += 1;
+-      const kind = opts.chatKind === 'film' ? 'film' : 'basic';
++      const kind = opts.chatKind === 'film' ? 'film' : (opts.chatKind === 'template' ? 'template' : 'basic');
+       turnQueue.push({ seq: 100 + chatSeq, kind });
+       return route.fulfill({ json: { async: true, seq: 100 + chatSeq, reply: '' } });
+     }
+     if (url.includes('/api/v4/poll')) {
+       if (turnQueue.length) {
+         const t = turnQueue.shift();
+-        return route.fulfill({ json: t.kind === 'film'
+-          ? { seq: t.seq, state: 'done', reply: '好，形象和音色在下方，点选即可。', widgets: filmWidgets(), routing: [{ domain: 'digital-human', state: 'needs_user_input' }], tool_log: [{ name: 'hq-digital-human', args: {}, ok: true }], delegations: {}, film: true, report: reportPayload(), mode: { llm_mode: 'mock', llm_model: 'test' } }
+-          : { seq: t.seq, state: 'done', reply: '收到你的消息。', widgets: [], routing: [], tool_log: [], delegations: {}, film: false, report: null, mode: { llm_mode: 'mock', llm_model: 'test' } } });
++        let payload;
++        if (t.kind === 'film') {
++          payload = { seq: t.seq, state: 'done', reply: '好，形象和音色在下方，点选即可。', widgets: filmWidgets(), routing: [{ domain: 'digital-human', state: 'needs_user_input' }], tool_log: [{ name: 'hq-digital-human', args: {}, ok: true }], delegations: {}, film: true, report: reportPayload(), mode: { llm_mode: 'mock', llm_model: 'test' } };
++        } else if (t.kind === 'template') {
++          payload = { seq: t.seq, state: 'done', reply: '模板都在下方，横向浏览后选择即可。', widgets: templateWidgets(), routing: [{ domain: 'compose', state: 'needs_user_input' }], tool_log: [], delegations: {}, film: false, report: null, mode: { llm_mode: 'mock', llm_model: 'test' } };
++        } else {
++          payload = { seq: t.seq, state: 'done', reply: '收到你的消息。', widgets: [], routing: [], tool_log: [], delegations: {}, film: false, report: null, mode: { llm_mode: 'mock', llm_model: 'test' } };
++        }
++        return route.fulfill({ json: payload });
+       }
+       return route.fulfill({ json: { state: 'idle' } });
+     }
+@@ -100,7 +122,7 @@ async function mockRoutes(page, opts) {
+           ? [{ role: 'assistant', content: '你好，说说你想要什么成果。' }]
+           : null;
+       if (!history) return route.fulfill({ json: { ok: false } });
+-      return route.fulfill({ json: { ok: true, read_only: !!opts.readOnly, owner: opts.readOnly ? { username: 'observed-user' } : null, history, widgets: [], selected_choices: {}, delegations: {}, report: null, film: false, mode: { llm_mode: 'mock', llm_model: 'test' } } });
++      return route.fulfill({ json: { ok: true, read_only: !!opts.readOnly, owner: opts.readOnly ? { username: 'observed-user' } : null, history, widgets: opts.restoreWidgets || [], selected_choices: {}, delegations: {}, report: null, film: false, mode: { llm_mode: 'mock', llm_model: 'test' } } });
+     }
+     if (url.includes('/api/v4/tasks/')) return route.fulfill({ json: { ok: true, tasks: opts.readOnly ? [{ job_id: '8979', kind: 'video', state: 'completed', products: ['https://media.example.com/result.mp4'], msg_index: 1 }] : [] } });
+     if (url.includes('/api/report/')) return route.fulfill({ json: reportPayload() });
+@@ -510,6 +532,84 @@ async function mockRoutes(page, opts) {
+   await page.close();
+ }
+ 
++// ============ 场景 I：模板目录横向卡片 + 下方详情 + 移动端无溢出 ============
++{
++  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
++  page.on('pageerror', (e) => errors.push('I pageerror: ' + e.message));
++  await page.addInitScript(() => localStorage.removeItem('hq-v4-session-id'));
++  const calls = await mockRoutes(page, { chatKind: 'template' });
++  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
++  await page.fill('#input', '帮我选择一个模板成片样式');
++  await page.press('#input', 'Enter');
++  await page.waitForSelector('.template-catalog-box .template-card', { timeout: 8000 });
++
++  const catalog = await page.$eval('.template-catalog-box', (box) => {
++    const rail = box.querySelector('.template-card-rail');
++    return {
++      cards: box.querySelectorAll('.template-card').length,
++      cardActions: box.querySelectorAll('.template-card .template-detail-actions').length,
++      horizontallyScrollable: rail.scrollWidth > rail.clientWidth,
++      detailTitle: box.querySelector('.template-detail-title').textContent.trim(),
++      useButtons: box.querySelectorAll('.template-detail-use').length,
++    };
++  });
++  assert(catalog.cards === 22, '模板目录完整显示 22 张横向卡（' + catalog.cards + '）');
++  assert(catalog.horizontallyScrollable, '模板卡轨道可横向滚动');
++  assert(catalog.cardActions === 0 && catalog.useButtons === 1, '卡片不重复操作，详情区只保留一组操作');
++  assert(catalog.detailTitle === '长沙白字红强调', '默认展示第一张模板详情');
++
++  await page.click('.template-card[data-item-id="template-3"]');
++  await page.waitForTimeout(100);
++  assert((await page.$eval('.template-detail-title', (n) => n.textContent.trim())) === '深圳 AI 橙色主标题', '点击横向卡片联动下方详情');
++  assert(calls.selections.length === 0, '浏览卡片不提前提交模板选择');
++
++  const beforeWheel = await page.$eval('.template-card-rail', (n) => n.scrollLeft);
++  await page.hover('.template-card-rail');
++  await page.mouse.wheel(0, 420);
++  await page.waitForTimeout(150);
++  const afterWheel = await page.$eval('.template-card-rail', (n) => n.scrollLeft);
++  assert(afterWheel > beforeWheel, '鼠标滚轮可横向浏览模板卡');
++
++  await page.evaluate(() => {
++    const msgs = document.getElementById('messages');
++    msgs.scrollTop = 0;
++    msgs.dispatchEvent(new Event('scroll', { bubbles: true }));
++  });
++  await page.waitForTimeout(100);
++  assert(await page.$eval('#back-bottom', (n) => n.hidden), '模板目录展开时隐藏“返回最新对话”避免遮挡');
++
++  await page.click('.template-detail-use');
++  await page.waitForTimeout(150);
++  const latestSelection = calls.selections[calls.selections.length - 1];
++  assert(latestSelection && latestSelection.choice && latestSelection.choice.id === 'template-3', '“使用此模板”提交当前详情模板');
++  assert(await page.$eval('.template-catalog-box', (n) => n.classList.contains('collapsed')), '确认使用后模板目录按既有向导规则收起');
++  await page.close();
++}
++{
++  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
++  page.on('pageerror', (e) => errors.push('I-mobile pageerror: ' + e.message));
++  await page.addInitScript(() => localStorage.removeItem('hq-v4-session-id'));
++  await mockRoutes(page, { chatKind: 'template' });
++  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
++  await page.fill('#input', '帮我选择一个模板成片样式');
++  await page.press('#input', 'Enter');
++  await page.waitForSelector('.template-catalog-box .template-card', { timeout: 8000 });
++  const mobile = await page.evaluate(() => {
++    const card = document.querySelector('.template-card');
++    const detail = document.querySelector('.template-detail');
++    return {
++      noPageOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
++      cardWidth: card.getBoundingClientRect().width,
++      viewportWidth: window.innerWidth,
++      detailColumns: getComputedStyle(detail).gridTemplateColumns,
++    };
++  });
++  assert(mobile.noPageOverflow, '390px 模板目录不造成整页横向溢出');
++  assert(mobile.cardWidth < mobile.viewportWidth && mobile.cardWidth > mobile.viewportWidth * 0.65, '移动端露出下一张卡提示可横滑');
++  assert(mobile.detailColumns.split(' ').length === 1, '移动端模板详情改为单列');
++  await page.close();
++}
++
+ await browser.close();
+ console.log(JSON.stringify(out, null, 2));
+ console.log('ERRORS:', errors.length ? errors : 'none');
+diff --git a/tests/hq-upload-test.py b/tests/hq-upload-test.py
+index 3412fe9..6588243 100644
+--- a/tests/hq-upload-test.py
++++ b/tests/hq-upload-test.py
+@@ -337,7 +337,9 @@ try:
+     assert_ok(catalog_out.get("widget_attached") == 2
+               and catalog_widget.get("layout") == "template_catalog"
+               and len(catalog_widget.get("items") or []) == 2
+-              and catalog_widget["items"][0].get("recommended") is True,
++              and catalog_widget["items"][0].get("recommended") is True
++              and "左右滑动浏览" in catalog_widget.get("hint", "")
++              and "查看全部" not in catalog_widget.get("hint", ""),
+               "模板实时目录机械挂成完整目录卡，不再截六项后用正文补列表")
+     out_fb = subagent._annotate_template_catalog(
+         {"ok": False, "error": "upstream_unavailable"})
+-- 
+2.55.0.windows.1
+
+
