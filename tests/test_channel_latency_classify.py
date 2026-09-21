@@ -4,7 +4,11 @@
 背景：乐创 /api/v1、WaveSpeed /api/v3、DashScope 基础地址都不是业务接口，
 无凭据 HEAD 会返回 404。页面只显示一个 HTTP 404，管理员会误判渠道不可用。
 """
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
 
 from content_domains import channel_latency
 
