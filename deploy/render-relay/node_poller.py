@@ -8,6 +8,7 @@
 import csv
 import base64
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -199,16 +200,64 @@ def run_local(payload, job_id=""):
     jid = job.get("job_id")
     if not jid:
         return None, "本机渲染服务未返回 job_id"
-    deadline = time.time() + JOB_TIMEOUT
-    while time.time() < deadline:
-        time.sleep(3)
-        cur = _call(LOCAL + "/v1/jobs/" + jid, LOCAL_TOKEN, timeout=30)
+    deadline = time.monotonic() + JOB_TIMEOUT
+    failures = 0
+    while time.monotonic() < deadline:
+        time.sleep(min(3 * (2 ** min(failures, 2)), max(0, deadline - time.monotonic())))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            cur = _call(LOCAL + "/v1/jobs/" + jid, LOCAL_TOKEN, timeout=min(30, remaining))
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            if not _transient_local_read(exc):
+                raise RuntimeError("node_status_read_failed " + _read_error_code(exc)) from None
+            failures += 1
+            print("[poller] status_read_retry request_id=%s attempt=%s error=%s"
+                  % (req_id, failures, _read_error_code(exc)), flush=True)
+            continue
+        failures = 0
+        if not isinstance(cur, dict):
+            raise RuntimeError("node_status_response_invalid")
         st = cur.get("status")
         if st == "completed":
             return cur.get("result") or {}, None
         if st == "failed":
             return None, str(cur.get("error") or "渲染失败")
-    return None, "本机渲染超时"
+    return None, "本机任务状态跟踪超时（未重新提交渲染）"
+
+
+def _read_error_code(exc):
+    # Never log a URL, HTTP body, or exception message from an authenticated read.
+    return "http_%s" % exc.code if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+
+
+def _transient_local_read(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        exc.close()
+        return exc.code in {408, 429, 500, 502, 503, 504}
+    if isinstance(exc, urllib.error.URLError):
+        exc = exc.reason
+    return isinstance(exc, (TimeoutError, ConnectionError, http.client.IncompleteRead,
+                            http.client.RemoteDisconnected))
+
+
+def _download_local_result(url):
+    """Retry only idempotent local GETs, never rendering or the Relay upload POST."""
+    deadline = time.monotonic() + RENDER_TIMEOUT + 120
+    for attempt in range(1, 4):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            return _call(url, LOCAL_TOKEN, timeout=remaining)
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            if not _transient_local_read(exc) or attempt == 3:
+                raise RuntimeError("node_result_read_failed " + _read_error_code(exc)) from None
+            print("[poller] result_read_retry attempt=%s error=%s"
+                  % (attempt, _read_error_code(exc)), flush=True)
+            time.sleep(min(attempt * 2, max(0, deadline - time.monotonic())))
+    raise RuntimeError("node_result_read_deadline")
 
 
 def _image_to_video(data, content_type, duration):
@@ -274,7 +323,7 @@ def report(job_id, ok, result=None, error=None):
 def upload_result(job_id, file_url, result):
     """下载本机成品并回传中转器。"""
     full = file_url if file_url.startswith("http") else LOCAL + file_url
-    data = _call(full, LOCAL_TOKEN, timeout=RENDER_TIMEOUT + 120)
+    data = _download_local_result(full)
     headers = {
         "Content-Type": "video/mp4",
         "X-HQ-Duration": str(result.get("duration") or 0),

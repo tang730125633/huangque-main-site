@@ -165,6 +165,9 @@ jobs:
             test_jobs_store.py
             test_matrix_template_video.py
             test_render_relay_gpu.py
+            test_render_relay_manifest.py
+            test_node_admission_retry.py
+            test_node_status_resilience.py
             test_provider_key_pool.py
             test_short_drama_advisor.py
             test_video_agent.py
