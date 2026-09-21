@@ -112,12 +112,63 @@ MATERIAL_POLICY_OWNED_PUBLIC = "owned_public"
 # 素材范围（2026-09-17 老板定调）：一次性邀请码注册的账号只能用公网素材，
 # 绝不使用公司素材（飞书群聊导入等）。其余账号候选载荷与历史逐字节一致。
 MATERIAL_SCOPE_PUBLIC_ONLY = "public_only"
+# 模板参数微调（2026-09-21，合同 v1）：只有渲染侧声明 tunable 的模板（首发
+# ref-05-changsha-white-red）可调，其余模板 tunable=false 且收到 overrides 一律
+# 明确拒绝（绝不静默忽略）。字段名/范围/默认值的单一起源是渲染侧 overrides_schema；
+# 这里的常量只是主站的同值校验与规范化。
+OVERRIDES_CONTRACT_VERSION = 1
+OVERRIDE_FIELDS = (
+    "title_scale", "title_offset_y", "cta_scale", "cta_offset_y",
+    "accent_color", "media_focus",
+)
+OVERRIDE_DEFAULTS = {
+    "title_scale": 1.0, "title_offset_y": 0, "cta_scale": 1.0, "cta_offset_y": 0,
+}
+OVERRIDE_SCALE_MIN = 0.85
+OVERRIDE_SCALE_MAX = 1.10
+OVERRIDE_OFFSET_MIN = -60
+OVERRIDE_OFFSET_MAX = 60
+ACCENT_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}\Z")
+MEDIA_FOCUS_SLOT_LIMIT = 21
+_OVERRIDE_LABELS = {
+    "title_scale": "标题缩放", "title_offset_y": "标题上下位置",
+    "cta_scale": "行动文案缩放", "cta_offset_y": "行动文案上下位置",
+    "accent_color": "强调色", "media_focus": "画面焦点",
+}
+# 预览（matrix-template-preview）：只读对比，不登记正式作品、不扣点、不发完成通知。
+# 走既有任务凭据 + task 查询，预览文件一律经主站代理回放，绝不裸暴露渲染侧地址。
+PREVIEW_KIND = "matrix_template_preview"
+# 预览只接受单条生成字段（合同 §3.2）：批量/口播/时长一律明确拒绝，绝不静默忽略。
+PREVIEW_FIELDS = frozenset({
+    "top_text", "bottom_text", "template_id", "font_family", "user_materials",
+    "bgm", "template_revision", "overrides",
+})
+_PREVIEW_UNSUPPORTED_LABELS = {
+    "voiceover": "口播配音（预览只对比画面与文字排版）",
+    "bgm_volume": "背景音乐音量",
+    "duration": "时长（由渲染端按素材自动定稿）",
+    "batch_id": "批量任务参数",
+    "batch_index": "批量任务参数",
+    "batch_size": "批量任务参数",
+    "mode": "其他生成模式",
+    "preview_id": "预览标识",
+}
+PREVIEW_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+PREVIEW_TIMEOUT = max(60, min(1800, int(os.environ.get(
+    "MATRIX_TEMPLATE_PREVIEW_TIMEOUT", "900"
+))))
+PREVIEW_DEFAULT_TTL_SECONDS = 30 * 60
+PREVIEW_FRAME_LIMIT = 24
+PREVIEW_MAX_ACTIVE_PER_USER = max(1, min(5, int(os.environ.get(
+    "MATRIX_TEMPLATE_PREVIEW_MAX_ACTIVE", "2"
+))))
 _USER_MATERIAL_TYPES = {"image", "video"}
 _USER_MATERIAL_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _CACHE = {
     "at": 0.0,
     "templates": [],
     "fonts": [],
+    "controls": {},
     "max_batch_size": 1,
     "engine_concurrency": {"ffmpeg": 1, "hyperframes": 1},
 }
@@ -344,6 +395,61 @@ _SEMANTIC_LAYER_TRANSITIONS = {
 }
 
 
+def _tunable_controls(raw):
+    """Parse the renderer-owned tunable contract; fail closed, never fabricate."""
+    revision = str(raw.get("template_revision") or "").strip().lower()
+    schema = raw.get("overrides_schema")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", revision)
+        or not isinstance(schema, dict)
+        or not schema
+    ):
+        return None
+    return {
+        "tunable": True,
+        "template_revision": revision,
+        "overrides_schema": json.loads(json.dumps(schema, ensure_ascii=False)),
+    }
+
+
+def _override_schema_items(schema):
+    """Yield (field, definition) for the two compact schema shapes we accept."""
+    properties = schema.get("properties")
+    source = properties if isinstance(properties, dict) else schema
+    for key, item in source.items():
+        if key in OVERRIDE_FIELDS and isinstance(item, dict):
+            yield key, item
+
+
+def _override_schema_defaults(schema):
+    """Echo only the defaults the renderer explicitly declares."""
+    return {
+        key: json.loads(json.dumps(item["default"], ensure_ascii=False))
+        for key, item in _override_schema_items(schema) if "default" in item
+    }
+
+
+def _override_schema_slots(schema):
+    """Echo the declared media_focus slot bounds/说明 without inventing numbers."""
+    for key, item in _override_schema_items(schema):
+        if key != "media_focus":
+            continue
+        slots = {}
+        for field in ("maxItems", "max_slots", "slots", "slot_max"):
+            value = item.get(field)
+            if (
+                not isinstance(value, bool) and isinstance(value, int)
+                and 0 < value <= MEDIA_FOCUS_SLOT_LIMIT
+            ):
+                slots["max"] = value
+                break
+        note = str(item.get("note") or item.get("description") or "").strip()
+        if note:
+            slots["note"] = note[:200]
+        return slots
+    return {}
+
+
 def _semantic_contract(value, variant):
     if value is None:
         return None
@@ -429,6 +535,7 @@ def _refresh_catalog(force=False):
             raise RuntimeError("模板目录无效")
         templates = []
         seen_template_ids = set()
+        tunable_controls = {}
         for raw in raw_templates:
             if not isinstance(raw, dict):
                 continue
@@ -535,6 +642,13 @@ def _refresh_catalog(force=False):
                 template["accepted_media_types"] = list(dict.fromkeys(
                     accepted_media_types
                 ))
+            # 轻量标记进公开目录（tunable / template_revision）；完整 overrides_schema
+            # 只放在按需读取的 controls 里，避免每次目录响应都塞 22 份大 schema。
+            controls = _tunable_controls(raw) if raw.get("tunable") is True else None
+            template["tunable"] = controls is not None
+            if controls is not None:
+                template["template_revision"] = controls["template_revision"]
+                tunable_controls[template_id] = controls
             templates.append(template)
             seen_template_ids.add(template_id)
         if not _catalog_is_complete(templates):
@@ -562,6 +676,7 @@ def _refresh_catalog(force=False):
             "at": now,
             "templates": templates,
             "fonts": fonts,
+            "controls": tunable_controls,
             "max_batch_size": max_batch_size,
             "engine_concurrency": engine_concurrency,
         })
@@ -583,6 +698,152 @@ def public_batch_capability(force=False):
         "max_batch_size": int(_CACHE["max_batch_size"]),
         "engine_concurrency": dict(_CACHE["engine_concurrency"]),
     }
+
+
+def public_template_controls(template_id, force=False):
+    """Read-only tunable contract for one template (matrix-template-controls).
+
+    The renderer owns tunable/overrides_schema; this view never invents a
+    field.  A template without a usable tunable contract reports tunable=false.
+    """
+    _refresh_catalog(force)
+    cleaned = str(template_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", cleaned):
+        raise ValueError("请选择有效模板")
+    template = next(
+        (item for item in _CACHE["templates"] if item["id"] == cleaned), None,
+    )
+    if template is None:
+        raise ValueError("请选择有效模板")
+    result = {
+        "template_id": cleaned,
+        "name": str(template.get("name") or cleaned),
+        "tunable": bool(template.get("tunable")),
+    }
+    controls = _CACHE["controls"].get(cleaned) if result["tunable"] else None
+    if not controls:
+        result["tunable"] = False
+        result["note"] = "该模板暂不支持参数微调，文案、素材与字体按模板默认执行。"
+        return result
+    schema = controls["overrides_schema"]
+    result["template_revision"] = controls["template_revision"]
+    result["overrides_schema"] = json.loads(json.dumps(schema, ensure_ascii=False))
+    defaults = _override_schema_defaults(schema)
+    if defaults:
+        result["defaults"] = defaults
+    slots = _override_schema_slots(schema)
+    if slots:
+        result["slots"] = slots
+    return result
+
+
+def _override_number(value, label, minimum, maximum, *, digits=4):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(f"{label}需要是 {minimum}-{maximum} 之间的数字")
+    normalized = float(value)
+    if not minimum <= normalized <= maximum:
+        raise ValueError(f"{label}需要是 {minimum}-{maximum} 之间的数字")
+    return round(normalized, digits)
+
+
+def normalize_overrides(value, *, max_slots=None):
+    """Validate and canonicalize one overrides object (contract v1 vocabulary).
+
+    Empty/absent overrides stay absent so the legacy path keeps byte-identical
+    payloads.  Every rejection is explicit: unknown keys, bool-as-number, NaN,
+    out-of-range values and bad colours never pass silently.
+    """
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("模板参数需要是对象")
+    unknown = sorted(set(value) - set(OVERRIDE_FIELDS))
+    if unknown:
+        raise ValueError("模板参数不支持字段：" + unknown[0])
+    result = {}
+    if "title_scale" in value:
+        result["title_scale"] = _override_number(
+            value["title_scale"], _OVERRIDE_LABELS["title_scale"],
+            OVERRIDE_SCALE_MIN, OVERRIDE_SCALE_MAX,
+        )
+    if "title_offset_y" in value:
+        offset = value["title_offset_y"]
+        if (
+            isinstance(offset, bool) or not isinstance(offset, int)
+            or not OVERRIDE_OFFSET_MIN <= offset <= OVERRIDE_OFFSET_MAX
+        ):
+            raise ValueError(
+                f"{_OVERRIDE_LABELS['title_offset_y']}需要是 "
+                f"{OVERRIDE_OFFSET_MIN}-{OVERRIDE_OFFSET_MAX} 之间的整数像素"
+            )
+        result["title_offset_y"] = int(offset)
+    if "cta_scale" in value:
+        result["cta_scale"] = _override_number(
+            value["cta_scale"], _OVERRIDE_LABELS["cta_scale"],
+            OVERRIDE_SCALE_MIN, OVERRIDE_SCALE_MAX,
+        )
+    if "cta_offset_y" in value:
+        offset = value["cta_offset_y"]
+        if (
+            isinstance(offset, bool) or not isinstance(offset, int)
+            or not OVERRIDE_OFFSET_MIN <= offset <= OVERRIDE_OFFSET_MAX
+        ):
+            raise ValueError(
+                f"{_OVERRIDE_LABELS['cta_offset_y']}需要是 "
+                f"{OVERRIDE_OFFSET_MIN}-{OVERRIDE_OFFSET_MAX} 之间的整数像素"
+            )
+        result["cta_offset_y"] = int(offset)
+    if "accent_color" in value:
+        color = value["accent_color"]
+        if not isinstance(color, str) or not ACCENT_COLOR_RE.fullmatch(color):
+            raise ValueError("强调色需要是 #RRGGBB 格式的十六进制颜色")
+        result["accent_color"] = color.upper()
+    if "media_focus" in value:
+        focuses = value["media_focus"]
+        if not isinstance(focuses, list) or not 1 <= len(focuses) <= MEDIA_FOCUS_SLOT_LIMIT:
+            raise ValueError("画面焦点需要是 1-21 项的数组")
+        slot_limit = int(max_slots) if isinstance(max_slots, int) and not isinstance(
+            max_slots, bool
+        ) and 0 < max_slots <= MEDIA_FOCUS_SLOT_LIMIT else MEDIA_FOCUS_SLOT_LIMIT
+        normalized_focus = []
+        seen_slots = set()
+        for item in focuses:
+            if not isinstance(item, dict) or set(item) != {"slot", "x", "y"}:
+                raise ValueError("画面焦点每项需要包含 slot、x、y")
+            slot = item["slot"]
+            if (
+                isinstance(slot, bool) or not isinstance(slot, int)
+                or not 1 <= slot <= slot_limit
+            ):
+                raise ValueError(f"画面焦点槽位需要是 1-{slot_limit} 之间的整数")
+            if slot in seen_slots:
+                raise ValueError("画面焦点槽位不能重复")
+            seen_slots.add(slot)
+            normalized_focus.append({
+                "slot": int(slot),
+                "x": _override_number(item["x"], "焦点横向位置", 0, 1),
+                "y": _override_number(item["y"], "焦点纵向位置", 0, 1),
+            })
+        result["media_focus"] = sorted(
+            normalized_focus, key=lambda item: item["slot"],
+        )
+    return {key: result[key] for key in OVERRIDE_FIELDS if key in result}
+
+
+def _overrides_agree(sent, echoed):
+    """True when the renderer echo keeps every value we sent (defaults may add)."""
+    return all(echoed.get(key) == value for key, value in sent.items())
+
+
+def _effective_overrides(echoed, sent):
+    """Contract-fixed defaults filled in, renderer-declared values kept."""
+    effective = dict(OVERRIDE_DEFAULTS)
+    effective.update(echoed)
+    return {key: effective[key] for key in OVERRIDE_FIELDS if key in effective}
 
 
 def _normalize_voiceover(value, username, *, allow_legacy_text=False):
@@ -790,10 +1051,155 @@ def _resolve_user_materials(
     return resolved
 
 
+def _tunable_template_controls(template):
+    """Renderer-declared tunable contract of one catalog template, or None."""
+    if not isinstance(template, dict) or template.get("tunable") is not True:
+        return None
+    controls = _CACHE["controls"].get(str(template.get("id") or ""))
+    return controls if isinstance(controls, dict) else None
+
+
+def _override_slot_limit(template, schema):
+    """How many focus slots one media_focus array may address."""
+    limits = []
+    declared = _override_schema_slots(schema).get("max")
+    for candidate in (declared, template.get("required_visuals_max")):
+        if (
+            not isinstance(candidate, bool) and isinstance(candidate, int)
+            and 0 < candidate <= MEDIA_FOCUS_SLOT_LIMIT
+        ):
+            limits.append(candidate)
+    return min(limits) if limits else MEDIA_FOCUS_SLOT_LIMIT
+
+
+def _preview_lookup_record(username, preview_id, preview_lookup=None):
+    """Read one owner-scoped preview record (injectable for unit tests)."""
+    if callable(preview_lookup):
+        return preview_lookup(username, preview_id)
+    if not username:
+        return None
+    try:
+        from .core import jdb
+        from . import matrix_template_submission
+        return matrix_template_submission.get_preview(jdb, username, preview_id)
+    except Exception as exc:
+        print(
+            "[matrix-template-preview] 预览记录暂不可读 id=%s: %s"
+            % (preview_id, str(exc)[:160]), flush=True,
+        )
+        return None
+
+
+def _resolve_template_tuning(body, template, username, preview_lookup=None):
+    """Validate template_revision/overrides/preview_id for one request.
+
+    Returns (overrides, template_revision, preview_record).  The legacy path
+    (no fine-tune fields) returns empty values so today's payloads stay
+    byte-identical.  Tunable-only enforcement and an explicitly rejected batch
+    extension live here because every submission path funnels through
+    validate_payload.
+    """
+    revision = str(body.get("template_revision") or "").strip().lower()
+    overrides_present = body.get("overrides") not in (None, {})
+    preview_id = str(body.get("preview_id") or "").strip()
+    batch = bool(
+        body.get("batch_id") or body.get("batch_index") is not None
+        or body.get("batch_size") is not None
+    )
+    if not (overrides_present or revision or preview_id):
+        return {}, "", None
+    if batch:
+        raise ValueError("批量生成暂不支持模板参数微调，请改用单条生成")
+    if revision and not re.fullmatch(r"[0-9a-f]{64}", revision):
+        raise ValueError("模板版本无效，请重新读取模板可调范围")
+    controls = _tunable_template_controls(template)
+    if controls is None:
+        raise ValueError(
+            "当前模板暂不支持参数微调，请选择支持微调的模板"
+        )
+    if not revision:
+        raise ValueError("参数微调需要同时提供 template_revision")
+    if revision != controls["template_revision"]:
+        raise ValueError("模板样式已更新，请重新预览后再提交")
+    overrides = (
+        normalize_overrides(
+            body.get("overrides"),
+            max_slots=_override_slot_limit(template, controls["overrides_schema"]),
+        )
+        if overrides_present else {}
+    )
+    record = None
+    if preview_id:
+        if not PREVIEW_ID_RE.fullmatch(preview_id):
+            raise ValueError("预览标识无效，请重新预览")
+        record = _preview_lookup_record(username, preview_id, preview_lookup)
+        if not isinstance(record, dict):
+            raise ValueError("预览已过期或不属于当前账号，请重新预览")
+        if str(record.get("preview_id") or "") != preview_id:
+            raise ValueError("预览已过期或不属于当前账号，请重新预览")
+        if str(record.get("template_id") or "") != str(template.get("id") or ""):
+            raise ValueError("这次预览的是其他模板，请重新预览")
+        if str(record.get("template_revision") or "") != controls["template_revision"]:
+            raise ValueError("模板样式已更新，请重新预览")
+        frozen_overrides = record.get("overrides")
+        if not isinstance(frozen_overrides, dict):
+            frozen_overrides = {}
+        if overrides and overrides != frozen_overrides:
+            raise ValueError("预览参数与本次提交不一致，请重新预览或沿用预览参数")
+        overrides = frozen_overrides
+    return overrides, revision, record
+
+
+def _preview_materials_match(resolved, frozen):
+    """True when resolved uploads are exactly the previewed frozen materials."""
+    def shape(items):
+        return [
+            {
+                key: item.get(key) for key in
+                ("sha256", "media_type", "clip_start_seconds")
+                if item.get(key) is not None
+            }
+            for item in items if isinstance(item, dict)
+        ]
+    return bool(frozen) and shape(resolved) == shape(frozen)
+
+
+def preview_input_fingerprint(payload):
+    """Owner-independent identity of one preview's input (text + media + params)."""
+    if not isinstance(payload, dict):
+        raise ValueError("预览参数无效")
+    identity = {
+        "top_text": " ".join(str(payload.get("top_text") or "").split()),
+        "bottom_text": " ".join(str(payload.get("bottom_text") or "").split()),
+        "template_id": str(payload.get("template_id") or ""),
+        "font_family": str(payload.get("font_family") or ""),
+        "material_policy": str(payload.get("material_policy") or ""),
+        "bgm": bool(payload.get("bgm")),
+        "user_materials": [
+            {
+                key: item.get(key) for key in
+                ("sha256", "media_type", "clip_start_seconds")
+                if item.get(key) is not None
+            }
+            for item in (payload.get("user_materials") or [])
+            if isinstance(item, dict)
+        ] if isinstance(payload.get("user_materials"), list) else [],
+        "template_revision": str(payload.get("template_revision") or ""),
+        "overrides": (
+            payload.get("overrides")
+            if isinstance(payload.get("overrides"), dict) else {}
+        ),
+    }
+    encoded = json.dumps(
+        identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def validate_payload(
         raw, username="", *, trusted_semantic_layout=None,
         trusted_frozen_execution=False, allow_shared_materials=None,
-        public_only_materials=False):
+        public_only_materials=False, for_preview=False, preview_lookup=None):
     if isinstance(raw, dict) and raw.get("mode") == "timeline":
         from . import timeline_compose
         return timeline_compose.validate_payload(raw, username)
@@ -815,6 +1221,11 @@ def validate_payload(
     )
     if template is None:
         raise ValueError("请选择有效模板")
+    # 参数微调（合同 v1）：只有渲染侧声明 tunable 的模板接受 template_revision/
+    # overrides/preview_id；其余模板与旧路径完全一致（不产生任何新字段）。
+    overrides, template_revision, preview_record = _resolve_template_tuning(
+        body, template, username, preview_lookup,
+    )
     font_family = str(body.get("font_family") or "").strip()
     font_selectable = template.get("font_selectable") is not False
     if (
@@ -876,6 +1287,12 @@ def validate_payload(
     user_material_count = (
         len(raw_user_materials) if isinstance(raw_user_materials, list) else 0
     )
+    if not user_material_count and preview_record is not None:
+        # 带 preview_id 且未重传素材：沿用预览冻结的同一批素材（合同 §3.5）。
+        user_material_count = len([
+            item for item in (preview_record.get("materials") or [])
+            if isinstance(item, dict)
+        ])
     maximum_visuals = template.get("required_visuals_max")
     if (
         1 <= user_material_count <= 20
@@ -911,6 +1328,20 @@ def validate_payload(
         trusted_frozen=trusted_frozen_execution,
         video_only=video_only,
     )
+    if preview_record is not None:
+        frozen_materials = [
+            dict(item) for item in (preview_record.get("materials") or [])
+            if isinstance(item, dict)
+        ]
+        if user_materials is None:
+            if not frozen_materials:
+                raise ValueError("预览记录缺少素材信息，请重新预览")
+            user_materials = frozen_materials
+        elif _preview_materials_match(user_materials, frozen_materials):
+            user_materials = frozen_materials
+        else:
+            raise ValueError("这次提交的素材与预览不一致，请重新预览")
+    font_applied = font_family if (font_family and font_selectable) else ""
     # 素材策略（2026-09-12 生产实锤 #8482 + #8629 合并定稿）：
     # 带本人素材 -> owned_public：渲染端只在该策略下接受本人素材（ref-* 最多 3 份、
     # 1~2 份 Pexels 补齐）；带素材仍判 shared 会先过 preflight 再被 /v1/jobs 拒
@@ -921,10 +1352,26 @@ def validate_payload(
         MATERIAL_POLICY_OWNED_PUBLIC if user_materials
         else MATERIAL_POLICY_SHARED
     )
+    if preview_record is not None:
+        # 预览与提交必须证明是同一份输入（合同 §3.5：完整输入摘要不含时长，
+        # 时长/运动种子来自预览冻结的 prepared）。
+        expected_fingerprint = str(preview_record.get("fingerprint") or "")
+        actual_fingerprint = preview_input_fingerprint({
+            "top_text": top, "bottom_text": bottom, "template_id": template_id,
+            "font_family": font_applied, "material_policy": material_policy,
+            "bgm": bgm, "user_materials": user_materials,
+            "template_revision": template_revision, "overrides": overrides,
+        })
+        if expected_fingerprint and expected_fingerprint != actual_fingerprint:
+            raise ValueError("本次提交与预览输入不一致，请重新预览")
     candidate = {
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
+    if overrides:
+        candidate["overrides"] = overrides
+    if template_revision:
+        candidate["template_revision"] = template_revision
     if allow_shared_materials is not None:
         candidate["material_policy"] = material_policy
     # 素材范围（2026-09-17）：受限账号（一次性邀请码注册）只允许公网素材；
@@ -962,6 +1409,13 @@ def validate_payload(
             "batch_index": batch_index,
             "batch_size": batch_size,
         })
+    if for_preview:
+        # 预览不在这里做断句与预检：渲染侧 /v1/preview-jobs 自己冻结 prepared
+        # （素材顺序/切片/总时长/运动种子）并跑真实渲染（合同 §3.2）。
+        result = dict(candidate)
+        if result.get("duration") is None:
+            result.pop("duration", None)
+        return result
     response = None
     if semantic_contract is not None:
         def validate_semantic_layout(semantic_layout):
@@ -1082,11 +1536,30 @@ def validate_payload(
                 "模板成片服务暂不可用，请稍后重试"
             ) from exc
     payload = response.get("payload") if isinstance(response, dict) else None
-    if not isinstance(payload, dict) or set(payload) != set(candidate):
+    if not isinstance(payload, dict):
         raise RuntimeError("模板成片预检结果无效")
-    if any(payload.get(key) != value for key, value in candidate.items()
-           if key != "duration"):
-        raise RuntimeError("模板成片预检参数不一致")
+    expected = set(candidate)
+    allowed_extra = {"effective_overrides"} if "overrides" in candidate else set()
+    if set(payload) - expected - allowed_extra:
+        raise RuntimeError("模板成片预检结果无效")
+    missing = expected - set(payload)
+    if missing - {"overrides"} or ("overrides" in missing and "effective_overrides" not in payload):
+        raise RuntimeError("模板成片预检结果无效")
+    for key, value in candidate.items():
+        # duration 由渲染端定稿；overrides 允许渲染端回显补齐默认值后再逐字段核对。
+        if key in {"duration", "overrides"}:
+            continue
+        if payload.get(key) != value:
+            raise RuntimeError("模板成片预检参数不一致")
+    effective_overrides = None
+    if "overrides" in candidate:
+        echoed = payload.get("overrides")
+        if not isinstance(echoed, dict):
+            echoed = payload.get("effective_overrides")
+        if not isinstance(echoed, dict) or not _overrides_agree(
+                candidate["overrides"], echoed):
+            raise RuntimeError("模板成片预检参数不一致")
+        effective_overrides = _effective_overrides(echoed, candidate["overrides"])
     authoritative_duration = payload.get("duration")
     if (isinstance(authoritative_duration, bool)
             or not isinstance(authoritative_duration, (int, float))
@@ -1101,6 +1574,22 @@ def validate_payload(
             )):
         raise RuntimeError("模板成片预检时长无效")
     result = dict(payload, duration=float(authoritative_duration))
+    result.pop("effective_overrides", None)
+    if effective_overrides is not None:
+        # 生效值规范化后回显（合同 §1）：默认值补齐，渲染端回显为准。
+        result["overrides"] = effective_overrides
+    if template_revision:
+        result["template_revision"] = template_revision
+    if preview_record is not None:
+        # preview_id 进正式提交（渲染端据此复用 prepared）；摘要随载荷冻结，
+        # 让幂等身份与「预览时冻结的那一份 prepared」绑定（不发给渲染端）。
+        result["preview_id"] = str(
+            preview_record.get("preview_id")
+            or body.get("preview_id") or ""
+        ).strip()
+        prepared_digest = str(preview_record.get("prepared_digest") or "")
+        if prepared_digest:
+            result["_prepared_digest"] = prepared_digest
     if voiceover:
         result["voiceover"] = voiceover
         if bgm:
@@ -1438,7 +1927,7 @@ def _download(value, job_id, timeout=240, deadline_at=None):
     return relative.as_posix(), total
 
 
-def _runtime(job_id):
+def _runtime(job_id, kind=FEATURE_KEY):
     """Read the durable local lifecycle anchor for one matrix job."""
     from .core import jdb
     try:
@@ -1452,7 +1941,7 @@ def _runtime(job_id):
         with closing(jdb()) as connection:
             row = connection.execute(
                 "SELECT created_at,payload FROM jobs WHERE id=? AND kind=?",
-                (numeric_id, FEATURE_KEY),
+                (numeric_id, kind),
             ).fetchone()
     except Exception:
         return {
@@ -1498,14 +1987,14 @@ def _matches_trusted_execution(raw, lifecycle):
     )
 
 
-def _durable_runtime(job_id):
+def _durable_runtime(job_id, kind=FEATURE_KEY):
     """Read recovery state without turning a database fault into no state."""
     from .core import jdb
     numeric_id = int(job_id)
     with closing(jdb()) as connection:
         row = connection.execute(
             "SELECT created_at,payload FROM jobs WHERE id=? AND kind=?",
-            (numeric_id, FEATURE_KEY),
+            (numeric_id, kind),
         ).fetchone()
     if not row:
         raise RuntimeError("模板成片生命周期记录不存在")
@@ -1518,7 +2007,7 @@ def _durable_runtime(job_id):
     }
 
 
-def _persist_runtime(job_id, **updates):
+def _persist_runtime(job_id, *, kind=FEATURE_KEY, **updates):
     """Persist provider identity/progress without changing the job state."""
     from .core import jdb
     try:
@@ -1532,7 +2021,7 @@ def _persist_runtime(job_id, **updates):
             row = connection.execute(
                 "SELECT payload FROM jobs WHERE id=? AND kind=? "
                 "AND status IN ('pending','running')",
-                (numeric_id, FEATURE_KEY),
+                (numeric_id, kind),
             ).fetchone()
             if not row:
                 connection.rollback()
@@ -1552,7 +2041,7 @@ def _persist_runtime(job_id, **updates):
             changed = connection.execute(
                 "UPDATE jobs SET payload=? WHERE id=? AND kind=? "
                 "AND status IN ('pending','running')",
-                (json.dumps(payload, ensure_ascii=False), numeric_id, FEATURE_KEY),
+                (json.dumps(payload, ensure_ascii=False), numeric_id, kind),
             )
             connection.commit()
     except Exception:
@@ -1797,6 +2286,352 @@ def _generate(payload):
     raise RuntimeError("模板成片生成超时")
 
 
+def public_preview_lifecycle(row, now=None):
+    """Public lifecycle of one preview job (same shape as the video lifecycle)."""
+    lifecycle = public_lifecycle(row, now)
+    lifecycle["deadline_at"] = int(row["created_at"] or 0) + PREVIEW_TIMEOUT
+    return lifecycle
+
+
+def recover_preview_error(job_id, error, requeue=None):
+    """Keep one preview recoverable until its own deadline or a clear failure."""
+    try:
+        lifecycle = _durable_runtime(job_id, PREVIEW_KIND)
+    except Exception:
+        return False
+    payload = lifecycle["payload"] if isinstance(lifecycle["payload"], dict) else {}
+    runtime = payload.get("_matrix_runtime")
+    if not isinstance(runtime, dict):
+        return False
+    deadline_at = int(lifecycle["created_at"]) + PREVIEW_TIMEOUT
+    if time.time() >= deadline_at:
+        return False
+    preview_id = str(runtime.get("preview_id") or "")
+    if preview_id and PREVIEW_ID_RE.fullmatch(preview_id):
+        if not requeue:
+            return False
+        _persist_runtime(
+            job_id, kind=PREVIEW_KIND, phase="preview_retrying",
+            provider_status="unknown",
+        )
+        requeue(job_id)
+        return True
+    phase = str(runtime.get("phase") or "")
+    if phase in {"submitting", "submission_unknown"}:
+        if isinstance(error, MatrixTemplateHTTPError) and error.status in {
+                400, 401, 403, 404, 422}:
+            return False
+        if not requeue:
+            return False
+        _persist_runtime(
+            job_id, kind=PREVIEW_KIND, phase="submission_unknown",
+            provider_status="unknown",
+        )
+        requeue(job_id)
+        return True
+    return False
+
+
+_PREVIEW_FILE_LIMIT = 128 * 1024 * 1024
+
+
+def _download_preview_file(url, relative, *, expect, deadline_at, timeout=180):
+    """Stream one preview artifact into OUT_DIR with a magic-bytes check."""
+    target = OUT_DIR / relative
+    temporary = target.with_name(target.name + ".part")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(
+        _safe_file_url(url), headers={"Authorization": "Bearer " + API_TOKEN},
+    )
+    total = 0
+    try:
+        open_timeout = min(float(timeout), _remaining_budget(deadline_at))
+        with _NO_PROXY.open(
+                request, timeout=max(0.001, open_timeout)) as response, \
+                temporary.open("wb") as handle:
+            checked_at = 0.0
+            read_chunk = getattr(response, "read1", None)
+            if not callable(read_chunk):
+                read_chunk = response.read
+            while True:
+                now = time.time()
+                if now - checked_at >= 1.0:
+                    # _remaining_budget 每次都会新开数据库连接，按秒检查即可。
+                    _remaining_budget(deadline_at)
+                    checked_at = now
+                remaining = min(float(timeout), deadline_at - now)
+                if remaining <= 0:
+                    raise RuntimeError("预览生成超时")
+                _set_response_timeout(response, remaining)
+                chunk = read_chunk(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _PREVIEW_FILE_LIMIT:
+                    raise RuntimeError("预览文件超过大小限制")
+                handle.write(chunk)
+        with temporary.open("rb") as handle:
+            head = handle.read(64)
+        if expect == "jpeg":
+            if total < 256 or not head.startswith(b"\xff\xd8\xff"):
+                raise RuntimeError("预览关键帧无效")
+        elif total < 1024 or b"ftyp" not in head:
+            raise RuntimeError("预览视频无效")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return relative.as_posix(), total
+
+
+def _preview_bundle(job_id, entry, label, deadline_at):
+    """Download one version (MP4 + frames) and return main-site file paths."""
+    if not isinstance(entry, dict):
+        raise RuntimeError("预览结果缺少对比版本")
+    video_url = str(entry.get("video_url") or "")
+    if not video_url:
+        raise RuntimeError("预览结果缺少视频地址")
+    root = pathlib.Path("preview") / re.sub(r"[^A-Za-z0-9_.-]", "_", str(job_id))[:64]
+    video_file, _ = _download_preview_file(
+        video_url, root / (label + ".mp4"), expect="mp4",
+        deadline_at=deadline_at,
+    )
+    frames = []
+    raw_frames = entry.get("frames")
+    if isinstance(raw_frames, list):
+        for index, frame_url in enumerate(raw_frames[:PREVIEW_FRAME_LIMIT]):
+            if not str(frame_url or "").strip():
+                continue
+            frame_file, _ = _download_preview_file(
+                frame_url, root / ("%s_frame_%02d.jpg" % (label, index + 1)),
+                expect="jpeg", deadline_at=deadline_at, timeout=60,
+            )
+            frames.append(frame_file)
+    return {
+        "video_file": video_file,
+        "video_url": public_url(video_file, "video/mp4", private=True),
+        "frames": frames,
+        "frame_urls": [
+            public_url(frame, "image/jpeg", private=True) for frame in frames
+        ],
+        "frame_count": len(frames),
+    }
+
+
+def _override_changes(overrides):
+    """Plain-language summary of the applied parameters (effect values)."""
+    if not isinstance(overrides, dict) or not overrides:
+        return []
+    changes = []
+    title_scale = overrides.get("title_scale")
+    if isinstance(title_scale, (int, float)) and not isinstance(title_scale, bool) \
+            and abs(float(title_scale) - 1.0) > 1e-9:
+        changes.append("标题缩放 %.2f×" % float(title_scale))
+    cta_scale = overrides.get("cta_scale")
+    if isinstance(cta_scale, (int, float)) and not isinstance(cta_scale, bool) \
+            and abs(float(cta_scale) - 1.0) > 1e-9:
+        changes.append("行动文案缩放 %.2f×" % float(cta_scale))
+    for key, label in (("title_offset_y", "标题"), ("cta_offset_y", "行动文案")):
+        value = overrides.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value:
+            changes.append("%s%s %d px" % (label, "上移" if value < 0 else "下移", abs(value)))
+    color = overrides.get("accent_color")
+    if isinstance(color, str) and color:
+        changes.append("强调色 " + color.upper())
+    focuses = overrides.get("media_focus")
+    if isinstance(focuses, list) and focuses:
+        changes.append(
+            "第 %s 画面焦点已移动"
+            % "、".join(str(item.get("slot")) for item in focuses
+                        if isinstance(item, dict))
+        )
+    return changes
+
+
+def preview_payload(payload, username="", *, allow_shared_materials=None,
+                    public_only_materials=False, preview_lookup=None):
+    """Validate one matrix-template-preview request (single generation only)."""
+    if not isinstance(payload, dict):
+        raise ValueError("预览参数无效")
+    unsupported = sorted(set(payload) - PREVIEW_FIELDS)
+    if unsupported:
+        label = _PREVIEW_UNSUPPORTED_LABELS.get(unsupported[0], unsupported[0])
+        raise ValueError("预览不支持参数：" + label)
+    if not str(payload.get("template_revision") or "").strip():
+        raise ValueError("预览需要提供 template_revision，请先读取模板可调范围")
+    return validate_payload(
+        payload, username,
+        allow_shared_materials=allow_shared_materials,
+        public_only_materials=public_only_materials,
+        for_preview=True, preview_lookup=preview_lookup,
+    )
+
+
+def generate_preview(payload):
+    """Private worker entry for matrix_template_preview (never a public kind)."""
+    from . import task_termination
+    raw = dict(payload or {})
+    job_id = raw.get("_job_id")
+    if not str(job_id or "").isdigit():
+        return _generate_preview(payload)
+    from .core import jdb
+    with task_termination.scope(int(job_id), jdb):
+        return _generate_preview(payload)
+
+
+def _generate_preview(payload):
+    from . import matrix_template_submission
+    raw = dict(payload or {})
+    local_job = str(raw.get("_job_id") or uuid.uuid4().hex)
+    username = str(raw.get("_username") or "")
+    frozen = {
+        key: value for key, value in raw.items()
+        if not str(key).startswith("_")
+    }
+    lifecycle = _runtime(local_job, PREVIEW_KIND)
+    deadline_at = int(lifecycle["created_at"]) + PREVIEW_TIMEOUT
+    _remaining_budget(deadline_at, "预览生成超时")
+    stored = lifecycle.get("payload")
+    runtime = (
+        stored.get("_matrix_runtime") if isinstance(stored, dict) else None
+    )
+    if not isinstance(runtime, dict):
+        runtime = {}
+    preview_id = str(runtime.get("preview_id") or "")
+    if preview_id and not PREVIEW_ID_RE.fullmatch(preview_id):
+        raise RuntimeError("预览恢复信息无效")
+    if not preview_id:
+        if not _persist_runtime(
+                local_job, kind=PREVIEW_KIND, phase="submitting",
+                deadline_at=deadline_at):
+            raise RuntimeError("预览生命周期状态保存失败")
+        request_id = "matrix-template-preview-" + re.sub(
+            r"[^A-Za-z0-9_.:-]", "-", local_job,
+        )[:64]
+        remote = _request(
+            "POST", "/v1/preview-jobs", _provider_payload(frozen),
+            request_id=request_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
+        )
+        preview_id = str(remote.get("preview_id") or "")
+        if not PREVIEW_ID_RE.fullmatch(preview_id):
+            raise RuntimeError("预览服务没有返回有效预览标识")
+        from .task_termination import provider_submitted
+        provider_submitted(preview_id)
+        _remaining_budget(deadline_at)
+        _persist_runtime(
+            local_job, kind=PREVIEW_KIND, phase="preview_queued",
+            preview_id=preview_id, provider_status="queued",
+        )
+    execution_deadline = time.monotonic() + min(
+        PREVIEW_TIMEOUT, max(0.0, deadline_at - time.time()),
+    )
+    last_status = ""
+    while time.monotonic() < execution_deadline and time.time() < deadline_at:
+        current = _request(
+            "GET", "/v1/preview-jobs/" + preview_id,
+            timeout=min(20, _remaining_budget(deadline_at)),
+        )
+        _remaining_budget(deadline_at)
+        status = str(current.get("status") or "")
+        if status != last_status:
+            _persist_runtime(
+                local_job, kind=PREVIEW_KIND,
+                phase="preview_rendering" if status == "rendering" else "preview_queued",
+                preview_id=preview_id, provider_status=status or "unknown",
+            )
+            last_status = status
+        if status == "ready":
+            return _preview_result(
+                local_job, username, frozen, current, preview_id, deadline_at,
+            )
+        if status in {"failed", "expired"}:
+            reason = str(
+                current.get("error") or current.get("reason")
+                or "预览生成失败"
+            )[:300]
+            raise ValueError("预览未生成：" + reason)
+        from .task_termination import sleep
+        sleep(POLL_INTERVAL)
+    raise RuntimeError("预览生成超时")
+
+
+def _preview_result(job_id, username, frozen, current, preview_id, deadline_at):
+    from . import matrix_template_submission
+    _persist_runtime(job_id, kind=PREVIEW_KIND, phase="preview_delivering")
+    resources = current.get("resources")
+    if not isinstance(resources, dict):
+        raise RuntimeError("预览结果不完整")
+    default = _preview_bundle(
+        job_id, resources.get("default"), "default", deadline_at,
+    )
+    candidate = _preview_bundle(
+        job_id, resources.get("candidate"), "candidate", deadline_at,
+    )
+    prepared = current.get("prepared")
+    prepared = prepared if isinstance(prepared, dict) else {}
+    prepared_digest = str(prepared.get("digest") or "")
+    expires_at = int(current.get("expires_at") or 0)
+    if expires_at <= int(time.time()):
+        expires_at = int(time.time()) + PREVIEW_DEFAULT_TTL_SECONDS
+    echoed = current.get("effective_overrides")
+    sent_overrides = frozen.get("overrides") if isinstance(
+        frozen.get("overrides"), dict) else {}
+    if not isinstance(echoed, dict):
+        echoed = current.get("overrides")
+    if isinstance(echoed, dict) and not _overrides_agree(sent_overrides, echoed):
+        raise RuntimeError("预览回显参数不一致")
+    effective_overrides = _effective_overrides(
+        echoed if isinstance(echoed, dict) else {}, sent_overrides,
+    )
+    template_id = str(
+        frozen.get("template_id") or current.get("template_id") or ""
+    )
+    template_revision = str(
+        current.get("template_revision") or frozen.get("template_revision") or ""
+    ).strip().lower()
+    if not template_revision:
+        raise RuntimeError("预览结果缺少模板版本")
+    fingerprint = preview_input_fingerprint(frozen)
+    stored = matrix_template_submission.record_preview(
+        _jobs_db(), username=username, preview_id=preview_id,
+        job_id=job_id if str(job_id).isdigit() else None,
+        template_id=template_id, template_revision=template_revision,
+        fingerprint=fingerprint, overrides=sent_overrides,
+        effective_overrides=effective_overrides,
+        materials=frozen.get("user_materials") or [],
+        prepared_digest=prepared_digest, expires_at=expires_at,
+    )
+    matrix_template_submission.prune_previews(_jobs_db())
+    response = {
+        "type": "matrix_template_preview",
+        "status": "done",
+        "phase": "done",
+        "preview_id": preview_id,
+        "template_id": template_id,
+        "template_revision": template_revision,
+        "overrides": sent_overrides,
+        "effective_overrides": effective_overrides,
+        "changes": _override_changes(effective_overrides),
+        "default": default,
+        "candidate": candidate,
+        "checks": current.get("checks") if isinstance(
+            current.get("checks"), dict) else {},
+        "prepared": {
+            "digest": prepared_digest,
+            "valid_until": int(prepared.get("valid_until") or expires_at),
+        },
+        "expires_at": expires_at,
+        "record_expires_at": int(stored.get("expires_at") or expires_at),
+        "font_selection": {},
+    }
+    return response
+
+
+def _jobs_db():
+    from .core import jdb
+    return jdb
+
+
 def cost(payload):
     if isinstance(payload, dict) and payload.get("mode") == "timeline":
         from . import timeline_compose
@@ -1805,3 +2640,6 @@ def cost(payload):
 
 
 HANDLERS = {"matrix_template_video": generate}
+# 预览处理器不进 HANDLERS：registry 的公开列表决定 /api/gen/<kind> 路由与 /health caps，
+# 五条测试锁定了这份清单，预览也必须没有公开直提路由（只能走 /api/gen/matrix-template/preview）。
+PRIVATE_HANDLERS = {PREVIEW_KIND: generate_preview}

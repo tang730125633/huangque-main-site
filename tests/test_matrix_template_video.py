@@ -57,6 +57,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
         cls.module = importlib.import_module("content_domains.matrix_template_video")
 
     def setUp(self):
+        if str(SERVER) not in sys.path:
+            sys.path.insert(0, str(SERVER))
         self.module._CACHE.update({
             "at": 0.0,
             "templates": [],
@@ -4427,6 +4429,672 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertTrue(result["action"]["enabled"])
         self.assertEqual("生成视频 · 5 点", result["action"]["text"])
         self.assertTrue(result["cleared"])
+
+
+if str(SERVER) not in sys.path:
+    sys.path.insert(0, str(SERVER))
+from content_domains import matrix_template_submission  # noqa: E402
+
+
+def overrides_schema():
+    """Renderer-declared compact control contract (contract §3.1)."""
+    return {
+        "version": 1,
+        "properties": {
+            "title_scale": {
+                "type": "number", "minimum": 0.85, "maximum": 1.10, "default": 1.0,
+            },
+            "title_offset_y": {
+                "type": "integer", "minimum": -60, "maximum": 60, "default": 0,
+            },
+            "cta_scale": {
+                "type": "number", "minimum": 0.85, "maximum": 1.10, "default": 1.0,
+            },
+            "cta_offset_y": {
+                "type": "integer", "minimum": -60, "maximum": 60, "default": 0,
+            },
+            "accent_color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+            "media_focus": {
+                "type": "array", "maxItems": 3,
+                "note": "槽位 1-3，x/y 为 0-1 的相对位置",
+            },
+        },
+    }
+
+
+# 模板参数微调（合同 v1）固定装置：只有 ref-05 可调，版本号 64 位十六进制。
+TUNABLE_ID = "ref-05-changsha-white-red"
+REVISION = "b" * 64
+OTHER_REVISION = "c" * 64
+
+
+class MatrixTemplateTuningTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if str(SERVER) not in sys.path:
+            sys.path.insert(0, str(SERVER))
+        cls.module = importlib.import_module("content_domains.matrix_template_video")
+
+    def setUp(self):
+        if str(SERVER) not in sys.path:
+            sys.path.insert(0, str(SERVER))
+        self.module._CACHE.update({
+            "at": 0.0, "templates": [], "fonts": [], "controls": {},
+            "max_batch_size": 1,
+            "engine_concurrency": {"ffmpeg": 1, "hyperframes": 1},
+        })
+
+    # ---- fixtures ---------------------------------------------------------
+    def catalog(self, *, tunable=True, template_id=TUNABLE_ID, revision=REVISION):
+        template = {
+            "id": template_id, "name": "长沙白字红强调", "description": "说明",
+            "tags": ["HyperFrames"], "engine": "ffmpeg", "font_mode": "template_locked",
+            "font_selectable": False, "variant": "v05",
+            "required_visuals": 3, "required_visuals_max": 5,
+            "duration_mode": "random_integer_8_15",
+        }
+        if tunable:
+            template.update({
+                "tunable": True,
+                "template_revision": revision,
+                "overrides_schema": overrides_schema(),
+            })
+        return {
+            "templates": [template],
+            "fonts": [],
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 5},
+        }
+
+    def load_catalog(self, **kwargs):
+        with mock.patch.object(
+            self.module, "_request", return_value=self.catalog(**kwargs),
+        ):
+            return self.module.public_templates(force=True)
+
+    def preflight(self, method, path, candidate, **kwargs):
+        """Fake renderer: echo the candidate, decide duration, fill defaults."""
+        assert (method, path) == ("POST", "/v1/preflight")
+        payload = dict(candidate)
+        if payload.get("duration") in (None, ""):
+            # 时长由渲染端定稿；测试里固定为 8 秒便于断言。
+            payload["duration"] = 8.0
+        if "overrides" in candidate:
+            echoed = dict(self.module.OVERRIDE_DEFAULTS)
+            echoed.update(candidate["overrides"])
+            payload["overrides"] = {
+                key: echoed[key] for key in self.module.OVERRIDE_FIELDS
+                if key in echoed
+            }
+        return {"payload": payload}
+
+    def validate(self, body, **kwargs):
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(
+                    self.module, "_request", side_effect=self.preflight,
+                ):
+            return self.module.validate_payload(body, "alice", **kwargs)
+
+    # ---- controls ---------------------------------------------------------
+    def test_controls_report_renderer_truth_for_tunable_template(self):
+        self.load_catalog()
+        with mock.patch.object(
+            self.module, "_request", return_value=self.catalog(),
+        ):
+            for _ in range(2):
+                controls = self.module.public_template_controls(TUNABLE_ID)
+        self.assertTrue(controls["tunable"])
+        self.assertEqual(TUNABLE_ID, controls["template_id"])
+        self.assertEqual(REVISION, controls["template_revision"])
+        self.assertEqual(
+            {"title_scale", "title_offset_y", "cta_scale", "cta_offset_y",
+             "accent_color", "media_focus"},
+            set(controls["overrides_schema"]["properties"]),
+        )
+        self.assertEqual(
+            {"title_scale": 1.0, "title_offset_y": 0, "cta_scale": 1.0,
+             "cta_offset_y": 0},
+            controls["defaults"],
+        )
+        self.assertEqual({"max": 3, "note": "槽位 1-3，x/y 为 0-1 的相对位置"},
+                         controls["slots"])
+
+    def test_controls_never_fabricate_fields_for_untunable_template(self):
+        self.load_catalog(tunable=False)
+        with mock.patch.object(
+            self.module, "_request", return_value=self.catalog(tunable=False),
+        ):
+            controls = self.module.public_template_controls(TUNABLE_ID)
+        self.assertFalse(controls["tunable"])
+        self.assertNotIn("template_revision", controls)
+        self.assertNotIn("overrides_schema", controls)
+        self.assertNotIn("defaults", controls)
+        self.assertTrue(controls["note"])
+
+    def test_controls_require_a_known_template_id(self):
+        self.load_catalog()
+        with mock.patch.object(
+            self.module, "_request", return_value=self.catalog(),
+        ), self.assertRaises(ValueError):
+            self.module.public_template_controls("../etc/passwd")
+        with mock.patch.object(
+            self.module, "_request", return_value=self.catalog(),
+        ), self.assertRaises(ValueError):
+            self.module.public_template_controls("ref-99-missing-template")
+
+    # ---- overrides vocabulary --------------------------------------------
+    def test_overrides_are_normalized_to_the_contract_vocabulary(self):
+        normalized = self.module.normalize_overrides({
+            "media_focus": [{"slot": 2, "x": 0.655, "y": 0}, {"slot": 1, "x": 0.1, "y": 0.2}],
+            "accent_color": "#ffcf33",
+            "title_scale": 0.9,
+            "title_offset_y": -30,
+        }, max_slots=3)
+        self.assertEqual({
+            "title_scale": 0.9, "title_offset_y": -30, "accent_color": "#FFCF33",
+            "media_focus": [
+                {"slot": 1, "x": 0.1, "y": 0.2},
+                {"slot": 2, "x": 0.655, "y": 0},
+            ],
+        }, normalized)
+        self.assertEqual({}, self.module.normalize_overrides(None))
+        self.assertEqual({}, self.module.normalize_overrides({}))
+
+    def test_overrides_rejections_are_explicit(self):
+        cases = [
+            ({"title_scale": True}, ValueError),
+            ({"title_scale": float("nan")}, ValueError),
+            ({"title_scale": float("inf")}, ValueError),
+            ({"title_scale": "0.9"}, ValueError),
+            ({"title_scale": 1.2}, ValueError),
+            ({"cta_scale": 0.5}, ValueError),
+            ({"title_offset_y": True}, ValueError),
+            ({"title_offset_y": 61}, ValueError),
+            ({"title_offset_y": 0.5}, ValueError),
+            ({"cta_offset_y": -61}, ValueError),
+            ({"accent_color": "red"}, ValueError),
+            ({"accent_color": "#ff00867"}, ValueError),
+            ({"subtitle_color": "#fff"}, ValueError),
+            ({"media_focus": []}, ValueError),
+            ({"media_focus": [{"slot": 1, "x": 0.5}]}, ValueError),
+            ({"media_focus": [{"slot": 1, "x": 0.5, "y": 0.5, "z": 0}]}, ValueError),
+            ({"media_focus": [{"slot": 1, "x": True, "y": 0.5}]}, ValueError),
+            ({"media_focus": [{"slot": 0, "x": 0.5, "y": 0.5}]}, ValueError),
+            ({"media_focus": [{"slot": 4, "x": 0.5, "y": 0.5}]}, ValueError),
+            ({"media_focus": [{"slot": 1, "x": 1.5, "y": 0.5}]}, ValueError),
+            ({"media_focus": [{"slot": 1, "x": 0.5, "y": 0.5},
+                              {"slot": 1, "x": 0.6, "y": 0.5}]}, ValueError),
+            ({"media_focus": "slot 2"}, ValueError),
+            ("title_scale", ValueError),
+        ]
+        for value, error in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(error):
+                    self.module.normalize_overrides(value, max_slots=3)
+
+    # ---- generate extension ----------------------------------------------
+    def test_generate_accepts_revision_and_overrides_and_echoes_effective(self):
+        self.load_catalog()
+        result = self.validate({
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID,
+            "template_revision": REVISION.upper(),
+            "overrides": {"title_scale": 0.9, "title_offset_y": -30,
+                          "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}]},
+        })
+        self.assertEqual(REVISION, result["template_revision"])
+        self.assertEqual({
+            "title_scale": 0.9, "title_offset_y": -30, "cta_scale": 1.0,
+            "cta_offset_y": 0, "media_focus": [{"slot": 2, "x": 0.65, "y": 0.5}],
+        }, result["overrides"])
+        self.assertNotIn("effective_overrides", result)
+        self.assertNotIn("preview_id", result)
+
+    def test_generate_keeps_legacy_payload_byte_identical(self):
+        self.load_catalog()
+        result = self.validate({
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID,
+        })
+        self.assertEqual({
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID, "bgm": True, "duration": 8.0,
+        }, result)
+        self.assertNotIn("overrides", result)
+        self.assertNotIn("template_revision", result)
+
+    def test_generate_rejects_stale_and_missing_revision(self):
+        self.load_catalog()
+        with self.assertRaises(ValueError) as stale:
+            self.validate({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "template_revision": OTHER_REVISION,
+                "overrides": {"title_scale": 0.9},
+            })
+        self.assertIn("模板样式已更新", str(stale.exception))
+        with self.assertRaises(ValueError) as missing:
+            self.validate({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID,
+                "overrides": {"title_scale": 0.9},
+            })
+        self.assertIn("template_revision", str(missing.exception))
+        with self.assertRaises(ValueError):
+            self.validate({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "template_revision": "not-a-revision",
+                "overrides": {"title_scale": 0.9},
+            })
+
+    def test_generate_refuses_overrides_on_untunable_templates(self):
+        self.load_catalog(tunable=False)
+        with self.assertRaises(ValueError) as error:
+            self.validate({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "template_revision": REVISION,
+                "overrides": {"title_scale": 0.9},
+            })
+        self.assertIn("暂不支持参数微调", str(error.exception))
+
+    def test_generate_rejects_fine_tune_fields_on_batch(self):
+        self.load_catalog()
+        batch = {
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID, "template_revision": REVISION,
+            "overrides": {"title_scale": 0.9},
+            "batch_id": "a" * 32, "batch_index": 1, "batch_size": 2,
+        }
+        with self.assertRaises(ValueError) as error:
+            self.validate(batch)
+        self.assertIn("批量生成暂不支持", str(error.exception))
+        self.assertIn("微调", str(error.exception))
+
+    def test_generate_rejects_renderer_that_drops_sent_override(self):
+        self.load_catalog()
+
+        def preflight(method, path, candidate, **kwargs):
+            result = self.preflight(method, path, candidate, **kwargs)
+            result["payload"]["overrides"] = dict(
+                result["payload"]["overrides"], title_scale=1.1,
+            )
+            return result
+
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(self.module, "_request", side_effect=preflight), \
+                self.assertRaises(RuntimeError):
+            self.module.validate_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "template_revision": REVISION,
+                "overrides": {"title_scale": 0.9},
+            }, "alice")
+
+    def test_generate_accepts_renderer_effective_overrides_key(self):
+        self.load_catalog()
+
+        def preflight(method, path, candidate, **kwargs):
+            payload = dict(candidate)
+            if payload.get("duration") in (None, ""):
+                payload["duration"] = 8.0
+            payload.pop("overrides", None)
+            payload["effective_overrides"] = {
+                "title_scale": 0.9, "title_offset_y": -30,
+                "cta_scale": 1.0, "cta_offset_y": 0,
+            }
+            return {"payload": payload}
+
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(self.module, "_request", side_effect=preflight):
+            result = self.module.validate_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "template_revision": REVISION,
+                "overrides": {"title_scale": 0.9, "title_offset_y": -30},
+            }, "alice")
+        self.assertEqual(0.9, result["overrides"]["title_scale"])
+        self.assertEqual(0, result["overrides"]["cta_offset_y"])
+
+    # ---- preview ----------------------------------------------------------
+    def test_preview_payload_rejects_unsupported_fields(self):
+        self.load_catalog()
+        for extra in (
+            {"voiceover": {"text": "口播", "voice": "public_voice"}},
+            {"duration": 12},
+            {"batch_id": "a" * 32, "batch_index": 1, "batch_size": 2},
+            {"bgm_volume": 0.2},
+            {"preview_id": "p" * 8},
+        ):
+            with self.subTest(extra=extra), self.assertRaises(ValueError) as error:
+                self.module.preview_payload({
+                    "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                    "template_id": TUNABLE_ID, "template_revision": REVISION,
+                    **extra,
+                }, "alice")
+            self.assertIn("预览不支持参数", str(error.exception))
+
+    def test_preview_payload_requires_revision(self):
+        self.load_catalog()
+        with self.assertRaises(ValueError) as error:
+            self.module.preview_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID,
+            }, "alice")
+        self.assertIn("template_revision", str(error.exception))
+
+    def test_preview_payload_validates_like_generate_without_preflight(self):
+        self.load_catalog()
+        with mock.patch.object(self.module, "_request") as request, \
+                mock.patch.object(self.module, "require_available"):
+            payload = self.module.preview_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "template_revision": REVISION,
+                "overrides": {"title_scale": 0.9},
+            }, "alice")
+        self.assertEqual(REVISION, payload["template_revision"])
+        self.assertEqual({"title_scale": 0.9}, payload["overrides"])
+        self.assertEqual(True, payload["bgm"])
+        self.assertNotIn("semantic_layout", payload)
+        self.assertNotIn("duration", payload)
+        request.assert_not_called()
+
+    def test_preview_worker_renders_two_versions_and_records_identity(self):
+        self.load_catalog()
+        preview_id = "preview-" + "d" * 16
+        prepared = {"digest": "e" * 64, "valid_until": 1_900_000_000}
+        responses = [
+            {"preview_id": preview_id, "status": "queued", "expires_at": 1_800_000_000,
+             "template_revision": REVISION,
+             "effective_overrides": {"title_scale": 0.9, "title_offset_y": -30}},
+            {"preview_id": preview_id, "status": "rendering"},
+            {"preview_id": preview_id, "status": "ready", "template_revision": REVISION,
+             "expires_at": 1_800_000_000,
+             "effective_overrides": {"title_scale": 0.9, "title_offset_y": -30},
+             "resources": {
+                 "default": {"video_url": "/v1/preview-files/default",
+                             "frames": ["/v1/preview-files/d1", "/v1/preview-files/d2"]},
+                 "candidate": {"video_url": "/v1/preview-files/candidate",
+                               "frames": ["/v1/preview-files/c1"]},
+             },
+             "checks": {"text_overflow": False, "contrast": "ok"},
+             "prepared": prepared},
+        ]
+        payload = {
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID, "bgm": True, "template_revision": REVISION,
+            "overrides": {"title_scale": 0.9, "title_offset_y": -30},
+            "user_materials": [{"sha256": "f" * 64, "media_type": "video"}],
+            "_username": "alice", "_job_id": 501,
+        }
+        recorded = {}
+
+        def fake_download(url, relative, *, expect, deadline_at, timeout=180):
+            assert expect in {"mp4", "jpeg"}
+            return relative.as_posix(), 4096
+
+        with mock.patch.object(
+            self.module, "_request", side_effect=responses,
+        ) as request, mock.patch.object(
+            self.module, "_runtime", return_value={
+                "created_at": int(self.module.time.time()), "payload": {},
+                "trusted_execution": False,
+            },
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ), mock.patch.object(
+            self.module, "_download_preview_file", side_effect=fake_download,
+        ), mock.patch.object(
+            self.module, "public_url", side_effect=lambda rel, *a, **k: "/api/gen/file/" + rel,
+        ), mock.patch.object(
+            matrix_template_submission, "record_preview",
+            side_effect=lambda *a, **k: recorded.update(k) or dict(
+                k, username=a[1] if len(a) > 1 else "alice",
+            ),
+        ), mock.patch.object(
+            matrix_template_submission, "prune_previews", return_value=0,
+        ), mock.patch.object(self.module.time, "sleep"):
+            result = self.module.generate_preview(payload)
+
+        self.assertEqual("done", result["status"])
+        self.assertEqual(preview_id, result["preview_id"])
+        self.assertEqual(REVISION, result["template_revision"])
+        self.assertEqual("e" * 64, result["prepared"]["digest"])
+        self.assertEqual(
+            {"text_overflow": False, "contrast": "ok"}, result["checks"],
+        )
+        self.assertEqual(2, result["default"]["frame_count"])
+        self.assertEqual(1, result["candidate"]["frame_count"])
+        self.assertTrue(result["default"]["video_url"].startswith("/api/gen/file/"))
+        self.assertNotIn("/v1/preview-files", json.dumps(result))
+        self.assertEqual({
+            "title_scale": 0.9, "title_offset_y": -30, "cta_scale": 1.0,
+            "cta_offset_y": 0,
+        }, result["effective_overrides"])
+        self.assertEqual(["标题缩放 0.90×", "标题上移 30 px"],
+                         result["changes"])
+        # The record binds the same frozen input the paid submit must replay.
+        self.assertEqual(
+            self.module.preview_input_fingerprint(payload),
+            recorded["fingerprint"],
+        )
+        self.assertEqual([{"sha256": "f" * 64, "media_type": "video"}],
+                         recorded["materials"])
+        self.assertEqual("/v1/preview-jobs", request.call_args_list[0].args[1])
+        self.assertEqual(
+            preview_id, request.call_args_list[1].args[1].rsplit("/", 1)[-1],
+        )
+
+    def test_preview_worker_surfaces_renderer_reason(self):
+        self.load_catalog()
+        with mock.patch.object(self.module, "_request", side_effect=[
+            {"preview_id": "preview-" + "d" * 16, "status": "queued"},
+            {"preview_id": "preview-" + "d" * 16, "status": "failed",
+             "error": "标题按 1.10 倍会超出安全区，建议 ≤1.05"},
+        ]), mock.patch.object(
+            self.module, "_runtime", return_value={
+                "created_at": int(self.module.time.time()), "payload": {},
+                "trusted_execution": False,
+            },
+        ), mock.patch.object(
+            self.module, "_persist_runtime", return_value=True,
+        ), mock.patch.object(self.module.time, "sleep"), self.assertRaises(ValueError) as error:
+            self.module.generate_preview({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "bgm": True, "template_revision": REVISION,
+                "overrides": {"title_scale": 1.1},
+                "_username": "alice", "_job_id": 502,
+            })
+        self.assertIn("1.05", str(error.exception))
+
+    def test_preview_worker_resumes_without_reopening_a_preview(self):
+        self.load_catalog()
+        preview_id = "preview-" + "e" * 16
+        with mock.patch.object(self.module, "_request", side_effect=[
+            {"preview_id": preview_id, "status": "ready", "template_revision": REVISION,
+             "expires_at": 1_800_000_000,
+             "effective_overrides": {"title_scale": 0.9},
+             "resources": {
+                 "default": {"video_url": "/v1/preview-files/default", "frames": []},
+                 "candidate": {"video_url": "/v1/preview-files/candidate", "frames": []},
+             },
+             "prepared": {"digest": "f" * 64}},
+        ]) as request, mock.patch.object(
+            self.module, "_runtime", return_value={
+                "created_at": int(self.module.time.time()),
+                "payload": {"_matrix_runtime": {"preview_id": preview_id}},
+                "trusted_execution": True,
+            },
+        ), mock.patch.object(
+            self.module, "_download_preview_file",
+            side_effect=lambda url, relative, **k: (relative.as_posix(), 4096),
+        ), mock.patch.object(
+            self.module, "public_url", return_value="/api/gen/file/x",
+        ), mock.patch.object(
+            matrix_template_submission, "record_preview", return_value={},
+        ), mock.patch.object(
+            matrix_template_submission, "prune_previews", return_value=0,
+        ), mock.patch.object(self.module.time, "sleep"):
+            result = self.module.generate_preview({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "bgm": True, "template_revision": REVISION,
+                "overrides": {"title_scale": 0.9},
+                "_username": "alice", "_job_id": 503,
+            })
+        self.assertEqual(preview_id, result["preview_id"])
+        self.assertEqual(1, request.call_count)
+        self.assertEqual(
+            "/v1/preview-jobs/" + preview_id, request.call_args_list[0].args[1],
+        )
+
+    # ---- generate with preview_id ----------------------------------------
+    def preview_record(self, **overrides):
+        base = {
+            "preview_id": "preview-" + "d" * 16,
+            "username": "alice", "template_id": TUNABLE_ID,
+            "template_revision": REVISION,
+            "overrides": {"title_scale": 0.9, "title_offset_y": -30},
+            "effective_overrides": {"title_scale": 0.9, "title_offset_y": -30,
+                                    "cta_scale": 1.0, "cta_offset_y": 0},
+            "materials": [{"sha256": "a" * 64, "media_type": "video"}],
+            "prepared_digest": "d" * 64,
+            "expires_at": 4_000_000_000,
+        }
+        base.update(overrides)
+        base["fingerprint"] = self.module.preview_input_fingerprint({
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID, "font_family": "", "bgm": True,
+            "material_policy": "owned_public",
+            "user_materials": base["materials"],
+            "template_revision": base["template_revision"],
+            "overrides": base["overrides"],
+        })
+        return base
+
+    def test_generate_with_preview_id_inherits_frozen_materials(self):
+        self.load_catalog()
+        record = self.preview_record()
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(self.module, "_request", side_effect=self.preflight):
+            result = self.module.validate_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "bgm": True,
+                "template_revision": REVISION,
+                "preview_id": record["preview_id"],
+            }, "alice", preview_lookup=lambda user, pid: record)
+        self.assertEqual([{"sha256": "a" * 64, "media_type": "video"}],
+                         result["user_materials"])
+        self.assertEqual(record["preview_id"], result["preview_id"])
+        self.assertEqual("d" * 64, result["_prepared_digest"])
+        # 生效值：预览时冻结的参数 + 合同默认值（渲染端回显为准）。
+        self.assertEqual(record["effective_overrides"], result["overrides"])
+
+    def test_generate_with_preview_id_rejects_mismatched_input(self):
+        self.load_catalog()
+        record = self.preview_record()
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(
+                    self.module, "_request", side_effect=self.preflight,
+                ), self.assertRaises(ValueError) as error:
+            self.module.validate_payload({
+                "top_text": "换了标题", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "bgm": True,
+                "template_revision": REVISION,
+                "preview_id": record["preview_id"],
+            }, "alice", preview_lookup=lambda user, pid: record)
+        self.assertIn("与预览输入不一致", str(error.exception))
+
+    def test_generate_with_preview_id_rejects_expired_or_foreign_record(self):
+        self.load_catalog()
+        for lookup in (lambda user, pid: None,
+                       lambda user, pid: self.preview_record(
+                           preview_id="preview-" + "f" * 16)):
+            with self.subTest(lookup=lookup), mock.patch.object(
+                    self.module, "require_available",
+            ), self.assertRaises(ValueError):
+                self.module.validate_payload({
+                    "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                    "template_id": TUNABLE_ID, "bgm": True,
+                    "template_revision": REVISION, "preview_id": "preview-deadbeef",
+                }, "alice", preview_lookup=lookup)
+
+    def test_generate_with_preview_id_rejects_different_parameters(self):
+        self.load_catalog()
+        record = self.preview_record()
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(
+                    self.module, "_request", side_effect=self.preflight,
+                ), self.assertRaises(ValueError) as error:
+            self.module.validate_payload({
+                "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                "template_id": TUNABLE_ID, "bgm": True,
+                "template_revision": REVISION,
+                "preview_id": record["preview_id"],
+                "overrides": {"title_scale": 1.05},
+            }, "alice", preview_lookup=lambda user, pid: record)
+        self.assertIn("预览参数与本次提交不一致", str(error.exception))
+
+
+class MatrixTemplatePreviewIndexFingerprintTests(unittest.TestCase):
+    """The fingerprint must ignore field order and cover every render identity field."""
+
+    @classmethod
+    def setUpClass(cls):
+        if str(SERVER) not in sys.path:
+            sys.path.insert(0, str(SERVER))
+        cls.module = importlib.import_module("content_domains.matrix_template_video")
+
+    def test_fingerprint_ignores_field_order(self):
+        first = {
+            "top_text": "长沙  必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID, "bgm": True,
+            "template_revision": REVISION,
+            "overrides": {"title_scale": 0.9, "title_offset_y": -30},
+        }
+        second = {
+            "overrides": {"title_offset_y": -30, "title_scale": 0.9},
+            "template_revision": REVISION, "bgm": True,
+            "template_id": TUNABLE_ID, "bottom_text": "评论区留下关键词",
+            "top_text": "长沙 必吃",
+        }
+        self.assertEqual(
+            self.module.preview_input_fingerprint(first),
+            self.module.preview_input_fingerprint(second),
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                json.dumps(
+                    {
+                        "top_text": "长沙 必吃", "bottom_text": "评论区留下关键词",
+                        "template_id": TUNABLE_ID, "font_family": "",
+                        "material_policy": "", "bgm": True,
+                        "user_materials": [], "template_revision": REVISION,
+                        "overrides": {"title_scale": 0.9, "title_offset_y": -30},
+                    },
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ).encode("utf-8"),
+            ).hexdigest(),
+            self.module.preview_input_fingerprint(first),
+        )
+
+    def test_fingerprint_changes_with_every_identity_field(self):
+        base = {
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID, "bgm": True,
+            "template_revision": REVISION,
+            "overrides": {"title_scale": 0.9},
+            "user_materials": [{"sha256": "a" * 64, "media_type": "video"}],
+        }
+        reference = self.module.preview_input_fingerprint(base)
+        for key, value in (
+            ("top_text", "长沙夜宵"), ("bottom_text", "点关注不迷路"),
+            ("template_id", "ref-06-other-template"), ("bgm", False),
+            ("template_revision", OTHER_REVISION),
+            ("overrides", {"title_scale": 0.91}),
+            ("user_materials", [{"sha256": "b" * 64, "media_type": "video"}]),
+            ("font_family", "Noto Sans SC"),
+        ):
+            with self.subTest(key=key):
+                self.assertNotEqual(
+                    reference,
+                    self.module.preview_input_fingerprint(dict(base, **{key: value})),
+                )
 
 
 if __name__ == "__main__":

@@ -528,5 +528,132 @@ class MatrixTemplateSemanticsTests(unittest.TestCase):
                 self.assertEqual(2, generate.call_count)
 
 
+class MatrixTemplateSemanticsTuningPreflightTests(unittest.TestCase):
+    """带参数微调的生成：断句预检候选必须带上 revision/overrides，且不丢语义结果。"""
+
+    @classmethod
+    def setUpClass(cls):
+        if str(SERVER) not in sys.path:
+            sys.path.insert(0, str(SERVER))
+        cls.module = importlib.import_module("content_domains.matrix_template_video")
+
+    def setUp(self):
+        self.module._CACHE.update({
+            "at": 0.0, "templates": [], "fonts": [], "controls": {},
+            "max_batch_size": 1,
+            "engine_concurrency": {"ffmpeg": 1, "hyperframes": 1},
+        })
+        self.module.matrix_template_semantics._CACHE.clear()
+
+    @staticmethod
+    def tunable_hyperframes_template(revision):
+        return {
+            "id": "ref-05-changsha-white-red", "name": "长沙白字红强调",
+            "description": "说明", "tags": ["HyperFrames"],
+            "engine": "hyperframes", "font_mode": "template_locked",
+            "font_selectable": False, "variant": "v05",
+            "required_visuals": 3, "required_visuals_max": 5,
+            "duration_mode": "random_integer_8_15",
+            "tunable": True, "template_revision": revision,
+            "overrides_schema": {
+                "version": 1,
+                "properties": {
+                    "title_scale": {
+                        "type": "number", "minimum": 0.85, "maximum": 1.10,
+                        "default": 1.0,
+                    },
+                    "title_offset_y": {
+                        "type": "integer", "minimum": -60, "maximum": 60,
+                        "default": 0,
+                    },
+                    "cta_scale": {
+                        "type": "number", "minimum": 0.85, "maximum": 1.10,
+                        "default": 1.0,
+                    },
+                    "cta_offset_y": {
+                        "type": "integer", "minimum": -60, "maximum": 60,
+                        "default": 0,
+                    },
+                    "accent_color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+                },
+            },
+            "semantic_layout": {
+                "version": 1, "max_width_px": 996,
+                "layers": {
+                    "top1": {"font_size_px": 102, "font_weight": 900,
+                             "max_width_px": 996, "max_lines": 2},
+                    "top2": {"font_size_px": 104, "font_weight": 900,
+                             "max_width_px": 996, "max_lines": 2},
+                    "top3": {"font_size_px": 68, "font_weight": 900,
+                             "max_width_px": 996, "max_lines": 2},
+                    "bottom2": {"font_size_px": 70, "font_weight": 900,
+                                "max_width_px": 996, "max_lines": 2},
+                },
+            },
+        }
+
+    def test_semantic_preflight_carries_fine_tune_fields_to_renderer(self):
+        top = "团队8个人，每天产出100条短视频"
+        bottom = "评论区扣111"
+        revision = "b" * 64
+        template = self.tunable_hyperframes_template(revision)
+        layout = {
+            "version": 1, "model": "gpt-4.1-mini",
+            "source_sha256": (
+                self.module.matrix_template_semantics._source_sha256(top, bottom)
+            ),
+            "top1_end": top.index("，"),
+            "top_break_after": [top.index("，")],
+            "bottom_break_after": [],
+        }
+        catalog = {
+            "templates": [template], "fonts": [], "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 5},
+        }
+        with mock.patch.object(self.module, "_request", return_value=catalog):
+            self.module.public_templates(force=True)
+
+        seen = []
+
+        def preflight(method, path, candidate, **kwargs):
+            assert (method, path) == ("POST", "/v1/preflight")
+            seen.append(json.loads(json.dumps(candidate, ensure_ascii=False)))
+            payload = dict(candidate)
+            payload["duration"] = 8.0
+            echoed = dict(self.module.OVERRIDE_DEFAULTS)
+            echoed.update(candidate["overrides"])
+            payload["overrides"] = {
+                key: echoed[key] for key in self.module.OVERRIDE_FIELDS
+                if key in echoed
+            }
+            return {"payload": payload}
+
+        with mock.patch.object(self.module, "require_available"), \
+                mock.patch.object(
+                    self.module, "_request", side_effect=preflight,
+                ), mock.patch.object(
+                    self.module.matrix_template_semantics, "generate",
+                    return_value=dict(layout),
+                ):
+            result = self.module.validate_payload({
+                "top_text": top, "bottom_text": bottom,
+                "template_id": template["id"], "template_revision": revision,
+                "overrides": {"title_scale": 0.95, "accent_color": "#ffcf33"},
+            }, "alice")
+
+        self.assertTrue(seen)
+        self.assertEqual(revision, seen[0]["template_revision"])
+        self.assertEqual({"title_scale": 0.95, "accent_color": "#FFCF33"},
+                         seen[0]["overrides"])
+        self.assertEqual(layout["top1_end"], seen[0]["semantic_layout"]["top1_end"])
+        self.assertEqual(revision, result["template_revision"])
+        self.assertEqual({
+            "title_scale": 0.95, "title_offset_y": 0, "cta_scale": 1.0,
+            "cta_offset_y": 0, "accent_color": "#FFCF33",
+        }, result["overrides"])
+        self.assertEqual(layout, result["semantic_layout"])
+        self.assertEqual(8.0, result["duration"])
+
+
 if __name__ == "__main__":
     unittest.main()

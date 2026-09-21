@@ -294,6 +294,9 @@ def _validate(capability, payload):
     if capability.get("id") in {
             "matrix-template-generate", "matrix-template-batch-generate"}:
         _validate_matrix_template_voiceover(capability, payload)
+    if capability.get("id") in {
+            "matrix-template-generate", "matrix-template-preview"}:
+        _validate_matrix_template_tuning(capability, payload)
     if capability.get("id") == "video-timeline-compose":
         _validate_timeline_compose(payload)
     if capability.get("id") in {"director-scene-image-generate", "director-scene-video-generate"}:
@@ -319,6 +322,75 @@ def _validate_matrix_template_voiceover(capability, payload):
         raise CliError(
             EXIT_INPUT, "input_error",
             "voiceover.bgm_volume requires voiceover.bgm=true",
+        )
+
+
+def _validate_matrix_template_tuning(capability, payload):
+    """Contract v1: overrides need a revision, slots are unique, ids are shaped."""
+    overrides = payload.get("overrides")
+    revision = payload.get("template_revision")
+    if overrides is not None:
+        if not isinstance(overrides, dict) or not overrides:
+            raise CliError(
+                EXIT_INPUT, "input_error",
+                "overrides must contain at least one parameter",
+            )
+        definition = capability["input_schema"]["properties"]["overrides"]
+        allowed = set(definition["properties"])
+        unknown = sorted(set(overrides) - allowed)
+        if unknown:
+            raise CliError(
+                EXIT_INPUT, "input_error",
+                "unknown overrides parameter: %s" % unknown[0],
+            )
+        # Reuse the generic validator for the scalar ranges, accent_color format and
+        # media_focus length; object items need the explicit pass below.
+        _validate(
+            {"id": "matrix-template-overrides",
+             "input_schema": dict(definition, required=[])},
+            overrides,
+        )
+        focuses = overrides.get("media_focus")
+        if focuses is not None:
+            slots = [
+                item.get("slot") for item in focuses if isinstance(item, dict)
+            ]
+            if len(slots) != len(focuses) or len(slots) != len(set(slots)):
+                raise CliError(
+                    EXIT_INPUT, "input_error",
+                    "overrides.media_focus slots must be unique",
+                )
+            for index, item in enumerate(focuses):
+                if set(item) != {"slot", "x", "y"}:
+                    raise CliError(
+                        EXIT_INPUT, "input_error",
+                        "overrides.media_focus item %d must contain slot, x and y" % index,
+                    )
+                for axis in ("x", "y"):
+                    value = item[axis]
+                    if (isinstance(value, bool)
+                            or not isinstance(value, (int, float))
+                            or not math.isfinite(value)
+                            or not 0 <= value <= 1):
+                        raise CliError(
+                            EXIT_INPUT, "input_error",
+                            "overrides.media_focus item %d %s must be between 0 and 1"
+                            % (index, axis),
+                        )
+        if not revision:
+            raise CliError(
+                EXIT_INPUT, "input_error",
+                "overrides requires template_revision from matrix-template-controls",
+            )
+    preview_id = payload.get("preview_id")
+    if preview_id is not None and (
+            not isinstance(preview_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", preview_id)):
+        raise CliError(EXIT_INPUT, "input_error", "preview_id has an invalid format")
+    if capability.get("id") == "matrix-template-preview" and not revision:
+        raise CliError(
+            EXIT_INPUT, "input_error",
+            "template_revision is required; read matrix-template-controls first",
         )
 
 

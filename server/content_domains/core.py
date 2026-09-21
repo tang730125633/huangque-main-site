@@ -537,6 +537,7 @@ KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 
               "short_drama_preview": 1800, "short_drama_final": 3600,
               "short_drama_remux": 600,
               "script_to_video": 1200, "matrix_template_video": 1500,
+              "matrix_template_preview": 1500,
               "canvas_agent": 300, "director_agent": 300}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
@@ -606,6 +607,7 @@ def init_db():
         jobs_store.ensure_submission_key_schema(c)
         submission_idempotency.ensure_table(c)
         matrix_template_submission.ensure_table(c)
+        matrix_template_submission.ensure_preview_table(c)
         c.commit()
     feature_flags.init_db()
     pricing.init_db()
@@ -1090,6 +1092,9 @@ def _video_job_phase_for_public(job_id, kind):
 
 
 def _matrix_template_lifecycle_for_public(row):
+    if row["kind"] == "matrix_template_preview":
+        from . import matrix_template_video as matrix_template_domain
+        return matrix_template_domain.public_preview_lifecycle(row)
     if row["kind"] != "matrix_template_video":
         return {}
     from . import matrix_template_video as matrix_template_domain
@@ -1224,6 +1229,8 @@ def _pick_job_queue(kind, mode=None):
         return _job_queue               # 本地 FFmpeg 重任务，复用慢队列
     if kind == "matrix_template_video":
         return _matrix_job_queue        # 独立5路池，对齐生成服务器渲染容量
+    if kind == "matrix_template_preview":
+        return _matrix_job_queue        # 微调预览与模板成片同池：都是渲染侧长任务
     if kind == "director_agent":
         return _director_agent_job_queue  # 两段模型调用独立隔离，不占用快任务 worker
     if kind == "cinematic":
@@ -1262,6 +1269,20 @@ def _user_active_job_count(username):
                            WHERE username=? AND status IN ('pending','running')
                              AND COALESCE(deleted,0)=0""",
                         (username,)).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def _matrix_template_preview_active_count(username):
+    """在跑的微调预览数：预览占渲染槽但不扣点，需要单独一道轻闸。"""
+    if not username:
+        return 0
+    from . import matrix_template_video as matrix_template_domain
+    with closing(jdb()) as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE username=? AND kind=? "
+            "AND status IN ('pending','running')",
+            (username, matrix_template_domain.PREVIEW_KIND),
+        ).fetchone()
     return int(row["n"] if row else 0)
 
 def _user_active_kind_count(username, kind):
@@ -1773,14 +1794,22 @@ def run_job(job_id):
                         jdb, job_id, username, payload
                     )
                 )
-        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "matrix_template_video", "director_agent"}:
+        if kind in {"audio", "short_drama_sound_effect", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "short_drama_preview", "short_drama_final", "script_to_video", "matrix_template_video", "matrix_template_preview", "director_agent"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         if payload.get('_channel_binding'):
             from .channel_runtime import run_task
             result = run_task(payload['_channel_binding'], payload, job_id, jdb)
         else:
-            result = HANDLERS[kind](payload)
+            handler = HANDLERS.get(kind)
+            if handler is None:
+                # 私有处理器（例如 matrix_template_preview）没有公开 /api/gen/<kind>
+                # 路由：它们只由主站自己的端点建单，绝不进 HANDLERS 白名单。
+                from . import matrix_template_video as matrix_template_domain
+                handler = matrix_template_domain.PRIVATE_HANDLERS.get(kind)
+            if handler is None:
+                raise RuntimeError("任务类型暂不支持：%s" % kind)
+            result = handler(payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
             breakdown_refund_prepared = _prepare_breakdown_refund(
@@ -1904,6 +1933,23 @@ def run_job(job_id):
                 # 恢复锚点暂时读不到时不能误退款或重发付费 POST；保留 running 供重启核对。
                 print("[video-recovery] 恢复信息暂不可读，保留 job#%s: %s" %
                       (job_id, str(recovery_error)[:160]), flush=True)
+                return
+        if kind == "matrix_template_preview":
+            try:
+                from . import task_termination
+                with closing(jdb()) as connection:
+                    if task_termination.get(connection, job_id):
+                        return
+                from . import matrix_template_video as matrix_template_domain
+                if matrix_template_domain.recover_preview_error(
+                        job_id, e, _requeue_running_job):
+                    return
+            except Exception as recovery_error:
+                print(
+                    "[matrix-template-preview-recovery] 恢复信息暂不可读，保留 job#%s: %s"
+                    % (job_id, str(recovery_error)[:160]),
+                    flush=True,
+                )
                 return
         if kind == "matrix_template_video":
             try:
@@ -2188,6 +2234,63 @@ class H(BaseHTTPRequestHandler):
             raise
         except Exception:
             raise ValueError("请求体不是合法 JSON")
+
+    def _matrix_template_preview_submit(self, user):
+        """模板参数微调预览：建一条零扣点任务，走既有任务查询（合同 §6）。"""
+        from . import matrix_template_video as matrix_template_domain
+        try:
+            body = self._json_body_strict()
+            from . import provider_config
+            body = provider_config.sanitize_payload(body)
+            if not isinstance(body, dict):
+                raise ValueError("预览参数无效")
+            active = _matrix_template_preview_active_count(user.get("username"))
+            if active >= matrix_template_domain.PREVIEW_MAX_ACTIVE_PER_USER:
+                return self._send(429, {
+                    "detail": "已有一个预览正在生成，请等它出来后再试",
+                    "code": "preview_busy", "retry_after_ms": 5000,
+                })
+            payload = matrix_template_domain.preview_payload(
+                body, user.get("username") or "",
+                allow_shared_materials=(
+                    matrix_template_domain.shared_materials_allowed(user)
+                ),
+                public_only_materials=(
+                    matrix_template_domain.public_only_materials(user)
+                ),
+            )
+            job_id = jobs_store.create_job_after_charge(
+                jdb, matrix_template_domain.PREVIEW_KIND,
+                user.get("username") or "", 0, payload, SERVICE_OWNER,
+            )
+            matrix_template_submission.prune_previews(jdb)
+            enqueue_job(job_id, matrix_template_domain.PREVIEW_KIND, None)
+            return self._send(200, {
+                "job_id": job_id,
+                "kind": matrix_template_domain.PREVIEW_KIND,
+                "status": "queued",
+                "cost": 0,
+                "template_id": payload.get("template_id"),
+                "template_revision": payload.get("template_revision"),
+                "overrides": payload.get("overrides") or {},
+                "next": "用 task 查询该 job_id 取预览结果",
+            })
+        except feature_flags.FeatureDisabled as error:
+            return self._send(503, {"detail": str(error), "code": "feature_disabled"})
+        except (ValueError, LookupError, PermissionError) as error:
+            return self._send(400, {
+                "detail": str(error)[:220], "code": "preview_rejected",
+            })
+        except Exception as error:
+            print(
+                "[matrix-template-preview] 建单失败: %s" % str(error)[:200],
+                flush=True,
+            )
+            return self._send(503, {
+                "detail": "预览服务暂时不可用，请稍后重试",
+                "code": "preview_unavailable", "retry_after_ms": 5000,
+            })
+
     def do_POST(self):
         self._cinematic_reference_files = []
         self._cinematic_references_enqueued = False
@@ -4094,6 +4197,13 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             from . import canvas_agent as canvas_agent_domain
             return canvas_agent_domain.handle_quote(self, user)
+        if p == "/api/gen/matrix-template/preview":
+            # 模板参数微调预览（合同 v1）：零扣点、不登记正式作品、不发完成通知，
+            # 走既有任务凭据 + /api/gen/job/<id> 查询。绝不落在 /api/gen/<kind> 直提路由上。
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            return self._matrix_template_preview_submit(user)
         is_still_route = p == "/api/gen/short-drama/generate-stills"
         kind = "image" if is_still_route else None
         if p == "/api/gen/matrix-template":
@@ -4934,6 +5044,26 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": str(error)})
             except Exception:
                 return self._send(503, {"detail": "模板目录暂不可用"})
+        if p == "/api/gen/matrix-template/controls":
+            # 模板可调范围（只读）：渲染侧声明什么就回什么，绝不自己编字段。
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            from . import matrix_template_video as matrix_template_domain
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            template_id = str((query.get("template_id") or [""])[0]).strip()
+            if not template_id:
+                return self._send(400, {"detail": "请提供 template_id"})
+            try:
+                return self._send(
+                    200, matrix_template_domain.public_template_controls(template_id),
+                )
+            except ValueError as error:
+                return self._send(400, {"detail": str(error)[:220]})
+            except feature_flags.FeatureDisabled as error:
+                return self._send(503, {"detail": str(error)})
+            except Exception:
+                return self._send(503, {"detail": "模板目录暂不可用"})
         if director_workflows.dispatch_http(
                 self, "GET", jdb, verify,
                 cost_of=getattr(points_domain, "cost_of", None),
@@ -4999,7 +5129,7 @@ class H(BaseHTTPRequestHandler):
                     pass
             d = _job_public_dict(r, phase)
             d["result"] = _refresh_job_media_urls(d.get("result"))
-            if r["kind"] == "matrix_template_video":
+            if r["kind"] in {"matrix_template_video", "matrix_template_preview"}:
                 d.update(_matrix_template_lifecycle_for_public(r))
             if r["kind"] in {"short_drama_preview", "short_drama_final"}:
                 with closing(jdb()) as c:
