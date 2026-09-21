@@ -526,6 +526,16 @@ def recovery_worker(store):
         time.sleep(15)
 
 
+def recover_before_claims(store):
+    while True:
+        try:
+            recover_deliveries(store)
+            return
+        except Exception as exc:
+            print('[poller] startup_recovery_pending=%s'%type(exc).__name__,flush=True)
+            time.sleep(15)
+
+
 def worker(slot,store):
     """一个并发槽位：独立地「领取→渲染→回传」，循环不停。"""
     while True:
@@ -561,7 +571,7 @@ def main():
           % (NODE_NAME, RELAY, LOCAL, CONCURRENCY), flush=True)
     store=DeliveryStore(os.environ.get('NODE_STATE_DIR',str(Path.home()/'.huangque-render-poller')))
     with store.process_lock():
-        recover_deliveries(store)
+        recover_before_claims(store)
         threads = [threading.Thread(target=heartbeat,daemon=True),threading.Thread(target=recovery_worker,args=(store,),daemon=True)]
         threads += [threading.Thread(target=worker,args=(slot,store),daemon=True) for slot in range(1,CONCURRENCY+1)]
         for t in threads:t.start()

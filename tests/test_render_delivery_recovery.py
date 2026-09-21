@@ -221,3 +221,8 @@ class DurablePollerTests(unittest.TestCase):
             with mock.patch.object(self.p,'claim',return_value=job),mock.patch.object(self.p,'process_delivery',side_effect=StopAfterOne) as process,mock.patch.object(self.p.time,'sleep',side_effect=AssertionError('unexpected_idle_delay')):
                 with self.assertRaises(StopAfterOne):self.p.worker(1,store)
             process.assert_called_once()
+
+    def test_startup_outage_retries_recovery_before_claiming(self):
+        with mock.patch.object(self.p,'recover_deliveries',side_effect=[ConnectionRefusedError(),None]) as recover,mock.patch.object(self.p,'claim') as claim,mock.patch.object(self.p.time,'sleep') as sleep:
+            self.p.recover_before_claims(object())
+        self.assertEqual(recover.call_count,2);sleep.assert_called_once();claim.assert_not_called()
