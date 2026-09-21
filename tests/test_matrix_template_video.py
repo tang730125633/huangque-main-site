@@ -5156,5 +5156,40 @@ class MatrixTemplatePreviewIndexFingerprintTests(unittest.TestCase):
                 )
 
 
+class MatrixTemplatePreviewRecoverTests(unittest.TestCase):
+    """渲染端明确失败的预览任务必须立即终态，绝不无限重试（2026-09-21 生产事故回归）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        if str(SERVER) not in sys.path:
+            sys.path.insert(0, str(SERVER))
+        cls.module = importlib.import_module("content_domains.matrix_template_video")
+
+    def test_provider_failure_never_requeues(self):
+        requeue = mock.Mock()
+        result = self.module.recover_preview_error(
+            1, self.module.MatrixTemplateProviderFailed("模板视频素材数量不足"),
+            requeue=requeue,
+        )
+        self.assertFalse(result)
+        requeue.assert_not_called()
+
+    def test_unknown_error_with_preview_id_still_requeues(self):
+        requeue = mock.Mock()
+        runtime = {
+            "payload": {"_matrix_runtime": {"preview_id": "a" * 32}},
+            "created_at": int(time.time()),
+        }
+        with mock.patch.object(
+                self.module, "_durable_runtime", return_value=runtime), \
+                mock.patch.object(self.module, "_persist_runtime") as persist:
+            result = self.module.recover_preview_error(
+                1, RuntimeError("network blip"), requeue=requeue,
+            )
+        self.assertTrue(result)
+        requeue.assert_called_once_with(1)
+        self.assertTrue(persist.called)
+
+
 if __name__ == "__main__":
     unittest.main()
