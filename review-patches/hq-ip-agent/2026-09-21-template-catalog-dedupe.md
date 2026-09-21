@@ -9,8 +9,9 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 ## 修复内容
 
 - 状态层按模板 ID 集合识别语义重复目录，不依赖模型可自由改写的标题。
+- `template_catalog` 设为系统保留 ID，仅机械目录路径可通过可信参数写入；主/子 Agent 的通用 `attach_widgets` 无法伪造或覆盖标准目录。
 - 标准目录先到时，后续重复 `attach_widgets` 会被拒绝；标准目录后到时，会清理此前已经存在的重复目录。
-- 主 Agent 与子 Agent 的挂卡结果返回实际 `attached/suppressed` 数量，避免把被拦截卡片报告为已显示。
+- 主 Agent 与子 Agent 的挂卡结果按本批次最终存活卡片返回实际 `attached/suppressed` 数量，避免把被拦截、替换或同批清理的卡片报告为已显示。
 - 前端增加历史会话兜底：载荷中同时存在标准目录和重复通用卡时，只渲染标准目录。
 - 多选卡及与模板 ID 不重叠的正常 `option_pick` 不受影响。
 
@@ -24,9 +25,11 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 
 ## Patch 边界
 
-基线提交：`hq-ip-agent@ea14e97`
+完整基线提交：`hq-ip-agent@ea14e9759a328275181e4ba4daf40710f12327b2`
 
-目标提交：`hq-ip-agent@34aaf22`
+补丁 SHA-256：`cd8b3ba193d634297022e09b6560fc50611a4b998e6b176fcf59c38898730dc1`
+
+预期结果树：`fc578a107d24afc7e814dce0b1dfc09fa6a0a6cb`
 
 涉及文件：
 
@@ -35,13 +38,14 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 - `agent/v4/subagent.py`
 - `static/v4.js`
 - `tests/hq-ip12-test.mjs`
+- `tests/hq-backend-pump-test.py`
 - `tests/hq-upload-test.py`
 
 ## 验证结果
 
 - `python -m py_compile agent/v4/state.py agent/v4/subagent.py agent/v4/main_agent.py`：通过。
 - `node --check static/v4.js`、`node --check tests/hq-ip12-test.mjs`：通过。
-- `python tests/hq-upload-test.py`：通过；新增“标准目录先到”和“标准目录后到”两种回归场景。
+- `python tests/hq-upload-test.py`：通过；覆盖标准目录先到/后到、同批两种顺序，以及主/子 Agent 伪造保留 ID 的负向场景。
 - `python tests/hq-backend-pump-test.py`：通过。
 - `python tests/hq-widget-reselect-test.py`：通过。
 - `python tests/hq-voice-sample-test.py`：通过。
@@ -50,10 +54,11 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 
 ## 审核通过后的应用方式
 
-在干净、基于 `ea14e97` 的 `hq-ip-agent` 工作区执行：
+在干净、基于完整基线 `ea14e9759a328275181e4ba4daf40710f12327b2` 的 `hq-ip-agent` 工作区执行：
 
 ```bash
-git am /path/to/huangque-main-site/review-patches/hq-ip-agent/2026-09-21-template-catalog-dedupe.patch
+git apply --index /path/to/huangque-main-site/review-patches/hq-ip-agent/2026-09-21-template-catalog-dedupe.patch
+test "$(git write-tree)" = "fc578a107d24afc7e814dce0b1dfc09fa6a0a6cb"
 ```
 
-应用后重新运行上述测试，再按独立服务发布流程部署。本 PR 自身不部署任何文件；审核通过前不得推送到生产 bare 远端，也不得上线。
+应用前先核对补丁 SHA-256，应用后核对结果树并重新运行上述测试；确认无误后创建独立仓库提交并推送其权威 origin，再按独立服务发布流程部署。本 PR 自身不部署任何文件；审核通过前不得推送到生产 bare 远端，也不得上线。
