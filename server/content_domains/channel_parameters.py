@@ -109,13 +109,12 @@ def _operation_for_front(kind, front):
                 break
     if not hits:
         return None
-    # 同一个 front 可能命中多个功能（grok 文生图 / grok 参考图）。旧映射条目
-    # 只有一个渠道可归，优先归给【真正配了托管映射】的那个功能，避免把
-    # 管理员的切换落到一条没有映射的叶子上而看不出效果。
-    for spec in hits:
-        mapping = store.operation_mapping(spec['operation_id'])
-        if mapping and str(mapping.get('state')) == 'managed':
-            return spec
+    # 同一个 front 可能命中多个功能（grok 文生图 / grok 参考图；纳米香蕉 2 的
+    # 文生图 / 参考图都提交 model=nb2）。这时【不能猜】——猜哪个都可能把用户的
+    # 请求送到错的渠道。返回 None 让调用方把它当明确的兼容入口保留，
+    # 由客户端按 operation_id + 真实输入解析（见 function_registry.classify_task）。
+    if len(hits) > 1:
+        return None
     return hits[0]
 
 
@@ -181,7 +180,13 @@ def _operation_items(existing):
     for item in existing:
         spec = _operation_for_front(item['kind'], item['front'])
         if not spec:
-            rewritten.append(item)          # 没有对应业务功能的旧条目，保持原样
+            # 对应不到唯一业务功能（没有对应功能，或一个 front 对应多个功能）。
+            # 保留为【明确的兼容入口】：它只表示「这条旧线路还能用」，
+            # 不带 operation_id，不与功能条目混淆。管理员对某个功能的切换
+            # 由该功能自己的条目生效，不会被这条兼容条目遮蔽。
+            compat = dict(item)
+            compat['legacy_compat'] = True
+            rewritten.append(compat)
             continue
         oid = spec['operation_id']
         route = _route_for_function(oid)
