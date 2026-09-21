@@ -4779,6 +4779,24 @@ class MatrixTemplateTuningTests(unittest.TestCase):
             }, "alice")
         self.assertIn("template_revision", str(error.exception))
 
+    def test_preview_payload_rejects_non_video_materials(self):
+        # 两版对比预览在渲染服务本机执行、不支持图片转视频：平台层直接拒绝，
+        # 避免渲染端 1 秒失败后被无限重试（2026-09-21 生产事故 9788/9791 回归）。
+        self.load_catalog()
+        for materials in (
+            [{"media_type": "image", "upload_id": "img_abc"}],
+            [{"media_type": "video", "upload_id": "vid_abc"},
+             {"media_type": "image", "upload_id": "img_def"}],
+        ):
+            with self.subTest(materials=materials), \
+                    self.assertRaises(ValueError) as error:
+                self.module.preview_payload({
+                    "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+                    "template_id": TUNABLE_ID, "template_revision": REVISION,
+                    "user_materials": materials,
+                }, "alice")
+            self.assertIn("需要视频素材", str(error.exception))
+
     def test_preview_payload_validates_like_generate_without_preflight(self):
         self.load_catalog()
         with mock.patch.object(self.module, "_request") as request, \
@@ -4934,7 +4952,8 @@ class MatrixTemplateTuningTests(unittest.TestCase):
             },
         ), mock.patch.object(
             self.module, "_persist_runtime", return_value=True,
-        ), mock.patch.object(self.module.time, "sleep"), self.assertRaises(ValueError) as error:
+        ), mock.patch.object(self.module.time, "sleep"), self.assertRaises(
+            self.module.MatrixTemplateProviderFailed) as error:
             self.module.generate_preview({
                 "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
                 "template_id": TUNABLE_ID, "bgm": True, "template_revision": REVISION,
