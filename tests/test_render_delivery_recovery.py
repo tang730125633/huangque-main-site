@@ -213,3 +213,16 @@ class DurablePollerTests(unittest.TestCase):
             self.assertNotIn('private-input',json.dumps(completed));self.assertNotIn(job['claim_token'],json.dumps(completed))
             store.ensure(job)
             with self.assertRaisesRegex(ValueError,'identity_conflict'):store.ensure({**job,'payload':{'private_text':'changed'}})
+
+    def test_new_claim_starts_without_idle_poll_delay(self):
+        class StopAfterOne(BaseException):pass
+        with tempfile.TemporaryDirectory() as t:
+            store=self.p.DeliveryStore(Path(t));job={'job_id':'a'*32,'claim_token':'b'*32,'payload':{}}
+            with mock.patch.object(self.p,'claim',return_value=job),mock.patch.object(self.p,'process_delivery',side_effect=StopAfterOne) as process,mock.patch.object(self.p.time,'sleep',side_effect=AssertionError('unexpected_idle_delay')):
+                with self.assertRaises(StopAfterOne):self.p.worker(1,store)
+            process.assert_called_once()
+
+    def test_startup_outage_retries_recovery_before_claiming(self):
+        with mock.patch.object(self.p,'recover_deliveries',side_effect=[ConnectionRefusedError(),None]) as recover,mock.patch.object(self.p,'claim') as claim,mock.patch.object(self.p.time,'sleep') as sleep:
+            self.p.recover_before_claims(object())
+        self.assertEqual(recover.call_count,2);sleep.assert_called_once();claim.assert_not_called()
