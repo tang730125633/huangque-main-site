@@ -206,6 +206,7 @@ def run_local(payload, job_id="", *, local_id=None, on_accepted=None, started_at
     job = {'job_id':local_id} if local_id else _submit_local(payload, req_id)
     jid = job.get("job_id")
     if not jid:
+        if durable:raise RuntimeError('local_submission_unconfirmed')
         return None, "本机渲染服务未返回 job_id"
     if on_accepted:
         on_accepted(jid)
@@ -482,13 +483,25 @@ def process_delivery(store,record):
         return
     if record['phase']=='claimed':
         payload=json.loads(json.dumps(record['payload']))
-        sync_user_assets(payload, jid)
-        record=store.update(jid,phase='prepared',prepared_payload=payload)
+        try:
+            sync_user_assets(payload, jid)
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            if exc.code not in {400,401,403,404,410,422}:raise
+            record=store.update(jid,phase='failed',error='material_prepare_rejected_http_%s'%exc.code)
+        except (RuntimeError,ValueError,subprocess.SubprocessError) as exc:
+            record=store.update(jid,phase='failed',error='material_prepare_failed_%s'%type(exc).__name__)
+        else:
+            record=store.update(jid,phase='prepared',prepared_payload=payload)
     if record['phase'] in {'prepared','running'}:
         payload=record['prepared_payload']
-        result, error = run_local(payload, jid,local_id=record.get('local_id'),
-            on_accepted=lambda local_id:store.update(jid,phase='running',local_id=local_id),
-            started_at=record['started_at'],durable=True)
+        try:
+            result, error = run_local(payload, jid,local_id=record.get('local_id'),
+                on_accepted=lambda local_id:store.update(jid,phase='running',local_id=local_id),
+                started_at=record['started_at'],durable=True)
+        except NodeSubmissionError as exc:
+            if exc.status not in {400,401,403,404,422} or exc.retryable:raise
+            result,error=None,str(exc)
         record=store.update(jid,phase='failed' if error else 'rendered',result=result or {},error=error)
     if record['phase']=='failed':
         report(jid,False,error=record['error'],claim_token=token)
