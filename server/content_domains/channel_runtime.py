@@ -922,9 +922,14 @@ def execute(rid, payload=None):
                     raise
             result, detail = None,'网络连接可达；不代表鉴权或生成成功'
         elif row['kind']=='auth':
-            if cfg['adapter']=='minimax_h3':
-                # A nonexistent resource cannot prove valid credentials.
-                raise CheckUnsupported('此协议未提供可靠的独立鉴权证明，请运行完整生成测试')
+            # 只有「模型列表型」协议能靠 GET /models 独立证明鉴权。
+            # 其余协议（配音走 WebSocket、换装/HeyGen 走工作流或 OAuth）没有可用的
+            # 鉴权端点：拿不存在的资源去探，只会得到 404 或「模型不在列表里」，
+            # 那不是凭据被拒，不能据此判失败。按协议声明的验证要求如实标记不适用。
+            from .channel_manager import ADAPTERS as _ADAPTERS
+            _spec = _ADAPTERS.get(cfg['adapter']) or {}
+            if 'auth' not in (_spec.get('verification') or ('connection', 'auth', 'full')):
+                raise CheckUnsupported('此协议无独立鉴权端点，鉴权由完整生成证明')
             result = request(cfg,'GET','/v1beta/models' if cfg['adapter']=='gemini_image' else '/models')
             data = result.get('models') if cfg['adapter']=='gemini_image' else result.get('data')
             if isinstance(data, dict):

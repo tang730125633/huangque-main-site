@@ -26,27 +26,32 @@ from . import channel_store
 ADAPTERS = {
     'openai_image': {'name': 'OpenAI 兼容文生图', 'kind': 'image', 'references': False},
     'gemini_image': {'name': 'Google Gemini 官方生图', 'kind': 'image', 'references': True},
-    'minimax_h3': {'name': 'MiniMax H3 视频协议', 'kind': 'xiaole_video', 'references': True},
+    'minimax_h3': {'name': 'MiniMax H3 视频协议', 'kind': 'xiaole_video', 'references': True,
+                    'verification': ('connection', 'full')},
     'xai_video': {'name': 'Grok 视频协议', 'kind': 'xiaole_video', 'references': True},
     # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
     'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True},
     'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True},
     # Sora：复用原厂 video_openai 客户端（已支持注入 api_key / api_base），
     # kind 用任务类型 sora_video，与 function_registry 的 task_match.kind 一致。
-    'sora_video': {'name': 'OpenAI Sora 协议', 'kind': 'sora_video', 'references': True},
+    'sora_video': {'name': 'OpenAI Sora 协议', 'kind': 'sora_video', 'references': True,
+                   'verification': ('connection', 'full')},
     # 换装两条线路是不同供应商、不同输入（线路二=人物图+衣服图；线路一=人物视频），
     # 各占一个适配器，由任务类型契约的 line 区分匹配。
     'wavespeed_tryon': {'name': 'WaveSpeed 换装（线路二）', 'kind': 'tryon', 'references': True,
-                        'line': '2'},
+                        'line': '2', 'verification': ('connection', 'full')},
     # 配音：复用原厂 audio.py 的 CosyVoice 链路。一个渠道 = 一套 DashScope 凭据 + 接入点，
     # 拖动即切换不同的配音账号；音色仍由任务参数决定。
-    'cosyvoice_tts': {'name': '阿里百炼 CosyVoice 配音', 'kind': 'audio', 'references': False},
+    'cosyvoice_tts': {'name': '阿里百炼 CosyVoice 配音', 'kind': 'audio', 'references': False,
+                      'verification': ('connection', 'full')},
     # HeyGen：渠道的 secret 是一份完整的 MCP OAuth 凭据 JSON（access/refresh token）。
     # 落到渠道专属文件后由 video.heygen_credential_scope 注入，原厂那 ~11 处 MCP 调用
     # 自动改用渠道自己的账号；拖动即切换不同的 MCP 账号。
     # 数字人与电影化身走不同的原厂入口，因此各占一条适配器。
-    'heygen_mcp_video': {'name': 'HeyGen MCP（数字人口播）', 'kind': 'video', 'references': True},
-    'heygen_mcp_cinematic': {'name': 'HeyGen MCP（电影化身）', 'kind': 'cinematic', 'references': True},
+    'heygen_mcp_video': {'name': 'HeyGen MCP（数字人口播）', 'kind': 'video', 'references': True,
+                         'verification': ('connection', 'full')},
+    'heygen_mcp_cinematic': {'name': 'HeyGen MCP（电影化身）', 'kind': 'cinematic', 'references': True,
+                             'verification': ('connection', 'full')},
 }
 
 

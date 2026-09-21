@@ -50,7 +50,11 @@
   // 三合一验证结论。较新的异常必须覆盖旧的通过记录；“完整测试通过”绝不等于“用户已收到成品”。
   function verificationStatus(c,now=Date.now()/1000){
     const parts={connection:resolveCheck(c,'connection',now),auth:resolveCheck(c,'auth',now),full:resolveCheck(c,'full',now)};
-    const all=[parts.connection,parts.auth,parts.full];
+    // 按协议声明的验证要求判定：无独立鉴权端点的协议（配音走 WebSocket、换装/HeyGen
+    // 走工作流或 OAuth）不要求 auth，那一项不参与「是否正常」的判定，但仍会展示。
+    // 要求来自后端 ADAPTERS[adapter].verification，前端不再硬编码三项。
+    const required=(Array.isArray(c.verification)&&c.verification.length)?c.verification:['connection','auth','full'];
+    const all=required.map(k=>parts[k]).filter(Boolean);
     const okAll=all.every(p=>p.state==='ok');
     const currentChecks=(c.checks||[]).filter(r=>num(r.version)!=null&&num(r.version)===num(c.version));
     const newest=currentChecks.slice().sort((a,b)=>(num(b.updated)||0)-(num(a.updated)||0))[0];
@@ -132,7 +136,7 @@
       _verification:{overall:{state:'neutral',label:'按关联功能检查'},parts:{}},
       _production:{integrated:false,entries:[],summary:'按关联功能检查'}})).concat((data.items||[]).map(c=>({...c,uid:'managed:'+c.id,source:'managed',
         supplier:c.supplier||'未标注供应商',connection_type:c.connection_type||'unknown',
-        categories:[data.adapters?.[c.adapter]?.kind==='image'?'image':'video'],retired:!c.enabled,deleted:!!c._lifecycle?.deleted,
+        categories:[data.adapters?.[c.adapter]?.kind==='image'?'image':'video'],verification:data.adapters?.[c.adapter]?.verification||null,retired:!c.enabled,deleted:!!c._lifecycle?.deleted,
         attention:verificationStatus(c,now).overall.state!=='ok'||!configStatus(c).complete,
         features:[...(data.mappings||[]),...(data.operation_mappings||[])]
           .filter(m=>mappingChannels(m).includes(c.id)).map(m=>m.label||m.operation_id||m.front),
