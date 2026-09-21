@@ -48,10 +48,13 @@ ADAPTERS = {
     # 落到渠道专属文件后由 video.heygen_credential_scope 注入，原厂那 ~11 处 MCP 调用
     # 自动改用渠道自己的账号；拖动即切换不同的 MCP 账号。
     # 数字人与电影化身走不同的原厂入口，因此各占一条适配器。
+    # HeyGen 走 MCP/OAuth + egress 隧道，普通 HTTP HEAD 探不到（mcp.heygen.com 不接受 HEAD），
+    # 连接探测对它永远是失败——那是探测方式的问题，不是渠道不可用。
+    # 按协议如实声明：只以完整生成为证据。
     'heygen_mcp_video': {'name': 'HeyGen MCP（数字人口播）', 'kind': 'video', 'references': True,
-                         'verification': ('connection', 'full')},
+                         'verification': ('full',)},
     'heygen_mcp_cinematic': {'name': 'HeyGen MCP（电影化身）', 'kind': 'cinematic', 'references': True,
-                             'verification': ('connection', 'full')},
+                             'verification': ('full',)},
 }
 
 
