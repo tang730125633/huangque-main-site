@@ -1072,8 +1072,30 @@ def start_test(actor,body):
     if kind not in {'connection','auth','full'}:
         raise ValueError('未知测试类型')
     cid = str(body.get('id') or '')
+    cfg = store.version(cid)
+    # 协议不支持的检测类型直接拒绝，并且不落库——否则会留下一条误导性的失败记录，
+    # 让管理员以为是凭据或渠道坏了。历史遗留下来的这类记录仍然保留、仍然展示，
+    # 只是不参与总体判定（见 channel_manager.checks_supported）。
+    from .channel_manager import checks_supported, verification_required
+    supported = checks_supported(cfg.get('adapter'))
+    if kind not in supported:
+        label = {'connection': '连接', 'auth': '鉴权', 'full': '完整生成'}.get(kind, kind)
+        raise ValueError(
+            '此协议不支持「%s」检测，无法生成有效证据（当前协议支持的检测项：%s）'
+            % (label, '、'.join({'connection': '连接', 'auth': '鉴权', 'full': '完整生成'}.get(k, k) for k in supported))
+        )
+    # 提交去重：进行中的同渠道/同版本/同类型任务直接复用，不新建。
+    # 重复点击、提交响应丢失后重试都不会重复创建收费任务。
+    active = (channel_store.find_active(cid, cfg['version'], kind) if channel_store.enabled()
+              else store.find_active(cid, cfg['version'], kind))
+    if active:
+        return {'run_id': active['id'], 'state': active.get('state') or 'queued',
+                'channel': cid, 'version': cfg['version'], 'kind': kind,
+                'adapter': cfg.get('adapter'),
+                'required': list(verification_required(cfg.get('adapter'))),
+                'supported': list(supported), 'deduplicated': True,
+                'started': active.get('started')}
     if kind=='full':
-        cfg = store.version(cid)
         validate_payload(cfg,cfg['fixture'])
     rid = store.reserve(cid,kind)
     if channel_store.enabled():
@@ -1088,7 +1110,44 @@ def start_test(actor,body):
         except Exception:
             pass
     threading.Thread(target=work,daemon=True).start()
-    return {'run_id':rid,'state':'queued'}
+    # 返回足够前端立即显示「排队中」并据此轮询的字段：
+    # 任务 ID、渠道 ID、被测配置版本、检测类型、初始状态。
+    return {'run_id':rid,'state':'queued','channel':cid,'version':cfg['version'],'started':time.time(),
+            'kind':kind,'adapter':cfg.get('adapter'),
+            'required':list(verification_required(cfg.get('adapter'))),
+            'supported':list(supported)}
+
+
+def run_state(actor, body):
+    """按验证任务 ID 查进度。只读，不触发任何执行。"""
+    rid = str(body.get('run_id') or body.get('id') or '').strip()
+    if not rid:
+        raise ValueError('缺少验证任务 ID')
+    row = None
+    # store 是 channel_manager；它在 PG 模式下会把调用分发给 channel_store。
+    row = store.run_status(rid)
+    if not row:
+        raise ValueError('找不到这条验证任务')
+    state = str(row.get('state') or '')
+    phase = str(row.get('phase') or '')
+    if not phase and channel_store.enabled():
+        phase = str(channel_store.execution_phase(rid) or '')
+    terminal = state in ('passed', 'failed', 'unknown', 'terminated')
+    label = {'queued': '排队中', 'running': '执行中', 'passed': '已完成', 'failed': '已失败',
+             'unknown': '结果未知', 'terminated': '已终止', 'blocked': '条件未满足'}.get(state, state or '未知')
+    return {
+        'run_id': row.get('id') or rid,
+        'channel': row.get('channel'),
+        'version': row.get('version'),
+        'kind': row.get('kind'),
+        'state': state,
+        'label': label,
+        'phase': phase or '',
+        'detail': str(row.get('detail') or '')[:400],
+        'updated': row.get('updated'),
+        'started': row.get('started'),
+        'finished': bool(terminal),
+    }
 
 
 def monitor_cycle():

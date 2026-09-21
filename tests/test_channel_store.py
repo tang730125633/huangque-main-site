@@ -158,6 +158,17 @@ class SqliteModeTest(_ChannelFixture):
         with self.assertRaises(ValueError):
             channel_manager.reserve(self.cid, "task", self.job_id)
 
+    def test_find_active_and_run_status_sqlite(self):
+        """提交去重 + 按任务查进度（SQLite 路径）。"""
+        channel_manager.save("admin", self.body)
+        version = [r for r in channel_manager.overview()["items"] if r["id"] == self.cid][0]["version"]
+        self.assertIsNone(channel_manager.find_active(self.cid, version, "connection"))
+        rid = channel_manager.reserve(self.cid, "connection")
+        self.assertEqual(channel_manager.find_active(self.cid, version, "connection")["id"], rid)
+        self.assertIsNone(channel_manager.find_active(self.cid, version + 1, "connection"))
+        self.assertEqual(channel_manager.run_status(rid)["channel"], self.cid)
+        self.assertIsNone(channel_manager.run_status("no-such-run"))
+
 
 class BackfillReaderTest(_ChannelFixture):
     """回填器读取与比对口径（不需要 PostgreSQL）。"""
@@ -513,6 +524,18 @@ class PostgresModeTest(_ChannelFixture):
         self.assertEqual(state, "unknown")
         with self.assertRaises(ValueError):
             channel_manager.reserve(self.cid, "task", self.job_id)
+
+
+    def test_find_active_and_run_status_postgres(self):
+        """提交去重 + 按任务查进度（PostgreSQL 路径，口径与 SQLite 一致）。"""
+        channel_manager.save("admin", self.body)
+        version = [r for r in channel_manager.overview()["items"] if r["id"] == self.cid][0]["version"]
+        self.assertIsNone(channel_manager.find_active(self.cid, version, "connection"))
+        rid = channel_manager.reserve(self.cid, "connection")
+        self.assertEqual(channel_manager.find_active(self.cid, version, "connection")["id"], rid)
+        self.assertIsNone(channel_manager.find_active(self.cid, version + 1, "connection"))
+        self.assertEqual(channel_manager.run_status(rid)["channel"], self.cid)
+        self.assertIsNone(channel_manager.run_status("no-such-run"))
 
     def test_operation_mapping_publish_and_rollback(self):
         published = channel_manager.save_operation_mapping("m3c-test", dict(

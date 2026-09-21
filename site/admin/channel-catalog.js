@@ -56,7 +56,19 @@
     // 按协议声明的验证要求判定：无独立鉴权端点的协议（配音走 WebSocket、换装/HeyGen
     // 走工作流或 OAuth）不要求 auth，那一项不参与「是否正常」的判定，但仍会展示。
     // 要求来自后端 ADAPTERS[adapter].verification，前端不再硬编码三项。
-    const required=(Array.isArray(c.verification)&&c.verification.length)?c.verification:['connection','auth','full'];
+    // 判定规则必须由协议显式声明。缺失或内容无效时不能回退成「要求三项」蒙混过关，
+    // 那会让一条不适用项的失败把能用的渠道判成异常；也不能默认通过。
+    // 后端对每个托管渠道下发 verification（判定必需）+ checks_supported（协议支持）。
+    const VALID_CHECKS=['connection','auth','full'];
+    const declared=Array.isArray(c.verification)?c.verification.filter(k=>VALID_CHECKS.indexOf(k)>=0):null;
+    const rulesUsable=!!(declared&&declared.length)&&(c.rules_known!==false);
+    // 注意：渠道行调用本函数时传的是 data.items 的原始项，它没有 source 字段。
+    // 只有内置线路（legacy）不走协议规则，其余一律要求显式声明。
+    if(c.source!=='legacy'&&!rulesUsable){
+      return {overall:{state:'rules-unavailable',label:'验证规则不可用：该协议未在后台登记验证要求，无法判定'},
+              parts,required:null,version:c.version,rulesUnusable:true};
+    }
+    const required=rulesUsable?declared:['connection','auth','full'];
     const all=required.map(k=>parts[k]).filter(Boolean);
     // 只在「协议要求的项」里判结论。不要求的项（如 MCP 协议不做 HEAD 连接探测、
     // 配音协议没有鉴权端点）只展示事实，不参与总体判定 —— 否则一条不适用的

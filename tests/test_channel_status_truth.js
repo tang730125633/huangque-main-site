@@ -114,3 +114,26 @@ test('num 不把空值或非数字转成有效版本', () => {
   assert.equal(num('2'), 2);
   assert.equal(num(2), 2);
 });
+
+test('协议不支持的项显示不适用；支持但仍会记录事实', () => {
+  // HeyGen：协议只支持 full，历史里那条 connection failed 仍要能看到
+  const c = chan(5, [chk('full', 'passed', 5), chk('connection', 'failed', 5, 10)], ['full']);
+  const v = vs(c, NOW);
+  assert.equal(v.parts.connection.state, 'failed');
+  assert.equal(v.overall.state, 'ok');
+});
+
+test('规则校验：缺失/无效/协议未登记 → 不可用，不默认通过', () => {
+  const cases = [
+    {rules_known: true, verification: undefined},
+    {rules_known: true, verification: []},
+    {rules_known: true, verification: ['bogus']},
+    {rules_known: false, verification: ['full']},
+  ];
+  cases.forEach((extra, i) => {
+    const c = Object.assign(chan(3, [chk('full', 'passed', 3)], ['full']), {source: 'managed'}, extra);
+    const o = vs(c, NOW).overall;
+    assert.notEqual(o.state, 'ok', '第 ' + i + ' 种不该判通过');
+    assert.equal(o.state, 'rules-unavailable');
+  });
+});

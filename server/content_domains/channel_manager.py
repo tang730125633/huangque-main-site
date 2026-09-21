@@ -39,11 +39,15 @@ ADAPTERS = {
     # 换装两条线路是不同供应商、不同输入（线路二=人物图+衣服图；线路一=人物视频），
     # 各占一个适配器，由任务类型契约的 line 区分匹配。
     'wavespeed_tryon': {'name': 'WaveSpeed 换装（线路二）', 'kind': 'tryon', 'references': True,
-                        'line': '2', 'verification': ('connection', 'full')},
+                        'line': '2', 'verification': ('connection', 'full'),
+                        # 工作流型 API，没有独立的鉴权端点可探
+                        'checks_supported': ('connection', 'full')},
     # 配音：复用原厂 audio.py 的 CosyVoice 链路。一个渠道 = 一套 DashScope 凭据 + 接入点，
     # 拖动即切换不同的配音账号；音色仍由任务参数决定。
     'cosyvoice_tts': {'name': '阿里百炼 CosyVoice 配音', 'kind': 'audio', 'references': False,
-                      'verification': ('connection', 'full')},
+                      'verification': ('connection', 'full'),
+                      # 该服务没有 /models 列表端点，鉴权由完整生成证明
+                      'checks_supported': ('connection', 'full')},
     # HeyGen：渠道的 secret 是一份完整的 MCP OAuth 凭据 JSON（access/refresh token）。
     # 落到渠道专属文件后由 video.heygen_credential_scope 注入，原厂那 ~11 处 MCP 调用
     # 自动改用渠道自己的账号；拖动即切换不同的 MCP 账号。
@@ -52,10 +56,37 @@ ADAPTERS = {
     # 连接探测对它永远是失败——那是探测方式的问题，不是渠道不可用。
     # 按协议如实声明：只以完整生成为证据。
     'heygen_mcp_video': {'name': 'HeyGen MCP（数字人口播）', 'kind': 'video', 'references': True,
-                         'verification': ('full',)},
+                         'verification': ('full',),
+                         # MCP 端点不接受 HEAD 连接探测，也没有独立鉴权端点，
+                         # 实测带不带出口代理都失败——两项都不适用，只留完整生成
+                         'checks_supported': ('full',)},
     'heygen_mcp_cinematic': {'name': 'HeyGen MCP（电影化身）', 'kind': 'cinematic', 'references': True,
-                             'verification': ('full',)},
+                             'verification': ('full',),
+                             'checks_supported': ('full',)},
 }
+
+
+ALL_CHECKS = ('connection', 'auth', 'full')
+
+
+def verification_required(adapter):
+    """判定「当前配置验证通过」需要哪些检测项。
+
+    来自协议自身声明；没声明就按三项算（不因为缺声明而放行）。
+    """
+    spec = ADAPTERS.get(adapter) or {}
+    return tuple(spec.get('verification') or ALL_CHECKS)
+
+
+def checks_supported(adapter):
+    """该协议实际上能执行哪些检测项（可提交、可产生有效证据）。
+
+    与 verification_required 是两件事：某项不是「判定必需」不等于「协议不支持」。
+    只有核实过确实不支持的才排除，例如 MCP 端点不接受 HEAD 连接探测、
+    配音/工作流 API 没有独立鉴权端点。
+    """
+    spec = ADAPTERS.get(adapter) or {}
+    return tuple(spec.get('checks_supported') or ALL_CHECKS)
 
 
 def db():
@@ -895,6 +926,12 @@ def overview():
             cfg = version(channel['id'], channel['version'])
             channel.update(cfg)
             channel['configured'] = True
+            # 判定规则随每条渠道一起下发：前端不再靠缺字段回退成「要求三项」，
+            # 否则一条不适用项的失败会把能用的渠道判成异常。
+            adapter = channel.get('adapter')
+            channel['verification'] = list(verification_required(adapter))
+            channel['checks_supported'] = list(checks_supported(adapter))
+            channel['rules_known'] = adapter in ADAPTERS
             channel['fixture'] = {k:v for k,v in cfg['fixture'].items() if k != 'reference_images'}
             channel['material_count'] = len(cfg['fixture'].get('reference_images') or [])
             channel['history'] = [dict(r) for r in c.execute('SELECT version,actor,created FROM versions WHERE channel=? ORDER BY version DESC LIMIT 20', (channel['id'],))]
@@ -925,6 +962,33 @@ def overview():
             'runs': runs, 'events': events, 'adapters': ADAPTERS,
             'legacy_controls':legacy_states(), 'legacy_scopes':LEGACY_SCOPES,
             'notifications': notification_settings(), 'timezone':'Asia/Shanghai', 'stats_window':'最近24小时'}
+
+
+def run_status(rid):
+    """按任务 ID 读一条 run 的当前状态（只读），行不存在返回 None。"""
+    if channel_store.enabled():
+        return channel_store.run_status(rid)
+    with closing(db()) as c:
+        row = c.execute('SELECT * FROM runs WHERE id=?', (str(rid),)).fetchone()
+    return dict(row) if row else None
+
+
+def find_active(cid, version, kind, within=1800):
+    """查找同渠道、同配置版本、同检测类型的进行中任务。
+
+    用作提交去重：重复点击、或提交响应丢失后重试，都不该再创建一条新任务——
+    完整生成是收费的，重复创建等于重复扣费。
+    """
+    # PG 模式下 SQLite 不再是权威：公开 API 必须自动分发，绝不回落到旧库。
+    if channel_store.enabled():
+        return channel_store.find_active(cid, version, kind, within)
+    with closing(db()) as c:
+        row = c.execute(
+            "SELECT * FROM runs WHERE channel=? AND version=? AND kind=? "
+            "AND state IN ('queued','running') AND started>? ORDER BY started DESC LIMIT 1",
+            (cid, version, kind, time.time() - within),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def reserve(cid, kind, job_id='', snapshot=None, execution_snapshot=None):
