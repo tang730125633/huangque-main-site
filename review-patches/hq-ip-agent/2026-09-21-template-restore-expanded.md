@@ -23,9 +23,9 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 
 完整基线提交：`hq-ip-agent@9ee51f7315abc62e2d1e6aa62470c0a14f1fc2ec`
 
-补丁 SHA-256：`948b80f8a903750a8c5fd5b2196022179b19a403e3241ae6b27bfd1f1c53db15`
+补丁 SHA-256：`98d8fca33859a52b4a6fd378dbda5797578a376893078e465551e961521e4e4c`
 
-预期结果树：`2ca5bd094a16c123da13cd213e7f2ae655e888c3`
+预期结果树：`b352e28051f547833b1e13dc913ad7c9cb43f6f7`
 
 涉及文件：
 
@@ -35,7 +35,7 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 ## 验证结果
 
 - 红灯验证：旧实现下“待选择模板的恢复会话保持模板目录展开”失败；“已选择模板的恢复会话保持模板目录收起”通过。
-- 修复后，待选模板恢复展开、已选模板恢复收起、后端权威选择还原、详情定位、22 张横向卡、选择/重开及 390px 移动端布局断言全部通过。
+- 修复后，待选模板恢复展开、已选模板在 compose 仍等待输入时恢复收起、历史重复目录顺序兼容、后端权威选择还原、详情定位、22 张横向卡、选择/重开及 390px 移动端布局断言全部通过。
 - `node --check static/v4.js`、`node --check tests/hq-ip12-test.mjs`：通过。
 - `node tests/hq-widget-lifecycle-test.mjs`：通过，覆盖桌面/移动端 task → chat → reload → resume 生命周期。
 - `git diff --check`：通过。
@@ -48,7 +48,7 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 
 ```bash
 git apply --index /path/to/huangque-main-site/review-patches/hq-ip-agent/2026-09-21-template-restore-expanded.patch
-test "$(git write-tree)" = "2ca5bd094a16c123da13cd213e7f2ae655e888c3"
+test "$(git write-tree)" = "b352e28051f547833b1e13dc913ad7c9cb43f6f7"
 ```
 
 应用前先核对补丁 SHA-256，应用后核对结果树并重新运行上述测试；确认无误后创建独立仓库提交并推送其权威 origin，再按独立服务发布流程部署。本 PR 自身不部署任何文件；审核通过前不得推送到生产 bare 远端，也不得上线。

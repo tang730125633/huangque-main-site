@@ -1,15 +1,15 @@
-From ab7020f295d118b90b32e45237e7bba8f1254546 Mon Sep 17 00:00:00 2001
-From: LU-003 <293645289+LU-003@users.noreply.github.com>
-Date: Mon, 21 Sep 2026 17:55:48 +0800
+From c121d109b59127236b1ea4dc089df637566d090a Mon Sep 17 00:00:00 2001
+From: LU-003 <LU-003@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:11:07 +0800
 Subject: [PATCH] fix(ip12): keep pending template catalog expanded on restore
 
 ---
- static/v4.js           | 27 ++++++++++++++++++++++-----
- tests/hq-ip12-test.mjs | 19 ++++++++++++++++++-
- 2 files changed, 40 insertions(+), 6 deletions(-)
+ static/v4.js           | 32 +++++++++++++++++++++++++++-----
+ tests/hq-ip12-test.mjs | 26 ++++++++++++++++++++++++--
+ 2 files changed, 51 insertions(+), 7 deletions(-)
 
 diff --git a/static/v4.js b/static/v4.js
-index e11a60b..fc0730e 100644
+index e11a60b..90974c1 100644
 --- a/static/v4.js
 +++ b/static/v4.js
 @@ -3650,7 +3650,8 @@
@@ -22,7 +22,7 @@ index e11a60b..fc0730e 100644
      if (w.hint) {
        var hint = document.createElement("div");
        hint.className = "widget-hint";
-@@ -5154,11 +5155,27 @@
+@@ -5154,11 +5155,32 @@
          renderActionCards(data.delegations, data.film === true, false); // 恢复后待办卡片默认收起成一行（先看对话；出片提问卡按意图门控）
          // 旧素材卡只在「最后意图仍是出片」时按收起态恢复（该条消息的附件）；
          // 最后在聊别的（哪怕会话里出过片）→ 不渲染任何出片卡，连收起态都不留。
@@ -33,15 +33,20 @@ index e11a60b..fc0730e 100644
 +        var expandedWidgetIds = {};
 +        var compose = data.delegations && data.delegations.compose;
 +        var templateCatalog = (data.widgets || []).find(function (w) {
-+          return w && (w.id === "template_catalog" || w.layout === "template_catalog");
++          return w && w.id === "template_catalog";
 +        });
++        if (!templateCatalog) {
++          templateCatalog = (data.widgets || []).find(function (w) {
++            return w && w.layout === "template_catalog";
++          });
++        }
 +        var selectedScript = data.selected_choices && data.selected_choices.script;
 +        var hasSelectedTemplate = !!(templateCatalog && selectedScript && selectedScript.id
 +          && (templateCatalog.items || []).some(function (item) {
 +            return item && String(item.id || "") === String(selectedScript.id);
 +          }));
-+        if (templateCatalog && compose && compose.state === "needs_user_input" && !hasSelectedTemplate) {
-+          expandedWidgetIds.template_catalog = true;
++        if (templateCatalog && templateCatalog.id && compose && compose.state === "needs_user_input" && !hasSelectedTemplate) {
++          expandedWidgetIds[templateCatalog.id] = true;
          }
 +        var restoreWidgetOptions = {
 +          collapsed: true,
@@ -55,7 +60,7 @@ index e11a60b..fc0730e 100644
          setBadge(data.mode);
          intro.style.display = "none";
 diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
-index 6644fa0..fca2174 100644
+index 6644fa0..62cbeaf 100644
 --- a/tests/hq-ip12-test.mjs
 +++ b/tests/hq-ip12-test.mjs
 @@ -126,7 +126,7 @@ async function mockRoutes(page, opts) {
@@ -67,7 +72,7 @@ index 6644fa0..fca2174 100644
      }
      if (url.includes('/api/v4/tasks/')) return route.fulfill({ json: { ok: true, tasks: opts.readOnly ? [{ job_id: '8979', kind: 'video', state: 'completed', products: ['https://media.example.com/result.mp4'], msg_index: 1 }] : [] } });
      if (url.includes('/api/report/')) return route.fulfill({ json: reportPayload() });
-@@ -643,6 +643,22 @@ async function mockRoutes(page, opts) {
+@@ -643,17 +643,39 @@ async function mockRoutes(page, opts) {
    assert(!errors.some((e) => e.startsWith('I pageerror:')), '模板确认、收起和重开没有页面异常');
    await page.close();
  }
@@ -90,7 +95,17 @@ index 6644fa0..fca2174 100644
  {
    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
    page.on('pageerror', (e) => errors.push('I-restore pageerror: ' + e.message));
-@@ -654,6 +670,7 @@ async function mockRoutes(page, opts) {
+   await page.addInitScript(() => localStorage.setItem('hq-v4-session-id', 'restored-template-session'));
++  const restoredTemplateWidgets = templateWidgets();
+   await mockRoutes(page, {
+     restoreHistory: 'user',
+-    restoreWidgets: templateWidgets(),
++    restoreWidgets: [
++      { ...restoredTemplateWidgets[0], id: 'legacy-template-catalog', items: restoredTemplateWidgets[0].items.slice(0, 2) },
++      ...restoredTemplateWidgets,
++    ],
+     selectedChoices: { script: { id: 'template-3', label: '深圳 AI 橙色主标题', film: false } },
++    restoreDelegations: { compose: { state: 'needs_user_input', question: '请选择模板' } },
    });
    await page.goto(BASE, { waitUntil: 'domcontentloaded' });
    await page.waitForSelector('.template-catalog-box .template-card', { state: 'attached', timeout: 8000 });
