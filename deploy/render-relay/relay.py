@@ -387,16 +387,18 @@ _UPSTREAM_HEALTH_FIELDS = (
 )
 
 
-def _upstream(method, path, body=None, timeout=30):
+def _upstream(method, path, body=None, timeout=30, headers=None):
     """转发只读接口给云端渲染服务。"""
     if not UPSTREAM:
         raise RuntimeError("upstream not configured")
     data = None
-    headers = {"Authorization": "Bearer " + UPSTREAM_TOKEN}
+    merged = {"Authorization": "Bearer " + UPSTREAM_TOKEN}
+    if isinstance(headers, dict):
+        merged.update(headers)
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(UPSTREAM + path, data=data, headers=headers, method=method)
+        merged["Content-Type"] = "application/json"
+    req = urllib.request.Request(UPSTREAM + path, data=data, headers=merged, method=method)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status, resp.read()
 
@@ -628,7 +630,32 @@ class Handler(BaseHTTPRequestHandler):
             with _db() as conn:
                 row = conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
             if not row:
-                return self._send(404, {"error": "not_found"})
+                # 本地没有：可能是转发给上游（fang）的 preview_id 采纳任务，原样透传。
+                try:
+                    code, raw = _upstream("GET", "/v1/jobs/" + jid, timeout=30)
+                except urllib.error.HTTPError as exc:
+                    try:
+                        raw = exc.read()
+                    except Exception:
+                        raw = b""
+                    if not raw:
+                        raw = json.dumps(
+                            {"error": "not_found"}
+                        ).encode("utf-8")
+                    self.send_response(exc.code)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                except Exception:
+                    return self._send(404, {"error": "not_found"})
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
             out = {"job_id": row["id"], "status": row["status"],
                    "created_at": row["created_at"], "updated_at": row["updated_at"]}
             if row["result"]:
@@ -645,7 +672,30 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT result FROM jobs WHERE id=? AND status='completed'",
                     (name.replace(".mp4", ""),)).fetchone()
             if not row or not row["result"]:
-                return self._send(404, {"error": "not_found"})
+                # 本地没有：可能是转发给上游（fang）的 preview_id 采纳任务，文件在上游本机。
+                try:
+                    req = urllib.request.Request(
+                        UPSTREAM + "/v1/files/" + name,
+                        headers={"Authorization": "Bearer " + UPSTREAM_TOKEN},
+                    )
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        declared = int(resp.headers.get("Content-Length") or 0)
+                        self.send_response(resp.status)
+                        self.send_header(
+                            "Content-Type",
+                            resp.headers.get("Content-Type") or "video/mp4",
+                        )
+                        if declared:
+                            self.send_header("Content-Length", str(declared))
+                        else:
+                            self.send_header("Connection", "close")
+                        self.end_headers()
+                        shutil.copyfileobj(resp, self.wfile, _STREAM_CHUNK)
+                    return
+                except urllib.error.HTTPError as exc:
+                    return self._send(exc.code, {"error": "not_found"})
+                except Exception:
+                    return self._send(404, {"error": "not_found"})
             result = json.loads(row["result"])
             local = Path(OUT_DIR) / name
             if local.is_file():
@@ -707,6 +757,66 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(raw)
             return
 
+        if p.startswith("/v1/preview-jobs/"):
+            # 预览微调（2026-09-21）：纯透传上游，不落 jobs 表。
+            if not self._auth(RELAY_TOKEN):
+                return self._send(401, {"error": "unauthorized"})
+            try:
+                code, raw = _upstream("GET", p, timeout=60)
+            except urllib.error.HTTPError as exc:
+                try:
+                    raw = exc.read()
+                except Exception:
+                    raw = b""
+                code = exc.code
+                if not raw:
+                    raw = json.dumps({"error": "upstream_error", "detail": str(exc)[:120]}).encode("utf-8")
+            except Exception as exc:
+                return self._send(503, {"error": "upstream_failed", "detail": str(exc)[:120]})
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+
+        if p.startswith("/v1/preview-files/"):
+            # 预览微调（2026-09-21）：二进制原样回放，镜像上游的 inline/private 头。
+            if not self._auth(RELAY_TOKEN):
+                return self._send(401, {"error": "unauthorized"})
+            try:
+                req = urllib.request.Request(
+                    UPSTREAM + p, headers={"Authorization": "Bearer " + UPSTREAM_TOKEN})
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    raw = resp.read()
+                    code = resp.status
+                    ctype = resp.headers.get("Content-Type") or "application/octet-stream"
+                    disposition = resp.headers.get("Content-Disposition") or "inline"
+                    cache = resp.headers.get("Cache-Control") or "private, max-age=300"
+            except urllib.error.HTTPError as exc:
+                try:
+                    raw = exc.read()
+                except Exception:
+                    raw = b""
+                code = exc.code
+                ctype = "application/json; charset=utf-8"
+                disposition = None
+                cache = None
+                if not raw:
+                    raw = json.dumps({"error": "upstream_error", "detail": str(exc)[:120]}).encode("utf-8")
+            except Exception as exc:
+                return self._send(503, {"error": "upstream_failed", "detail": str(exc)[:120]})
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(raw)))
+            if disposition:
+                self.send_header("Content-Disposition", disposition)
+            if cache:
+                self.send_header("Cache-Control", cache)
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+
         return self._send(404, {"error": "not_found"})
 
     def do_POST(self):
@@ -760,6 +870,42 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             if not isinstance(body, dict):
                 return self._send(400, {"error": "invalid_request"})
+            # preview_id 采纳：预览记录只存在 fang（上游）本机，正式任务也必须
+            # 回 fang 渲染（GPU 节点本地没有预览记录会拒单）。原样透传上游响应。
+            if body.get("preview_id"):
+                forward_headers = {}
+                request_id = self.headers.get("X-Request-Id") or ""
+                if request_id:
+                    # 渲染端按 X-Request-Id 做幂等；透传客户端的请求标识。
+                    forward_headers["X-Request-Id"] = request_id
+                try:
+                    code, raw = _upstream(
+                        "POST", "/v1/jobs", body, timeout=30,
+                        headers=forward_headers,
+                    )
+                except urllib.error.HTTPError as exc:
+                    try:
+                        raw = exc.read()
+                    except Exception:
+                        raw = b""
+                    if not raw:
+                        raw = json.dumps(
+                            {"error": "upstream_error", "detail": str(exc)[:120]}
+                        ).encode("utf-8")
+                    self.send_response(exc.code)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                except Exception as exc:
+                    return self._send(503, {"error": "upstream_failed", "detail": str(exc)[:120]})
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
             jid = uuid.uuid4().hex
             now = _now()
             if REQUIRE_GPU and not isinstance(body.get("template_id"), str):
@@ -805,6 +951,32 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "invalid_request", "detail": str(exc)})
             except Exception as exc:
                 self._send(503, {"error": "upstream_failed", "detail": str(exc)[:120]})
+            return
+
+        if p == "/v1/preview-jobs":
+            # 预览微调（2026-09-21）：纯透传上游，不落本地队列、不参与 claim/report/COS。
+            if not self._auth(RELAY_TOKEN):
+                return self._send(401, {"error": "unauthorized"})
+            body = self._body()
+            if not isinstance(body, dict):
+                return self._send(400, {"error": "invalid_request"})
+            try:
+                code, raw = _upstream("POST", "/v1/preview-jobs", body, timeout=60)
+            except urllib.error.HTTPError as exc:
+                try:
+                    raw = exc.read()
+                except Exception:
+                    raw = b""
+                code = exc.code
+                if not raw:
+                    raw = json.dumps({"error": "upstream_error", "detail": str(exc)[:120]}).encode("utf-8")
+            except Exception as exc:
+                return self._send(503, {"error": "upstream_failed", "detail": str(exc)[:120]})
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
             return
 
         # ---- 节点侧 ----
