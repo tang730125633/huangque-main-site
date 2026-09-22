@@ -30,8 +30,18 @@ ADAPTERS = {
                     'verification': ('connection', 'full')},
     'xai_video': {'name': 'Grok 视频协议', 'kind': 'xiaole_video', 'references': True},
     # 乐创（api.lechuang.chat）统一生成协议：POST /generations，图/视频共用同一入口。
-    'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True},
-    'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True},
+    'lechuang_image': {'name': '乐创统一生图', 'kind': 'image', 'references': True,
+                      # 乐创的 /api/v1/models 端点真实存在（无 Key 401），但带 Key 长期
+                      # 返回 500「Internal Server Error」——上游辅助接口异常。
+                      # 判定必需项只保留 connection + full：full 已经真实用过这个 Key
+                      # 和模型完成生成，鉴权证据比模型列表接口更强；把辅助接口异常
+                      # 当成渠道不可用，会让真实能出成品的渠道永久变红。
+                      # auth 仍留在 checks_supported：管理员可以手动跑，失败记录照常展示。
+                      'verification': ('connection', 'full'),
+                      'checks_supported': ('connection', 'auth', 'full')},
+    'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True,
+                      'verification': ('connection', 'full'),
+                      'checks_supported': ('connection', 'auth', 'full')},
     # Sora：复用原厂 video_openai 客户端（已支持注入 api_key / api_base），
     # kind 用任务类型 sora_video，与 function_registry 的 task_match.kind 一致。
     'sora_video': {'name': 'OpenAI Sora 协议', 'kind': 'sora_video', 'references': True,

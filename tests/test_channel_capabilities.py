@@ -162,9 +162,25 @@ class VerificationRequirementTests(unittest.TestCase):
             self.assertNotIn('auth', req, adapter + ' 不该要求鉴权探测')
             self.assertIn('full', req, adapter + ' 必须要求完整生成')
 
-    def test_model_list_protocols_still_require_auth(self):
+    def test_model_list_protocols_keep_auth_probe_available(self):
+        """有模型列表端点的协议，鉴权探测必须【可手动执行】。
+
+        但「可探测」与「判定必需」是两件事：
+        乐创的 /api/v1/models 带 Key 长期返回 500（上游辅助接口异常），
+        而 full 已经真实用过同一个 Key 和模型完成生成——鉴权证据更强。
+        所以乐创的判定必需项收窄为 connection + full，auth 仍保留在
+        checks_supported 里供管理员手动执行，失败记录照常展示。
+        """
         from content_domains import channel_manager as cm
         for adapter in ('openai_image', 'gemini_image', 'lechuang_image', 'lechuang_video'):
             spec = cm.ADAPTERS.get(adapter) or {}
+            supported = spec.get('checks_supported') or ('connection', 'auth', 'full')
+            self.assertIn('auth', supported, adapter + ' 有模型列表端点，鉴权探测必须仍可手动执行')
             req = spec.get('verification') or ('connection', 'auth', 'full')
-            self.assertIn('auth', req, adapter + ' 有模型列表端点，应保留鉴权探测')
+            self.assertIn('full', req, adapter + ' 必须要求完整生成')
+            if adapter in ('lechuang_image', 'lechuang_video'):
+                # 上游辅助接口异常不得让能出成品的渠道永久判不可用
+                self.assertNotIn('auth', req, adapter + ' 的判定必需项应为 connection + full')
+            else:
+                # 其他模型列表型协议不变，仍然要求鉴权
+                self.assertIn('auth', req, adapter + ' 应保留鉴权要求')
