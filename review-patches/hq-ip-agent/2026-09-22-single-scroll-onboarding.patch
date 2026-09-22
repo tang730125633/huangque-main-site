@@ -1,0 +1,69 @@
+From 29c636a788b865855e80449373d802016f56c740 Mon Sep 17 00:00:00 2001
+From: LU-003 <293645289+LU-003@users.noreply.github.com>
+Date: Tue, 22 Sep 2026 11:04:53 +0800
+Subject: [PATCH] fix(ip12): simplify new-session onboarding layout
+
+---
+ static/style.css       | 16 ++++++++++++++++
+ tests/hq-ip12-test.mjs | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 46 insertions(+)
+
+diff --git a/static/style.css b/static/style.css
+index e3b80a7..6a3be94 100644
+--- a/static/style.css
++++ b/static/style.css
+@@ -1210,0 +1211 @@ button { font-family: inherit; }
++.main-col:has(#capability-launcher:not([hidden])) .example-grid { display: none; }
+@@ -1418,0 +1420,15 @@ button { font-family: inherit; }
++  .main-col:has(#capability-launcher:not([hidden])) .intro {
++    flex: 0 0 auto; padding: 18px 0 12px; overflow: visible;
++  }
++  .main-col:has(#capability-launcher:not([hidden])) .eyebrow { margin-bottom: 8px; }
++  .main-col:has(#capability-launcher:not([hidden])) .intro-title { font-size: 28px; margin-bottom: 6px; }
++  .main-col:has(#capability-launcher:not([hidden])) .intro-sub { margin-bottom: 0; }
++  .main-col:has(#capability-launcher:not([hidden])):has(#input:not(:placeholder-shown)) .intro {
++    display: none;
++  }
++  .main-col:has(#capability-launcher:not([hidden])) .capability-launcher {
++    flex: 0 0 auto; max-height: none; margin-bottom: 10px; overflow: visible;
++  }
++  .main-col:has(#capability-launcher:not([hidden])) .messages {
++    min-height: 72px; padding-top: 12px; padding-bottom: 14px;
++  }
+diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
+index 62cbeaf..8bb6fa2 100644
+--- a/tests/hq-ip12-test.mjs
++++ b/tests/hq-ip12-test.mjs
+@@ -154,0 +155,28 @@ async function mockRoutes(page, opts) {
++  const onboardingLayout = await page.evaluate(() => {
++    const regionIds = ['intro', 'capability-launcher', 'messages'];
++    const scrollableRegions = regionIds.filter((id) => {
++      const node = document.getElementById(id);
++      const style = getComputedStyle(node);
++      return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
++    });
++    const composerRect = document.querySelector('.composer-wrap').getBoundingClientRect();
++    return {
++      exampleGridDisplay: getComputedStyle(document.getElementById('example-grid')).display,
++      scrollableRegions,
++      composerInsideViewport: composerRect.top >= 0 && composerRect.bottom <= window.innerHeight + 1,
++    };
++  });
++  assert(onboardingLayout.exampleGridDisplay === 'none', '新会话不同时展示重复的 Hero 示例入口');
++  assert(onboardingLayout.scrollableRegions.length <= 1,
++    '新会话欢迎区、能力区和消息区最多一个滚动容器（实际=' + JSON.stringify(onboardingLayout.scrollableRegions) + '）');
++  assert(onboardingLayout.composerInsideViewport, '新会话输入框完整保留在首屏视口内');
++  await page.setViewportSize({ width: 1920, height: 1080 });
++  const wideOnboardingScrollers = await page.evaluate(() => ['intro', 'capability-launcher', 'messages'].filter((id) => {
++    const node = document.getElementById(id);
++    const style = getComputedStyle(node);
++    return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
++  }));
++  assert(wideOnboardingScrollers.length <= 1,
++    '1920×1080 新会话最多一个滚动容器（实际=' + JSON.stringify(wideOnboardingScrollers) + '）');
++  await page.setViewportSize({ width: 1280, height: 900 });
++
+@@ -412,0 +441 @@ async function mockRoutes(page, opts) {
++  assert(await page.$eval('#intro', (n) => getComputedStyle(n).display === 'none'), '新会话开始输入后收起 Hero 为输入区让出空间');
+@@ -429,0 +459 @@ async function mockRoutes(page, opts) {
++  assert(await page.$eval('.composer-wrap', (n) => n.getBoundingClientRect().bottom <= window.innerHeight + 1), '长文本输入时输入框仍完整保留在视口内');
