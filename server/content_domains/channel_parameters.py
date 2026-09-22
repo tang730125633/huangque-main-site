@@ -76,6 +76,152 @@ def layout_state():
     return _clean_layout(json.loads(row[0]) if row else {})
 
 
+def _entry_front(task, oid):
+    """目录条目对外的选择键。
+
+    优先取识别条件里用户真正会提交的那个字段；都没有就退回功能 ID 的末段
+    —— 目录身份不能建立在「这些字段必然存在」之上。
+    """
+    for key in ('channel', 'model', 'variant', 'voice_scope'):
+        value = str((task or {}).get(key) or '').strip()
+        if value:
+            return value
+    tail = str(oid or '').rsplit('.', 1)[-1]
+    return tail
+
+
+def _operation_for_front(kind, front):
+    """按 front 反查业务功能：直接用识别条件比对，不靠命名猜测。
+
+    同一个 front 可能对应多个功能（例如纳米香蕉 2 的文生图与参考图都提交
+    model=nb2），所以这个函数只用于「旧映射条目该归属哪个功能」；
+    功能之间靠 operation_id 区分，不在这里合并。
+    """
+    from .function_registry import operation_catalog
+    hits = []
+    for spec in operation_catalog():
+        task = spec.get('task_match') or {}
+        if str(task.get('kind') or '').strip() != kind:
+            continue
+        for key in ('channel', 'model', 'variant', 'voice_scope'):
+            if str(task.get(key) or '').strip() == front:
+                hits.append(spec)
+                break
+    if not hits:
+        return None
+    # 同一个 front 可能命中多个功能（grok 文生图 / grok 参考图；纳米香蕉 2 的
+    # 文生图 / 参考图都提交 model=nb2）。这时【不能猜】——猜哪个都可能把用户的
+    # 请求送到错的渠道。返回 None 让调用方把它当明确的兼容入口保留，
+    # 由客户端按 operation_id + 真实输入解析（见 function_registry.classify_task）。
+    if len(hits) > 1:
+        return None
+    return hits[0]
+
+
+def _route_for_function(oid):
+    """功能当前该走谁。返回 None 表示这个功能不进目录（只有暂停才这样）。
+
+    统一解析：
+      * 没有功能映射  → 'unmapped'：该功能尚未迁移，旧入口按明确的兼容关系
+        继续可用，旧映射条目原样保留（不能因为「还没迁」就把入口删掉）；
+      * state=legacy → 按原厂规则执行，条目原样保留；
+      * state=managed→ 用主渠道当前版本，旧条目也改由它决定；
+      * state=paused → 明确拒绝新任务，不进目录。
+    """
+    mapping = store.operation_mapping(oid)
+    if not mapping:
+        return {'state': 'unmapped', 'cfg': None, 'primary': ''}
+    state = str(mapping.get('state') or '')
+    if state == 'paused':
+        return None
+    cid = str(mapping.get('channel') or '')
+    if state != 'managed' or not cid:
+        return {'state': state or 'legacy', 'cfg': None, 'primary': ''}
+    try:
+        cfg = store.version(cid)
+    except ValueError:
+        # 映射指向的渠道已经不存在（被删或版本被回收）。这是**数据**情况，
+        # 不是读取失败：该功能当前没有可用渠道，不进目录，由后台如实显示。
+        # 其他异常（读库失败等）不在这里吞掉，继续向上抛。
+        return None
+    return {'state': 'managed', 'cfg': cfg, 'primary': cid}
+
+
+def _operation_items(existing):
+    """按业务功能补齐目录，并把旧映射条目重新归一到功能当前的主渠道。
+
+    两件事，缺一不可：
+      1. 旧映射条目（grok / gpt-image-2 …）只是「怎么找到这个功能」的入口标识，
+         它该走谁必须由该功能当前的功能映射决定 —— 否则管理员把
+         video.grok.text 切到 B，旧 grok 条目仍会把任务拉到 A。
+      2. 只配了功能映射、没有旧条目的功能（纳米香蕉 2、黄雀引擎 1 …）
+         必须补进来，且按 operation_id 各自成条 —— 文生图与参考图可以用不同渠道。
+
+    读取失败一律抛出：目录读不到就让调用方报错，绝不悄悄退回旧配置。
+    """
+    from .function_registry import operation_catalog
+    by_op = {}
+    for spec in operation_catalog():
+        oid = str(spec.get('operation_id') or '')
+        task = spec.get('task_match') or {}
+        kind = str(task.get('kind') or '').strip()
+        if oid and kind:
+            by_op[oid] = (spec, kind, task)
+
+    def build(oid, spec, kind, task, cfg, front):
+        params_spec = (cfg or {}).get('parameters')
+        if not params_spec:
+            return None
+        return dict(kind=kind, front=front,
+                    label=(cfg or {}).get('name') or spec.get('title') or oid,
+                    revision=token(cfg), fields=params_spec['fields'],
+                    combinations=params_spec['combinations'], default=params_spec['default'],
+                    reference_min=params_spec['reference_min'],
+                    reference_max=params_spec['reference_max'],
+                    count=1, mask_enabled=params_spec.get('mask') is True,
+                    operation_id=oid, match=task)
+
+    # ① 旧映射条目：保留它作为入口标识，但渠道改由功能映射决定
+    covered = set()
+    rewritten = []
+    for item in existing:
+        spec = _operation_for_front(item['kind'], item['front'])
+        if not spec:
+            # 对应不到唯一业务功能（没有对应功能，或一个 front 对应多个功能）。
+            # 保留为【明确的兼容入口】：它只表示「这条旧线路还能用」，
+            # 不带 operation_id，不与功能条目混淆。管理员对某个功能的切换
+            # 由该功能自己的条目生效，不会被这条兼容条目遮蔽。
+            compat = dict(item)
+            compat['legacy_compat'] = True
+            rewritten.append(compat)
+            continue
+        oid = spec['operation_id']
+        route = _route_for_function(oid)
+        if route is None:
+            continue                        # 功能已暂停：不进目录
+        covered.add(oid)
+        if route['state'] == 'managed' and route['cfg'] is not None:
+            entry = build(oid, spec, item['kind'], spec.get('task_match') or {},
+                          route['cfg'], item['front'])
+            if entry:
+                rewritten.append(entry)
+                continue
+        rewritten.append(item)
+
+    # ② 只配了功能映射、没有旧条目的功能：按 operation_id 各自成条
+    added = []
+    for oid, (spec, kind, task) in by_op.items():
+        if oid in covered:
+            continue
+        route = _route_for_function(oid)
+        if route is None or route['state'] != 'managed' or route['cfg'] is None:
+            continue
+        entry = build(oid, spec, kind, task, route['cfg'], _entry_front(task, oid))
+        if entry:
+            added.append(entry)
+    return rewritten + added
+
+
 def _published_items():
     if channel_store.enabled():
         result=[]
@@ -87,7 +233,7 @@ def _published_items():
                 fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
                 reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
                 mask_enabled=spec.get('mask') is True))
-        return result
+        return _operation_items(result)
     result=[]
     with closing(store.db()) as c:
         for row in c.execute('SELECT config FROM mappings'):
@@ -103,7 +249,7 @@ def _published_items():
                 fields=spec['fields'],combinations=spec['combinations'],default=spec['default'],
                 reference_min=spec['reference_min'],reference_max=spec['reference_max'],count=1,
                 mask_enabled=spec.get('mask') is True))
-    return result
+    return _operation_items(result)
 
 
 def _lechuang_items(items):
