@@ -30,8 +30,7 @@ ALLOWED_PATHS = {
     "/api/auth/cli/action",
 }
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
-MAX_VIDEO_UPLOAD_BYTES = 32 * 1024 * 1024
+MAX_DIGITAL_HUMAN_MATERIAL_BYTES = 10 * 1024 * 1024
 MAX_AUDIO_UPLOAD_BYTES = 10 * 1024 * 1024
 IMAGE_UPLOAD_PATH = "/api/auth/cli/image-upload"
 VIDEO_UPLOAD_PATH = "/api/auth/cli/video-upload"
@@ -333,7 +332,7 @@ def _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, 
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("upload file must be a regular file")
-        if not 0 < before.st_size <= max_bytes:
+        if not 0 < before.st_size or (max_bytes is not None and before.st_size > max_bytes):
             raise ValueError(size_error)
         header = os.read(descriptor, 32)
         mime = mime_detector(header)
@@ -361,7 +360,15 @@ def _inspect_media_descriptor(descriptor, max_bytes, mime_detector, size_error, 
 
 def _open_image(path):
     return _open_media(
-        path, MAX_IMAGE_UPLOAD_BYTES, _image_mime,
+        path, None, _image_mime,
+        "upload image must not be empty",
+        "upload file must be PNG, JPG, or WebP",
+    )
+
+
+def _open_limited_image(path):
+    return _open_media(
+        path, MAX_DIGITAL_HUMAN_MATERIAL_BYTES, _image_mime,
         "upload image must be between 1 byte and 10 MiB",
         "upload file must be PNG, JPG, or WebP",
     )
@@ -369,8 +376,8 @@ def _open_image(path):
 
 def _open_video(path):
     return _open_media(
-        path, MAX_VIDEO_UPLOAD_BYTES, _video_mime,
-        "upload video must be between 1 byte and 32 MiB",
+        path, None, _video_mime,
+        "upload video must not be empty",
         "upload file must be MP4, MOV, or WebM",
     )
 
@@ -593,7 +600,7 @@ def upload_audio(path, token, timeout=120):
 def upload_digital_human_material(path, token, timeout=120):
     return _upload_media(
         path, token, DIGITAL_HUMAN_MATERIAL_UPLOAD_PATH,
-        "X-HQ-Image-SHA256", _open_image, timeout,
+        "X-HQ-Image-SHA256", _open_limited_image, timeout,
     )
 
 

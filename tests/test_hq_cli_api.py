@@ -1,6 +1,7 @@
 import http.cookiejar
 import gc
 import hashlib
+import http.client
 import importlib
 import json
 import os
@@ -92,6 +93,23 @@ class HQCLIAPITests(unittest.TestCase):
                 return response.getcode(), json.loads(response.read())
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
+
+    def _declared_raw_request(self, path, raw, declared_length, token, content_type):
+        digest_header = "X-HQ-Video-SHA256" if content_type.startswith("video/") else "X-HQ-Image-SHA256"
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=3)
+        try:
+            connection.putrequest("POST", path)
+            connection.putheader("Authorization", "Bearer " + token)
+            connection.putheader("X-HQ-Confirm", "true")
+            connection.putheader("Content-Type", content_type)
+            connection.putheader(digest_header, hashlib.sha256(raw).hexdigest())
+            connection.putheader("Content-Length", str(declared_length))
+            connection.endheaders()
+            connection.send(raw)
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
 
     def _login_browser(self):
         jar = http.cookiejar.CookieJar()
@@ -345,8 +363,8 @@ class HQCLIAPITests(unittest.TestCase):
                          ["properties"]["person_image_upload_id"]["title"])
         self.assertEqual("服装图片", actions["tryon-fast-generate"]["input_schema"]
                          ["properties"]["clothes_upload_id"]["title"])
-        for action, family, maximum in (("image-upload", "image", 200 * 1024 * 1024),
-                                        ("video-upload", "video", 200 * 1024 * 1024),
+        for action, family, maximum in (("image-upload", "image", None),
+                                        ("video-upload", "video", None),
                                         ("audio-upload", "audio", 10 * 1024 * 1024)):
             with self.subTest(action=action):
                 item = actions[action]
@@ -355,6 +373,8 @@ class HQCLIAPITests(unittest.TestCase):
                 self.assertEqual(maximum, item["input_schema"]["properties"]["file"]["maxBytes"])
                 self.assertEqual("dedicated_upload", item["transport"]["kind"])
                 self.assertNotIn(action, self.auth.hq_cli_api.ACTION_CATALOG_MAP)
+        self.assertEqual(20, actions["image-upload"]["transport"]["account_active_max_files"])
+        self.assertEqual(20, actions["video-upload"]["transport"]["account_active_max_files"])
 
     def test_ip12_video_catalog_matches_executable_channel_contract(self):
         self._enable_ip12_bridge()
@@ -1667,6 +1687,23 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual(raw, captured["raw"])
         self.assertEqual("video/mp4", captured["content_type"])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), captured["digest"])
+
+    def test_generic_uploads_forward_declared_sizes_over_200mb_without_a_product_cap(self):
+        token = self._token(["assets:upload"])
+        raw = b"\x00\x00\x00\x18ftypisom" + b"test"
+        declared_length = 200 * 1024 * 1024 + 1
+        captured = {}
+
+        def fake_upload(stream, length, *_args):
+            captured["length"] = length
+            return 200, {"upload_id": "vid_" + "a" * 32}
+
+        with mock.patch.object(self.auth.hq_cli_api, "proxy_video_upload", side_effect=fake_upload):
+            status, payload = self._declared_raw_request(
+                "/api/auth/cli/video-upload", raw, declared_length, token, "video/mp4",
+            )
+        self.assertEqual((200, "vid_" + "a" * 32), (status, payload["upload_id"]))
+        self.assertEqual(declared_length, captured["length"])
 
     def test_audio_upload_requires_scope_confirmation_and_streams_raw_bytes(self):
         raw = b"ID3" + b"private-audio"

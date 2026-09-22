@@ -14,8 +14,11 @@ import time
 import uuid
 
 
+# Base64-backed image inference paths retain this ceiling.  It is not the
+# temporary-upload storage limit.
 MAX_BYTES = 10 * 1024 * 1024
-MAX_USER_BYTES = 96 * 1024 * 1024
+IMAGE_UPLOAD_MAX_BYTES = None
+MAX_USER_BYTES = 2 * 1024 * 1024 * 1024
 MAX_USER_FILES = 20
 MIN_FREE_BYTES = 512 * 1024 * 1024
 TTL = max(600, min(24 * 60 * 60, int(os.environ.get("HQ_CLI_IMAGE_UPLOAD_TTL", "3600") or 3600)))
@@ -25,9 +28,12 @@ UPLOAD_ROOT = pathlib.Path(os.environ.get(
 ))
 UPLOAD_ID_RE = re.compile(r"^img_[0-9a-f]{32}$")
 MIME_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+# Base64-backed video inference paths retain this ceiling.  Generic temporary
+# upload storage is bounded by the shared owner quota instead.
 VIDEO_MAX_BYTES = 32 * 1024 * 1024
-VIDEO_MAX_USER_BYTES = 96 * 1024 * 1024
-VIDEO_MAX_USER_FILES = 20  # 2026-09-12 老板拍板：6→20 与图片/音频看齐（额度满曾误伤顾客）
+VIDEO_UPLOAD_MAX_BYTES = None
+VIDEO_MAX_USER_BYTES = MAX_USER_BYTES
+VIDEO_MAX_USER_FILES = MAX_USER_FILES
 VIDEO_MAX_SECONDS = 15
 VIDEO_UPLOAD_ID_RE = re.compile(r"^vid_[0-9a-f]{32}$")
 VIDEO_MIME_EXTENSIONS = {"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm"}
@@ -174,36 +180,26 @@ def _cleanup(now):
 
 def _active_usage(owner_hash, now):
     count = total = 0
-    for meta_path in UPLOAD_ROOT.glob("img_*.json"):
-        try:
-            raw_meta = meta_path.read_bytes()
-            if len(raw_meta) > 4096:
+    for pattern in ("img_*.json", "vid_*.json"):
+        for meta_path in UPLOAD_ROOT.glob(pattern):
+            try:
+                raw_meta = meta_path.read_bytes()
+                if len(raw_meta) > 4096:
+                    continue
+                meta = json.loads(raw_meta)
+                if int(meta.get("expires_at") or 0) > now and hmac.compare_digest(
+                        str(meta.get("owner_hash") or ""), owner_hash):
+                    count += 1
+                    total += int(meta.get("bytes") or 0)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
-            meta = json.loads(raw_meta)
-            if int(meta.get("expires_at") or 0) > now and hmac.compare_digest(
-                    str(meta.get("owner_hash") or ""), owner_hash):
-                count += 1
-                total += int(meta.get("bytes") or 0)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            continue
     return count, total
 
 
-def _active_video_usage(owner_hash, now):
-    count = total = 0
-    for meta_path in UPLOAD_ROOT.glob("vid_*.json"):
-        try:
-            raw_meta = meta_path.read_bytes()
-            if len(raw_meta) > 4096:
-                continue
-            meta = json.loads(raw_meta)
-            if int(meta.get("expires_at") or 0) > now and hmac.compare_digest(
-                    str(meta.get("owner_hash") or ""), owner_hash):
-                count += 1
-                total += int(meta.get("bytes") or 0)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            continue
-    return count, total
+def _valid_upload_length(length, max_bytes):
+    return isinstance(length, int) and length > 0 and (
+        max_bytes is None or length <= max_bytes
+    )
 
 
 def _active_audio_usage(owner_hash, now):
@@ -223,14 +219,15 @@ def _active_audio_usage(owner_hash, now):
     return count, total
 
 
-def store_image(stream, length, username, content_type, expected_sha256, now=None):
+def store_image(stream, length, username, content_type, expected_sha256, now=None,
+                max_bytes=IMAGE_UPLOAD_MAX_BYTES):
     now = int(time.time() if now is None else now)
     if not username:
         raise ValueError("缺少上传账号")
     if content_type not in MIME_EXTENSIONS:
         raise ValueError("只支持 PNG / JPG / WebP")
-    if not isinstance(length, int) or length <= 0 or length > MAX_BYTES:
-        raise ValueError("图片大小必须在 1B 到 10MB 之间")
+    if not _valid_upload_length(length, max_bytes):
+        raise ValueError("图片大小必须大于 0B")
     expected_sha256 = str(expected_sha256 or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise ValueError("缺少有效的图片摘要")
@@ -245,7 +242,7 @@ def _store_image(stream, length, username, content_type, expected_sha256, now):
     _cleanup(now)
     count, total = _active_usage(_owner_hash(username), now)
     if count >= MAX_USER_FILES or total + length > MAX_USER_BYTES:
-        raise ValueError("当前账号的临时图片已达上限，请等待过期后重试")
+        raise ValueError("当前账号的临时图片或视频已达上限，请等待过期后重试")
     if shutil.disk_usage(UPLOAD_ROOT).free - length < MIN_FREE_BYTES:
         raise OSError("图片临时空间不足")
     upload_id = "img_" + uuid.uuid4().hex
@@ -331,8 +328,8 @@ def store_video(stream, length, username, content_type, expected_sha256, now=Non
         raise ValueError("缺少上传账号")
     if content_type not in VIDEO_MIME_EXTENSIONS:
         raise ValueError("只支持 MP4 / MOV / WebM")
-    if not isinstance(length, int) or length <= 0 or length > VIDEO_MAX_BYTES:
-        raise ValueError("视频大小必须在 1B 到 32MB 之间")
+    if not _valid_upload_length(length, VIDEO_UPLOAD_MAX_BYTES):
+        raise ValueError("视频大小必须大于 0B")
     expected_sha256 = str(expected_sha256 or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise ValueError("缺少有效的视频摘要")
@@ -341,9 +338,9 @@ def store_video(stream, length, username, content_type, expected_sha256, now=Non
         UPLOAD_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(UPLOAD_ROOT, 0o700)
         _cleanup(now)
-        count, total = _active_video_usage(_owner_hash(username), now)
-        if count >= VIDEO_MAX_USER_FILES or total + length > VIDEO_MAX_USER_BYTES:
-            raise ValueError("当前账号的临时视频已达上限，请等待过期后重试")
+        count, total = _active_usage(_owner_hash(username), now)
+        if count >= MAX_USER_FILES or total + length > MAX_USER_BYTES:
+            raise ValueError("当前账号的临时图片或视频已达上限，请等待过期后重试")
         if shutil.disk_usage(UPLOAD_ROOT).free - length < MIN_FREE_BYTES:
             raise OSError("视频临时空间不足")
 
@@ -514,7 +511,6 @@ def _load_image(upload_id, username, now):
         meta = json.loads(raw_meta)
         extension = str(meta.get("extension") or "")
         data_path, _ = _paths(upload_id, extension)
-        data = data_path.read_bytes()
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         raise ValueError("图片 upload_id 不存在或已失效")
     if meta.get("version") != 1 or extension not in MIME_EXTENSIONS.values():
@@ -525,6 +521,11 @@ def _load_image(upload_id, username, now):
         data_path.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)
         raise ValueError("图片 upload_id 已过期，请重新上传")
+    size = data_path.stat().st_size
+    if not 0 < size <= MAX_BYTES or size != int(meta.get("bytes") or -1):
+        raise ValueError("该模型参考输入大小超限；原素材已保留，请选择支持原素材的能力")
+    with data_path.open("rb") as handle:
+        data = handle.read(MAX_BYTES + 1)
     if not 0 < len(data) <= MAX_BYTES or len(data) != int(meta.get("bytes") or -1):
         raise ValueError("图片 upload_id 文件异常")
     if detect_mime(data[:16]) != meta.get("mime"):
@@ -543,9 +544,9 @@ def load_image_data_url(upload_id, username, now=None):
 
 def inspect_image(upload_id, username, now=None):
     """Return owner-scoped image metadata without exposing the stored path."""
-    _data, meta = _load_image(
-        upload_id, username, int(time.time() if now is None else now))
-    return dict(meta)
+    handle, _size, meta = open_upload("image", upload_id, username, now)
+    handle.close()
+    return meta
 
 
 def read_image_bytes(upload_id, username, now=None):
@@ -584,8 +585,8 @@ def approve_image(upload_id, username, purpose, lease_seconds, now=None):
 
 def discard_image(upload_id, username, now=None):
     """Delete one verified owner-scoped image upload."""
-    _data, meta = _load_image(
-        upload_id, username, int(time.time() if now is None else now))
+    handle, _size, meta = open_upload("image", upload_id, username, now)
+    handle.close()
     upload_id = str(upload_id).strip().lower()
     data_path, meta_path = _paths(upload_id, meta["extension"])
     data_path.unlink(missing_ok=True)
@@ -610,7 +611,6 @@ def _load_video_bytes(upload_id, username, now):
         meta = json.loads(raw_meta)
         extension = str(meta.get("extension") or "")
         data_path, _ = _video_paths(upload_id, extension)
-        data = data_path.read_bytes()
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         raise ValueError("视频 upload_id 不存在或已失效")
     if meta.get("version") != 1 or extension not in VIDEO_MIME_EXTENSIONS.values():
@@ -621,6 +621,11 @@ def _load_video_bytes(upload_id, username, now):
         data_path.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)
         raise ValueError("视频 upload_id 已过期，请重新上传")
+    size = data_path.stat().st_size
+    if not 0 < size <= VIDEO_MAX_BYTES or size != int(meta.get("bytes") or -1):
+        raise ValueError("该模型参考输入大小超限；原素材已保留，请选择支持原素材的能力")
+    with data_path.open("rb") as handle:
+        data = handle.read(VIDEO_MAX_BYTES + 1)
     if not 0 < len(data) <= VIDEO_MAX_BYTES or len(data) != int(meta.get("bytes") or -1):
         raise ValueError("视频 upload_id 文件异常")
     if detect_video_mime(data[:32]) != meta.get("mime"):
@@ -670,12 +675,12 @@ def verify_upload(kind, upload_id, username, now=None):
         if kind == "image":
             data_path, _ = _paths(upload_id, extension)
             valid_extension = extension in MIME_EXTENSIONS.values()
-            max_bytes = MAX_BYTES
+            max_bytes = IMAGE_UPLOAD_MAX_BYTES
             sniff_fn = detect_mime
         else:
             data_path, _ = _video_paths(upload_id, extension)
             valid_extension = extension in VIDEO_MIME_EXTENSIONS.values()
-            max_bytes = VIDEO_MAX_BYTES
+            max_bytes = VIDEO_UPLOAD_MAX_BYTES
             sniff_fn = detect_video_mime
         if meta.get("version") != 1 or not valid_extension:
             return False
@@ -695,7 +700,7 @@ def _verify_file_stream(path, meta, max_bytes, sniff_fn):
         size = path.stat().st_size
     except OSError:
         raise ValueError("素材文件不存在或已失效")
-    if not 0 < size <= max_bytes or size != int(meta.get("bytes") or -1):
+    if not _valid_upload_length(size, max_bytes) or size != int(meta.get("bytes") or -1):
         raise ValueError("素材文件异常")
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -713,63 +718,53 @@ def _verify_file_stream(path, meta, max_bytes, sniff_fn):
     return size
 
 
-def open_preview(kind, upload_id, username, now=None):
-    """Return ``(binary file handle, size, mime)`` for streaming preview.
-
-    Owner / expiry / size / mime / sha256 checks are identical to the
-    whole-read paths; the caller streams from the returned handle (64KB
-    chunks, Range aware) instead of materializing up to 32MB in memory.
-    """
+def open_upload(kind, upload_id, username, now=None):
+    """Return a verified upload handle, size and metadata for streaming use."""
     now = int(time.time() if now is None else now)
     if kind == "image":
         upload_id = str(upload_id or "").strip().lower()
         if not UPLOAD_ID_RE.fullmatch(upload_id):
             raise ValueError("图片 upload_id 格式不合法")
         _, meta_path = _paths(upload_id, ".png")
-        try:
-            raw_meta = meta_path.read_bytes()
-            if len(raw_meta) > 4096:
-                raise ValueError("图片 upload_id 元数据异常")
-            meta = json.loads(raw_meta)
-            extension = str(meta.get("extension") or "")
-            data_path, _ = _paths(upload_id, extension)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            raise ValueError("图片 upload_id 不存在或已失效")
-        if meta.get("version") != 1 or extension not in MIME_EXTENSIONS.values():
-            raise ValueError("图片 upload_id 元数据异常")
-        if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
-            raise ValueError("图片 upload_id 不存在或已失效")
-        if int(meta.get("expires_at") or 0) <= now:
-            data_path.unlink(missing_ok=True)
-            meta_path.unlink(missing_ok=True)
-            raise ValueError("图片 upload_id 已过期，请重新上传")
-        size = _verify_file_stream(data_path, meta, MAX_BYTES, detect_mime)
-        return open(data_path, "rb"), size, str(meta["mime"])
-    if kind == "video":
+        paths, extensions, sniff_fn = _paths, MIME_EXTENSIONS.values(), detect_mime
+    elif kind == "video":
         upload_id = str(upload_id or "").strip().lower()
         if not VIDEO_UPLOAD_ID_RE.fullmatch(upload_id):
             raise ValueError("视频 upload_id 格式不合法")
         _, meta_path = _video_paths(upload_id, ".mp4")
-        try:
-            raw_meta = meta_path.read_bytes()
-            if len(raw_meta) > 4096:
-                raise ValueError("视频 upload_id 元数据异常")
-            meta = json.loads(raw_meta)
-            extension = str(meta.get("extension") or "")
-            data_path, _ = _video_paths(upload_id, extension)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            raise ValueError("视频 upload_id 不存在或已失效")
-        if meta.get("version") != 1 or extension not in VIDEO_MIME_EXTENSIONS.values():
-            raise ValueError("视频 upload_id 元数据异常")
-        if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
-            raise ValueError("视频 upload_id 不存在或已失效")
-        if int(meta.get("expires_at") or 0) <= now:
-            data_path.unlink(missing_ok=True)
-            meta_path.unlink(missing_ok=True)
-            raise ValueError("视频 upload_id 已过期，请重新上传")
-        size = _verify_file_stream(data_path, meta, VIDEO_MAX_BYTES, detect_video_mime)
-        return open(data_path, "rb"), size, str(meta["mime"])
-    raise ValueError("素材类型不支持预览")
+        paths, extensions, sniff_fn = _video_paths, VIDEO_MIME_EXTENSIONS.values(), detect_video_mime
+    else:
+        raise ValueError("素材类型不支持预览")
+    try:
+        raw_meta = meta_path.read_bytes()
+        if len(raw_meta) > 4096:
+            raise ValueError("素材 upload_id 元数据异常")
+        meta = json.loads(raw_meta)
+        extension = str(meta.get("extension") or "")
+        data_path, _ = paths(upload_id, extension)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        raise ValueError("素材 upload_id 不存在或已失效")
+    if meta.get("version") != 1 or extension not in extensions:
+        raise ValueError("素材 upload_id 元数据异常")
+    if not hmac.compare_digest(str(meta.get("owner_hash") or ""), _owner_hash(username)):
+        raise ValueError("素材 upload_id 不存在或已失效")
+    if int(meta.get("expires_at") or 0) <= now:
+        data_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+        raise ValueError("素材 upload_id 已过期，请重新上传")
+    size = _verify_file_stream(data_path, meta, None, sniff_fn)
+    return open(data_path, "rb"), size, dict(meta)
+
+
+def open_preview(kind, upload_id, username, now=None):
+    """Return ``(binary file handle, size, mime)`` for streaming preview.
+
+    Owner / expiry / size / mime / sha256 checks are identical to the
+    whole-read paths; the caller streams from the returned handle (64KB
+    chunks, Range aware) instead of materializing the upload in memory.
+    """
+    handle, size, meta = open_upload(kind, upload_id, username, now)
+    return handle, size, str(meta["mime"])
 
 
 def _load_audio(upload_id, username, now):

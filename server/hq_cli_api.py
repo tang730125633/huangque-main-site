@@ -1701,12 +1701,15 @@ def _catalog_entry(action, fields):
 
 def _upload_catalog_entry(action, family, max_bytes, mime_types, max_files):
     label = {"image": "图片", "video": "视频", "audio": "音频"}[family]
+    constraints = ["requires explicit confirmation", "uploads are private to the current account"]
+    if max_bytes is None:
+        constraints.append("image and video uploads share a 2 GiB temporary storage quota per account")
     return {
         "action": action, "family": family, "purpose": "上传本人生成所需的临时参考" + label,
         "input_schema": {"type": "object", "additionalProperties": False, "required": ["file"], "properties": {
             "file": {"type": "file", "path": "absolute", "maxBytes": max_bytes, "mimeTypes": mime_types},
         }},
-        "constraints": ["requires explicit confirmation", "uploads are private to the current account"],
+        "constraints": constraints,
         "billing": "free", "external_effect": True, "confirmation_required": True, "risk": "write",
         "result_type": "upload", "result": {"kind": "upload_id"}, "ui_route": _catalog_route(action),
         "transport": {"kind": "dedicated_upload", "supports": ["dedicated_upload"], "account_active_max_files": max_files},
@@ -1828,10 +1831,10 @@ def _creator_pdf_download_catalog_entry():
 
 
 ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
-    _upload_catalog_entry("image-upload", "image", 200 * 1024 * 1024,
+    _upload_catalog_entry("image-upload", "image", None,
                           ["image/jpeg", "image/png", "image/webp"], 20),
-    _upload_catalog_entry("video-upload", "video", 200 * 1024 * 1024,
-                          ["video/mp4", "video/quicktime", "video/webm"], 6),
+    _upload_catalog_entry("video-upload", "video", None,
+                          ["video/mp4", "video/quicktime", "video/webm"], 20),
     _upload_catalog_entry("audio-upload", "audio", 10 * 1024 * 1024,
                           ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"], 20),
     _upload_catalog_entry("digital-human-oneclick-material-upload", "image", 10 * 1024 * 1024,
@@ -1913,9 +1916,9 @@ _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _DIGITAL_HUMAN_RUN_RE = re.compile(r"^dh-run-[A-Za-z0-9._:-]{1,128}$")
 _DIRECTOR_WORKFLOW_RE = re.compile(r"^dw_[0-9a-f]{32}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
-IMAGE_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+IMAGE_UPLOAD_MAX_BYTES = None
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
-VIDEO_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+VIDEO_UPLOAD_MAX_BYTES = None
 VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 VIDEO_COMPOSE_IMPORT_MAX_BYTES = 2 * 1024 * 1024 * 1024
 VIDEO_COMPOSE_IMPORT_SLOTS = threading.BoundedSemaphore(1)
@@ -2711,14 +2714,14 @@ def _proxy_media_upload(stream, length, web_token, internal_token, content_type,
 def proxy_image_upload(stream, length, web_token, internal_token, content_type, digest):
     return _proxy_media_upload(
         stream, length, web_token, internal_token, content_type, digest,
-        "/api/gen/cli/image-upload", "X-HQ-Image-SHA256", "image",
+        "/api/gen/cli/image-upload", "X-HQ-Image-SHA256", "image", timeout=3600,
     )
 
 
 def proxy_video_upload(stream, length, web_token, internal_token, content_type, digest):
     return _proxy_media_upload(
         stream, length, web_token, internal_token, content_type, digest,
-        "/api/gen/cli/video-upload", "X-HQ-Video-SHA256", "video",
+        "/api/gen/cli/video-upload", "X-HQ-Video-SHA256", "video", timeout=3600,
     )
 
 
