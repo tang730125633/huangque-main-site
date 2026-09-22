@@ -74,7 +74,9 @@ jobs:
         run: python -m pip install cryptography==50.0.1
 
       - name: 检查敏感文件与静态资源
-        run: python scripts/ci_validate.py
+        run: |
+          python scripts/ci_validate.py
+          python tests/test_readonly_mcp_logs.py
 
       - name: PostgreSQL 基础 Schema 与 SQLite 禁增门禁
         env:
