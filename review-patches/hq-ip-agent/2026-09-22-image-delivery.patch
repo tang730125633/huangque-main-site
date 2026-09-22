@@ -15,10 +15,7 @@ diff --git a/agent/v4/delivery.py b/agent/v4/delivery.py
 index bdd11e2..35c0592 100644
 --- a/agent/v4/delivery.py
 +++ b/agent/v4/delivery.py
-@@ -155,9 +155,12 @@ _AUDIO_URL_RE = re.compile(r"\.(?:mp3|wav|m4a|aac|ogg)(?:[?#]|$)", re.I)
- _IMAGE_URL_RE = re.compile(r"\.(?:jpe?g|png|webp|gif)(?:[?#]|$)", re.I)
- # 产品本体是视频的域：交付只贴视频链接，配音 mp3/平台封面图等副产品一律不贴
- # （老板实录 2026-09-16 任务 9262：成片交付里塞了配音 mp3 和两张封面，全成了多余卡片）
+@@ -158,3 +158,6 @@ _IMAGE_URL_RE = re.compile(r"\.(?:jpe?g|png|webp|gif)(?:[?#]|$)", re.I)
 -_VIDEO_PRODUCT_DOMAINS = {"hq-video", "hq-digital-human", "hq-clip", "hq-compose"}
 -_AUDIO_PRODUCT_DOMAINS = {"hq-audio"}
 -_IMAGE_PRODUCT_DOMAINS = {"hq-image"}
@@ -28,13 +25,7 @@ index bdd11e2..35c0592 100644
 +}
 +_AUDIO_PRODUCT_DOMAINS = {"audio", "hq-audio"}
 +_IMAGE_PRODUCT_DOMAINS = {"image", "hq-image"}
- 
- 
- def _result_urls(value) -> list:
-@@ -214,6 +217,24 @@ def _media_urls(value) -> dict:
-     }
- 
- 
+@@ -216,0 +220,18 @@ def _media_urls(value) -> dict:
 +def _product_media(domain: str, value) -> dict:
 +    """按任务域挑选真正应交付的产物，避免把封面、配音等副产物混成成品。"""
 +    media = _media_urls(value)
@@ -53,16 +44,10 @@ index bdd11e2..35c0592 100644
 +    return (media["videos"] + media["audios"] + media["images"])[:limit]
 +
 +
- def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict) -> bool:
-     """把非采集任务的真实终态写进历史并实时推到对话；幂等。"""
-     key = (sid, str(job_id))
-@@ -242,17 +263,11 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
-             text += "\n" + detail
-         if terminal == "failed" and (payload.get("refunded") or result.get("refunded")):
-             text += "\n这次费用已自动退回、没扣点。想再拍一遍，说声「重试」就行。"
+@@ -245 +266 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
 -        media = _media_urls(payload)
 +        media = _product_media(domain, payload)
-         urls = media["videos"][:3]
+@@ -247,9 +268,3 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
 -        # 贴进正文的链接按产品类型收敛：视频产品只贴视频；音频/图片产品贴对应链接；
 -        # 其它域（画布/线索/文案等）保持旧行为照贴全部公网链接。
 -        text_urls = list(urls)
@@ -75,40 +60,18 @@ index bdd11e2..35c0592 100644
 +        # 视频/音频沿用正文链接渲染；图片走结构化 images，避免同一图片被正文 URL 再渲染一次。
 +        text_urls = list(urls) + media["audios"][:3]
 +        image_urls = media["images"][:3]
-         cover = str(result.get("cover_url") or "").strip()
-         if not cover.startswith("http"):
-             cover = ""
-@@ -274,7 +289,9 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
-                     ).start()
-                 except Exception:
-                     pass
+@@ -276,0 +292 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
 +        if text_urls:
-             text += "\n" + "\n".join(text_urls)
+@@ -277,0 +294 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
 +        delivered_media = bool(urls or media["audios"] or image_urls)
-         sys_note = "（系统事件，用户不可见：%s 任务 %s 已到终态：%s" % (domain, job_id, terminal or "未知")
-         if detail:
-             sys_note += "，原因：%s" % detail
-@@ -283,13 +300,14 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
-         sys_note += "。用户问起时如实说明原因；失败且已退款时主动告知已退回并给出「说声重试」的出口）"
-         v4_state.append_main_history(sid, [
-             {"role": "user", "content": sys_note},
+@@ -286 +303,2 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
 -            {"role": "assistant", "content": text, "task_job": str(job_id), "task_domain": domain},
 +            {"role": "assistant", "content": text, "images": image_urls,
 +             "task_job": str(job_id), "task_domain": domain},
-         ])
-         v4_state.persist(sid)
-         _STATUS_BUST(sid)
-         streaming.emit(sid, "delivery", {
-             "reply": text,
+@@ -292 +310 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
 -            "images": [],
 +            "images": image_urls,
-             "videos": structured_videos,
-         })
-         log.info("job %s terminal delivered: %s", job_id, terminal, extra=observability.ctx(sid))
-@@ -298,14 +316,20 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
-             # （产物是什么/存在哪/要改怎么改），并执行此前承诺过的后续动作
-             # （如「成片出来后配 BGM」），不等客户催（2026-09-13 神秘顾客场景 A/B 实录）。
-             try:
+@@ -301,8 +319,14 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
 -                _TURN_SPAWNER(sid, (
 -                    "（系统事件，用户不可见：%s 任务 %s 的完成消息已推给用户。"
 -                    "请用一两句话自然收尾本次交付：产物是什么、存在哪里、想改想重做怎么说；"
@@ -131,38 +94,20 @@ index bdd11e2..35c0592 100644
 +                        "请如实说明暂未拿到可展示结果，并先查询任务或恢复产物后再交付。）" % (domain, job_id)
 +                    )
 +                _TURN_SPAWNER(sid, followup)
-             except Exception:
-                 log.exception("job %s follow-up turn spawn failed", job_id,
-                               extra=observability.ctx(sid))
 diff --git a/app.py b/app.py
 index 6cc908a..31af4b3 100644
 --- a/app.py
 +++ b/app.py
-@@ -437,6 +437,11 @@ def v4_tasks(sid):
-                 continue
-             if anchor is None:
-                 anchor = i
+@@ -439,0 +440,5 @@ def v4_tasks(sid):
 +            for u in m.get("images") or []:
 +                if u not in urls:
 +                    urls.append(u)
 +                if len(urls) >= 3:
 +                    break
-             for u in re.findall(r"https?://[^\s\"'<>）】)]+", m.get("content") or ""):
-                 if u not in urls:
-                     urls.append(u)
-@@ -445,7 +450,7 @@ def v4_tasks(sid):
-             if len(urls) >= 3:
-                 break
-         if not urls:
+@@ -448 +453 @@ def v4_tasks(sid):
 -            urls = v4_delivery._result_urls(t.get("result") or {})
 +            urls = v4_delivery.product_urls(t.get("domain") or "", t.get("result") or {})
-         t["products"] = urls[:3]
-         t.pop("result", None)
-         t["msg_index"] = anchor
-@@ -941,6 +946,28 @@ v4_delivery.set_identity_guard(
- v4_subagent.set_running_job_hook(v4_delivery.watch_sid)
- 
- 
+@@ -943,0 +949,22 @@ v4_subagent.set_running_job_hook(v4_delivery.watch_sid)
 +def _task_image_products(sid: str) -> dict:
 +    """从任务台账补回旧版未写入历史的图片产物，供断线/刷新恢复使用。"""
 +    products = {}
@@ -185,77 +130,44 @@ index 6cc908a..31af4b3 100644
 +    return products
 +
 +
- def _recent_deliveries(sid: str, cap: int = 5) -> list:
-     """最近交付兜底清单：采集带图消息 + 各类终态交付消息（task_job）。
- 
-@@ -949,27 +976,33 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
-     成片交付事件只走 SSE，SSE 一断视频/图片/音频交付卡片全部丢失
-     （原兜底只补采集带图）——补上全品类。"""
-     deliveries = []
+@@ -951,0 +979 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 +    task_images = _task_image_products(sid)
-     url_re = re.compile(r"https?://[^\s\"'<>）】)（）]+")
-     for m in reversed(v4_state.get_main_history(sid)):
+@@ -954 +982 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -        if m.get("images") and m.get("media_job"):
 +        if m.get("images") and (m.get("media_job") or m.get("task_job")):
-             deliveries.append({
-                 "reply": m.get("content") or "",
-                 "images": list(m.get("images") or []),
+@@ -958 +986 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -                "job": m.get("media_job"),
 +                "job": m.get("media_job") or str(m.get("task_job")),
-             })
-         elif m.get("task_job") and m.get("content"):
-             content = m.get("content")
-             cover = ""
+@@ -962,0 +991 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 +            images = list(task_images.get(str(m.get("task_job"))) or [])
-             videos = []
-             for u in url_re.findall(content):
-                 base = u.split("?")[0].lower()
-                 if not cover and base.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+@@ -967 +996,5 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -                    cover = u
 +                    if m.get("task_domain") in ("image", "hq-image"):
 +                        if u not in images:
 +                            images.append(u)
 +                    else:
 +                        cover = u
-                 elif base.endswith((".mp4", ".mov", ".webm")) and len(videos) < 3:
-                     videos.append({"url": u, "cover": cover})
-             deliveries.append({
-                 "reply": content,
+@@ -972 +1005 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -                "images": [],
 +                "images": images[:3],
-                 "videos": videos,
-                 "job": str(m.get("task_job")),
-             })
 diff --git a/tests/hq-delivery-fallback-test.py b/tests/hq-delivery-fallback-test.py
 index 4ebbbef..875c98e 100644
 --- a/tests/hq-delivery-fallback-test.py
 +++ b/tests/hq-delivery-fallback-test.py
-@@ -51,13 +51,14 @@ assert_ok(d[0]["job"] == "9777" and d[0]["reply"] == vid_msg["content"],
- assert_ok(d[0]["videos"] == [{"url": MP4, "cover": COVER}],
-           "mp4 链接解析成 videos[{url,cover}]", str(d[0]["videos"])[:160])
- 
+@@ -54 +54 @@ assert_ok(d[0]["videos"] == [{"url": MP4, "cover": COVER}],
 -# 2) 图片终态交付（无 mp4）：条目仍在（正文图片由前端文本渲染），videos 为空
 +# 2) 旧版图片终态交付（URL 只在正文）：恢复为结构化 images，videos 为空
- img_msg = {"role": "assistant", "content": "任务 9768 ✅ 已完成。\n%s" % IMG,
-            "task_job": "9768", "task_domain": "image"}
- app_mod.v4_state = FakeState([img_msg])
- d = app_mod._recent_deliveries(SID)
+@@ -59,2 +59,3 @@ d = app_mod._recent_deliveries(SID)
 -assert_ok(len(d) == 1 and d[0]["job"] == "9768" and d[0]["videos"] == [],
 -          "图片终态交付也进清单（videos 为空）", str(d)[:140])
 +assert_ok(len(d) == 1 and d[0]["job"] == "9768" and d[0]["videos"] == []
 +          and d[0]["images"] == [IMG],
 +          "旧版图片正文链接恢复为结构化 images", str(d)[:180])
- 
- # 3) 采集带图消息（images + media_job）路径不变
- coll_msg = {"role": "assistant", "content": "采集到新素材",
 diff --git a/tests/hq-job-watcher-test.py b/tests/hq-job-watcher-test.py
 index 25bd4c1..20ec511 100644
 --- a/tests/hq-job-watcher-test.py
 +++ b/tests/hq-job-watcher-test.py
-@@ -151,6 +151,96 @@ _contradiction = any("0 张图" in str(m.get("content") or "")
-                      and "图片在下面" in str(m.get("content") or "") for m in _hist3b)
- assert_ok(not _contradiction, "无图采集交付不再说「图片在下面」（模板自相矛盾已修）")
- 
+@@ -153,0 +154,90 @@ assert_ok(not _contradiction, "无图采集交付不再说「图片在下面」
 +# ⑤ 普通图片任务完成后，产物必须进入历史消息和实时 delivery 事件。
 +# 这是 2026-09-22 任务 9807 的真实故障模式：上游 result.url 有 PNG，
 +# 但消息 images 与 SSE images 都为空，Agent 随后却声称“图片卡片已发出”。
@@ -346,6 +258,3 @@ index 25bd4c1..20ec511 100644
 +              for _, prompt in _spawned6),
 +          "没有产物时禁止 Agent 声称已发送")
 +
- print(json.dumps(out, ensure_ascii=False, indent=2))
- print("JOB_WATCHER_UNIT: %s" % ("PASS" if not errors else "FAIL"))
- if errors:

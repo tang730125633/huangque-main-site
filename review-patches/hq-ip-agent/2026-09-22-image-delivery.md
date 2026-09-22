@@ -6,7 +6,7 @@
 - 来源基线：`1f95c6339e169e2e3b7f894f5e878c3e7c158ee2`
 - 来源提交：`ca766cd`（`fix(ip12): deliver image task products`）
 - 审查补丁：`2026-09-22-image-delivery.patch`
-- 补丁 SHA-256：`337362BEFD25E77D82F78B6DD9DFF184E0B86EAA6611B5CCCBAFF86466D417C4`
+- 补丁 SHA-256：`B66CB8E7133CFC1519BAC5499BB92A5CBF86062A8E0B703C5BF6BF14460A1029`
 - 应用后 Git tree：`5e12e0ba802c5b6c6b9c119725c61781348d2294`
 - 本 PR 仅提交审查材料，不合并、不部署。
 
@@ -30,7 +30,7 @@
 - `python ../ip12-image-delivery-diagnosis/repro_image_delivery.py`：通过。
 - `python -m py_compile agent/v4/delivery.py app.py tests/hq-job-watcher-test.py`：通过。
 - `git diff --check`：通过。
-- 补丁在来源基线的干净临时 worktree 中通过 `git apply --check`，应用后 tree 与来源提交完全一致。
+- 零上下文补丁在来源基线的干净临时 worktree 中通过 `git apply --unidiff-zero --check`，应用后 tree 与来源提交完全一致。
 
 本机完整回归另有三类与本补丁无关的既有环境限制：Windows C:/E: 跨盘 `relpath`、缺少 `fakeredis`、缺少 wqy 中文字体。Node Playwright 包在本机未安装，浏览器套件交由主站 CI 执行。
 
