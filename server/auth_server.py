@@ -5417,6 +5417,33 @@ class H(BaseHTTPRequestHandler):
                 generation_kind, payload = plan["generation_kind"], plan["payload"]
                 if action == "matrix-template-batch-generate":
                     self._cli_matrix_template_batch_policy(plan, row["username"])
+                if plan.get("direct"):
+                    # 直出生成（2026-09-22 老板定调「不要报价，直接生成」）：
+                    # 无报价环节，一次调用直接提交扣点并出任务。幂等键由
+                    # 用户名+能力+标准化输入确定性推导——同参数重试会重放
+                    # 原受理结果，不会重复扣点出第二条任务；参数不同则键不同。
+                    # 不传 X-HQ-Expected-Cost：费用由内容侧即时计算入账
+                    # （reject_changed_cost 无该头即放行，台账口径不变）。
+                    if quote_token:
+                        raise hq_cli_api.CLIAPIError(
+                            400, "直出生成不接受 quote_token，直接提交即可",
+                            "direct_generation_quote_token")
+                    if "generation:submit" not in scopes:
+                        raise hq_cli_api.CLIAPIError(
+                            403, "当前 CLI 授权不能提交扣点生成", "insufficient_scope")
+                    submit_headers = dict(plan.get("submit_headers") or {})
+                    submit_headers["Idempotency-Key"] = (
+                        idempotency_key
+                        or hq_cli_api.direct_submission_key(
+                            row["username"], generation_kind, payload))
+                    submit_plan = {
+                        "base": plan.get("submit_base", hq_cli_api.CONTENT_BASE),
+                        "path": plan["endpoint"], "method": "POST",
+                        "body": dict(payload), "timeout": 120, "internal": True,
+                        "headers": submit_headers,
+                    }
+                    status, result = self._cli_proxy(submit_plan, row["username"])
+                    return self._cli_send(status, result)
                 if confirm:
                     if "generation:submit" not in scopes:
                         raise hq_cli_api.CLIAPIError(403, "当前 CLI 授权不能提交扣点生成", "insufficient_scope")
