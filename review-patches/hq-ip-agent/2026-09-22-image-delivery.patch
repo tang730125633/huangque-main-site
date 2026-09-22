@@ -1,17 +1,5 @@
-From c5fc586548b39d1f28c06fcf00f1cb9ab780aaeb Mon Sep 17 00:00:00 2001
-From: LU-003 <LU-003@users.noreply.github.com>
-Date: Tue, 22 Sep 2026 16:30:05 +0800
-Subject: [PATCH] fix(ip12): harden image task delivery
-
----
- agent/v4/delivery.py               |  72 ++++++++-----
- app.py                             | 106 ++++++++++++++-----
- tests/hq-delivery-fallback-test.py |   7 +-
- tests/hq-job-watcher-test.py       | 159 +++++++++++++++++++++++++++++
- 4 files changed, 293 insertions(+), 51 deletions(-)
-
 diff --git a/agent/v4/delivery.py b/agent/v4/delivery.py
-index bdd11e2..8b55ccc 100644
+index bdd11e23104ad8ac08538a80ad65a66310141ee4..8b55cccef04852721ea578f9990d97d00ae23c86 100644
 --- a/agent/v4/delivery.py
 +++ b/agent/v4/delivery.py
 @@ -158,3 +158,6 @@ _IMAGE_URL_RE = re.compile(r"\.(?:jpe?g|png|webp|gif)(?:[?#]|$)", re.I)
@@ -96,15 +84,27 @@ index bdd11e2..8b55ccc 100644
 +                    )
 +                _TURN_SPAWNER(sid, followup)
 diff --git a/app.py b/app.py
-index 6cc908a..40b236d 100644
+index 6cc908a3c8940b0c7ddf91af7c8ee03dd7e72e15..9b307c633d1bef251114bf1b5a95222412c3fe52 100644
 --- a/app.py
 +++ b/app.py
-@@ -393,3 +393 @@ def v4_tasks(sid):
+@@ -189 +189 @@ def health():
+-def _visible_history(messages: list) -> list:
++def _visible_history(messages: list, include_task_metadata: bool = False) -> list:
+@@ -199,0 +200,4 @@ def _visible_history(messages: list) -> list:
++                if include_task_metadata:
++                    for key in ("task_job", "media_job", "task_domain"):
++                        if m.get(key) is not None:
++                            item[key] = m[key]
+@@ -393,3 +397 @@ def v4_tasks(sid):
 -            r = job.get("output") if isinstance(job.get("output"), dict) else {}
 -            if not r.get("id"):
 -                r = job.get("result") or {}
 +            r = _task_result(job)
-@@ -432,15 +430 @@ def v4_tasks(sid):
+@@ -427 +429,2 @@ def v4_tasks(sid):
+-    visible = _visible_history(v4_state.get_main_history(sid))
++    visible = _visible_history(
++        v4_state.get_main_history(sid), include_task_metadata=True)
+@@ -432,15 +435 @@ def v4_tasks(sid):
 -        pat = re.compile(r"(?<!\d)%s(?!\d)" % re.escape(jid))
 -        urls = []
 -        anchor = None
@@ -121,14 +121,14 @@ index 6cc908a..40b236d 100644
 -            if len(urls) >= 3:
 -                break
 +        anchor, urls = _task_history_products(visible, jid, t.get("domain") or "")
-@@ -448,2 +432,4 @@ def v4_tasks(sid):
+@@ -448,2 +437,4 @@ def v4_tasks(sid):
 -            urls = v4_delivery._result_urls(t.get("result") or {})
 -        t["products"] = urls[:3]
 +            limit = None if t.get("domain") in ("image", "hq-image") else 3
 +            urls = v4_delivery.product_urls(
 +                t.get("domain") or "", t.get("result") or {}, limit=limit)
 +        t["products"] = urls
-@@ -943,0 +930,62 @@ v4_subagent.set_running_job_hook(v4_delivery.watch_sid)
+@@ -943,0 +935,62 @@ v4_subagent.set_running_job_hook(v4_delivery.watch_sid)
 +def _task_result(job: dict) -> dict:
 +    """统一解包任务记录，兼容 output/result 两代结构与仅有 job_id 的 output。"""
 +    result = job.get("output") if isinstance(job.get("output"), dict) else {}
@@ -191,33 +191,36 @@ index 6cc908a..40b236d 100644
 +    return recovered
 +
 +
-@@ -951,0 +1000 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+@@ -951,0 +1005 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 +    task_images = _task_image_products(sid)
-@@ -953,2 +1002,3 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+@@ -953,2 +1007,3 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -    for m in reversed(v4_state.get_main_history(sid)):
 -        if m.get("images") and m.get("media_job"):
 +    history = _history_with_recovered_images(sid, v4_state.get_main_history(sid))
 +    for m in reversed(history):
 +        if m.get("images") and (m.get("media_job") or m.get("task_job")):
-@@ -958 +1008 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+@@ -958 +1013 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -                "job": m.get("media_job"),
 +                "job": m.get("media_job") or str(m.get("task_job")),
-@@ -962,0 +1013 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+@@ -962,0 +1018 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 +            images = list(task_images.get(str(m.get("task_job"))) or [])
-@@ -967 +1018,5 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+@@ -967 +1023,5 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -                    cover = u
 +                    if m.get("task_domain") in ("image", "hq-image"):
 +                        if u not in images:
 +                            images.append(u)
 +                    else:
 +                        cover = u
-@@ -972 +1027 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+@@ -972 +1032 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
 -                "images": [],
 +                "images": images,
-@@ -1975,0 +2031 @@ def v4_restore(sid):
-+    history = _history_with_recovered_images(sid, history)
+@@ -1975 +2035,3 @@ def v4_restore(sid):
+-    history = _visible_history(v4_state.get_main_history(sid))
++    history = _history_with_recovered_images(
++        sid, v4_state.get_main_history(sid))
++    history = _visible_history(history)
 diff --git a/tests/hq-delivery-fallback-test.py b/tests/hq-delivery-fallback-test.py
-index 4ebbbef..875c98e 100644
+index 4ebbbef6ce95397aff129a9c890ee73d3d2ae34a..875c98e39e596b096064efab2cea4f60a32e3d5c 100644
 --- a/tests/hq-delivery-fallback-test.py
 +++ b/tests/hq-delivery-fallback-test.py
 @@ -54 +54 @@ assert_ok(d[0]["videos"] == [{"url": MP4, "cover": COVER}],
@@ -230,10 +233,10 @@ index 4ebbbef..875c98e 100644
 +          and d[0]["images"] == [IMG],
 +          "旧版图片正文链接恢复为结构化 images", str(d)[:180])
 diff --git a/tests/hq-job-watcher-test.py b/tests/hq-job-watcher-test.py
-index 25bd4c1..b28d59c 100644
+index 25bd4c17fd1d526afa8cf5625808873f45fe9ef6..b7b6f3845fdfbcd9cbc8d6f311270a6d448e9695 100644
 --- a/tests/hq-job-watcher-test.py
 +++ b/tests/hq-job-watcher-test.py
-@@ -153,0 +154,159 @@ assert_ok(not _contradiction, "无图采集交付不再说「图片在下面」
+@@ -153,0 +154,167 @@ assert_ok(not _contradiction, "无图采集交付不再说「图片在下面」
 +# ⑤ 普通图片任务完成后，产物必须进入历史消息和实时 delivery 事件。
 +# 这是 2026-09-22 任务 9807 的真实故障模式：上游 result.url 有 PNG，
 +# 但消息 images 与 SSE images 都为空，Agent 随后却声称“图片卡片已发出”。
@@ -317,12 +320,16 @@ index 25bd4c1..b28d59c 100644
 +    {"role": "assistant", "content": "任务 999908 ✅ 已完成。",
 +     "task_job": "999908", "task_domain": "image", "images": MULTI_IMAGES},
 +]
++_visible_products = hq_app._visible_history(
++    _history_products, include_task_metadata=True)
 +_anchor, _products = hq_app._task_history_products(
-+    _history_products, "999908", "image")
++    _visible_products, "999908", "image")
 +assert_ok(_anchor == 2 and _products == MULTI_IMAGES,
-+          "任务面板按结构化任务标记与业务域精确关联全部图片")
++          "任务面板真实可见历史投影保留结构化关联并返回全部图片")
 +assert_ok(hq_app._task_history_products(
-+              _history_products[:1], "999908", "image") == (None, []),
++              hq_app._visible_history(
++                  _history_products[:1], include_task_metadata=True),
++              "999908", "image") == (None, []),
 +          "正文偶然提到任务号不能误绑定无关媒体")
 +assert_ok(hq_app._task_result({
 +              "output": {"job_id": 999909, "result": {"urls": MULTI_IMAGES}},
@@ -359,12 +366,16 @@ index 25bd4c1..b28d59c 100644
 +        "role": "assistant", "content": "较新的任务 %d 已完成" % offset,
 +        "task_job": "new-%d" % offset, "task_domain": "video",
 +    }])
-+_recovered_history = hq_app._history_with_recovered_images(
-+    SID6, v4_state.get_main_history(SID6))
++_recovered_history = hq_app._visible_history(
++    hq_app._history_with_recovered_images(
++        SID6, v4_state.get_main_history(SID6)))
 +_legacy_message = next(m for m in _recovered_history
-+                       if str(m.get("task_job")) == "999906")
++                       if m.get("content") == "任务 999906 ✅ 已完成。")
 +assert_ok(_legacy_message.get("images") == [LEGACY_IMAGE_URL],
-+          "旧任务即使排在最近五条之外，恢复历史仍从台账补回图片")
++          "恢复真实调用顺序先补图再投影，深历史仍从台账补回图片")
++assert_ok(not any(m.get("task_job") or m.get("task_domain")
++                  for m in _recovered_history),
++          "恢复响应不会泄露内部任务关联元数据")
 +_wrong_domain = hq_app._history_with_recovered_images(SID6, [{
 +    "role": "assistant", "content": "同号视频任务", "task_job": "999906",
 +    "task_domain": "video",
