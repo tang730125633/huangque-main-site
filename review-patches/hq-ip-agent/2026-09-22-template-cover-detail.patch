@@ -1,0 +1,157 @@
+diff --git a/static/style.css b/static/style.css
+index 125ef79bdc3477b7c82fd8a42576b779c8813f1e..2d1a157e2bb7892f618d0af1515f05422a40c288 100644
+--- a/static/style.css
++++ b/static/style.css
+@@ -782 +782 @@ button { font-family: inherit; }
+-.template-detail-media video, .template-detail-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
++.template-detail-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
+diff --git a/static/v4.js b/static/v4.js
+index bd464f0adef1757cc4fb52520a1c99eecffa4368..fba0ae45e911c5312ade6eaea3669661b43e8bbc 100644
+--- a/static/v4.js
++++ b/static/v4.js
+@@ -3473,2 +3473,2 @@
+-  function templateItemMedia(it) {
+-    return { image: templateMediaUrl(it.image_url), preview: templateMediaUrl(it.preview_url) };
++  function templateItemCover(it) {
++    return templateMediaUrl(it.image_url);
+@@ -3529,6 +3528,0 @@
+-    function pauseDetailMedia() {
+-      Array.prototype.forEach.call(detail.querySelectorAll("video, audio"), function (media) {
+-        if (typeof media.pause === "function") media.pause();
+-      });
+-    }
+-
+@@ -3537 +3531 @@
+-      var media = templateItemMedia(it);
++      var cover = templateItemCover(it);
+@@ -3549 +3542,0 @@
+-      pauseDetailMedia();
+@@ -3553,10 +3546 @@
+-      var video = null;
+-      if (media.preview) {
+-        video = document.createElement("video");
+-        video.controls = true;
+-        video.preload = "none";
+-        video.playsInline = true;
+-        video.src = media.preview;
+-        if (media.image) video.poster = media.image;
+-        visual.appendChild(video);
+-      } else if (media.image) {
++      if (cover) {
+@@ -3564,2 +3548,2 @@
+-        largeImage.src = media.image;
+-        largeImage.alt = it.title || "模板预览";
++        largeImage.src = cover;
++        largeImage.alt = it.title || "模板封面";
+@@ -3571 +3555 @@
+-        empty.textContent = "暂无预览";
++        empty.textContent = "暂无封面";
+@@ -3590 +3574 @@
+-      description.textContent = it.body || "点击播放小样查看模板效果，确认后即可使用。";
++      description.textContent = it.body || "查看模板样式与说明，确认后即可使用。";
+@@ -3595,21 +3578,0 @@
+-      if (video) {
+-        var preview = document.createElement("button");
+-        preview.type = "button";
+-        preview.className = "template-detail-preview";
+-        function showPlay() { preview.innerHTML = svgIcon("play") + " 播放小样"; }
+-        function showPause() { preview.innerHTML = svgIcon("pause") + " 暂停预览"; }
+-        showPlay();
+-        preview.addEventListener("click", function () {
+-          if (video.paused) {
+-            var playResult = video.play();
+-            if (playResult && playResult.then) playResult.then(showPause).catch(showPlay);
+-            else showPause();
+-          } else {
+-            video.pause();
+-            showPlay();
+-          }
+-        });
+-        video.addEventListener("pause", showPlay);
+-        video.addEventListener("ended", showPlay);
+-        actions.appendChild(preview);
+-      }
+@@ -3632 +3594,0 @@
+-        pauseDetailMedia();
+@@ -3650 +3612 @@
+-      var media = templateItemMedia(it);
++      var cover = templateItemCover(it);
+@@ -3657 +3619 @@
+-      if (media.image) {
++      if (cover) {
+@@ -3660 +3622 @@
+-        image.src = media.image;
++        image.src = cover;
+diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
+index 5b487ee93285f3b9f259b92b8c511745e5da34fe..7be0e413aa5659ca5aa9b48f3f4ab078aab2af2b 100644
+--- a/tests/hq-ip12-test.mjs
++++ b/tests/hq-ip12-test.mjs
+@@ -55 +55 @@ function templateWidgets() {
+-    image_url: '/api/v4/template-previews/template-' + (index + 1) + '.jpg',
++    image_url: index === 21 ? '' : '/api/v4/template-previews/template-' + (index + 1) + '.jpg',
+@@ -132,0 +133,3 @@ async function mockRoutes(page, opts) {
++    if (method === 'GET' && new URL(url).pathname.endsWith('/api/v4/assets')) {
++      return route.fulfill({ json: { ok: true, assets: [], total: 0 } });
++    }
+@@ -724,0 +728,5 @@ async function mockRoutes(page, opts) {
++      detailImages: box.querySelectorAll('.template-detail-media img').length,
++      detailVideos: box.querySelectorAll('.template-detail-media video').length,
++      previewButtons: box.querySelectorAll('.template-detail-preview').length,
++      detailCoverPath: new URL(box.querySelector('.template-detail-media img')?.src || location.href).pathname,
++      actionLabels: Array.from(box.querySelectorAll('.template-detail-actions button'), (button) => button.textContent.trim()),
+@@ -733,0 +742,3 @@ async function mockRoutes(page, opts) {
++  assert(catalog.detailImages === 1 && catalog.detailVideos === 0, '详情区只展示当前模板的静态封面');
++  assert(catalog.previewButtons === 0 && !catalog.actionLabels.some((label) => label.includes('播放小样') || label.includes('暂停预览')), '详情区不提供视频播放入口');
++  assert(catalog.detailCoverPath.endsWith('/api/v4/template-previews/template-1.jpg'), '默认详情封面对应第一张模板');
+@@ -744,0 +756 @@ async function mockRoutes(page, opts) {
++  assert(await page.$eval('.template-detail-media img', (image) => new URL(image.src).pathname.endsWith('/api/v4/template-previews/template-3.jpg') && image.alt === '深圳 AI 橙色主标题'), '键盘切换后详情封面与标题同步更新');
+@@ -747,12 +758,0 @@ async function mockRoutes(page, opts) {
+-  await page.$eval('.template-detail-media video', (video) => { video.play = () => Promise.reject(new Error('autoplay blocked')); });
+-  await page.click('.template-detail-preview');
+-  await page.waitForTimeout(50);
+-  assert((await page.$eval('.template-detail-preview', (n) => n.textContent)).includes('播放小样'), '预览播放被拒绝时按钮恢复为可播放状态');
+-  await page.$eval('.template-detail-media video', (video) => {
+-    window.__templatePauseCount = 0;
+-    video.play = () => Promise.resolve();
+-    video.pause = () => { window.__templatePauseCount += 1; };
+-  });
+-  await page.click('.template-detail-preview');
+-  await page.waitForTimeout(50);
+-  assert((await page.$eval('.template-detail-preview', (n) => n.textContent)).includes('暂停预览'), '预览开始播放后按钮切换为暂停状态');
+@@ -760 +760 @@ async function mockRoutes(page, opts) {
+-  assert((await page.evaluate(() => window.__templatePauseCount)) === 1, '播放中切换模板会先停止上一条小样');
++  assert(await page.$eval('.template-detail-media img', (image) => new URL(image.src).pathname.endsWith('/api/v4/template-previews/template-4.jpg')), '按钮切换到下一个模板时封面同步更新');
+@@ -762,6 +762 @@ async function mockRoutes(page, opts) {
+-  await page.$eval('.template-detail-media video', (video) => { video.play = () => Promise.resolve(); });
+-  await page.click('.template-detail-preview');
+-  await page.waitForTimeout(50);
+-  assert((await page.$eval('.template-detail-preview', (n) => n.textContent)).includes('暂停预览'), '重新播放小样后按钮显示暂停状态');
+-  await page.$eval('.template-detail-media video', (video) => video.dispatchEvent(new Event('ended')));
+-  assert((await page.$eval('.template-detail-preview', (n) => n.textContent)).includes('播放小样'), '预览结束后按钮恢复为播放状态');
++  assert(await page.$eval('.template-detail-media img', (image) => new URL(image.src).pathname.endsWith('/api/v4/template-previews/template-3.jpg')), '按钮切回上一个模板时恢复对应封面');
+@@ -791,5 +786,9 @@ async function mockRoutes(page, opts) {
+-  await page.$eval('.template-detail-media video', (video) => {
+-    video.play = () => Promise.resolve();
+-    video.pause = () => { window.__templatePauseCount += 1; };
+-  });
+-  await page.click('.template-detail-preview');
++  await page.click('.template-card[data-item-id="template-22"]');
++  const missingCover = await page.$eval('.template-catalog-box', (box) => ({
++    emptyText: box.querySelector('.template-detail-media-empty')?.textContent.trim(),
++    images: box.querySelectorAll('.template-detail-media img').length,
++    videos: box.querySelectorAll('.template-detail-media video').length,
++    previewButtons: box.querySelectorAll('.template-detail-preview').length,
++  }));
++  assert(missingCover.emptyText === '暂无封面' && missingCover.images === 0 && missingCover.videos === 0 && missingCover.previewButtons === 0,
++    '模板缺少 image_url 但保留 preview_url 时只显示“暂无封面”，不回退视频播放器');
+@@ -798,5 +797,5 @@ async function mockRoutes(page, opts) {
+-  const latestClick=calls.chatBodies[calls.chatBodies.length-1];
+-  assert(latestClick&&latestClick.widget_action&&latestClick.widget_action.widget_id==='template_catalog'&&latestClick.widget_action.item_ids[0]==='template-3','使用此模板提交真实卡片代次和选项');
+-  assert(await page.locator('.template-catalog-box').count()===0,'进入下一步后旧模板卡不再可操作');
+-  assert((await page.evaluate(()=>window.__templatePauseCount))>=1,'提交模板时停止小样播放');
+-  assert(!errors.some(e=>e.startsWith('I pageerror:')),'模板选择与旧卡失效没有页面异常');
++  const latestClick = calls.chatBodies[calls.chatBodies.length - 1];
++  assert(latestClick && latestClick.widget_action && latestClick.widget_action.widget_id === 'template_catalog'
++    && latestClick.widget_action.item_ids[0] === 'template-22', '缺少封面的模板仍可提交真实卡片代次和选项');
++  assert(await page.locator('.template-catalog-box').count() === 0, '进入下一步后旧模板卡不再可操作');
++  assert(!errors.some((e) => e.startsWith('I pageerror:')), '模板选择与旧卡失效没有页面异常');
