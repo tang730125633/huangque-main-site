@@ -65,6 +65,11 @@ jobs:
         with:
           node-version: "22"
 
+      - name: 安装视频成品校验工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: 安装主站回归依赖
         run: |
           python -m pip install -r deploy/requirements-content.txt
@@ -111,17 +116,19 @@ jobs:
           python -m unittest tests.test_provider_config tests.test_provider_config_loop tests.test_provider_config_recovery tests.test_provider_config_submission tests.test_provider_config_probe tests.test_provider_config_live_routes -v
           python -m unittest tests.test_channel_capabilities -q
           python -m unittest tests.test_channel_verification_rules -q
-            python -m unittest tests.test_channel_manager tests.test_channel_lifecycle tests.test_channel_parameters tests.test_frontend_channel_matrix tests.test_task_termination tests.test_runtime_observability tests.test_managed_channel_http_security tests.test_managed_channel_recovery tests.test_jobs_store tests.test_admin_request_logs tests.test_imggen_job_cas tests.test_admin_customer_overview_pg tests.test_invite_bulk_codes -q
+            python -m unittest tests.test_channel_manager tests.test_channel_lifecycle tests.test_channel_parameters tests.test_frontend_channel_matrix tests.test_task_termination tests.test_runtime_observability tests.test_managed_channel_http_security tests.test_managed_channel_recovery tests.test_jobs_store tests.test_admin_request_logs tests.test_imggen_job_cas tests.test_admin_customer_overview_pg tests.test_invite_bulk_codes tests.test_cosyvoice_channel_model -q
           node tests/test_admin_task_refresh.js
           node tests/test_channel_catalog.js
           node tests/test_channel_status_truth.js
           node tests/test_channel_test_progress.js
           python -m unittest tests.isolated.test_http_entry_e2e -v
+          python -m unittest tests.isolated.test_old_task_channel -v
           node tests/test_channel_latency_ui.js
           node tests/test_channel_category_drawer.js
           node tests/test_channel_priority_publish.js
           node tests/test_channel_parameter_controls.js
           node tests/test_channel_parameter_editor.js
+          node tests/test_channel_parameters_identity.js
 
       - name: 编导自然对话与原生产边界回归
         env:

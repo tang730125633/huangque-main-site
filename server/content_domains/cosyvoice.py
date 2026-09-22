@@ -178,7 +178,7 @@ def _ws_frames(sock, leftover):
         yield opcode, payload
 
 
-def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60, instruction="", api_key=None, ws_host=None):
+def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume=50, timeout=60, instruction="", api_key=None, ws_host=None, model=None):
     """合成一段语音，返回音频字节。model 按音色自动选(预置/复刻)。
     rate 语速(0.5~2)、pitch 音调(0.5~2)、volume 音量(0~100)——与抓包看到的参数名一致。
     instruction 复刻音色(v3.5-plus)的 free-form 发音风格指令，<=100 字符(中文按 2 计)，预置音色不要传。"""
@@ -188,7 +188,7 @@ def synth(voice, text, fmt="mp3", sample_rate=22050, rate=1.0, pitch=1.0, volume
     text = (text or "").strip()
     if not text:
         raise ValueError("配音文案不能为空")
-    model = model_for_voice(voice)
+    model = str(model or model_for_voice(voice)).strip()
     params = {"voice": voice, "format": fmt, "sample_rate": sample_rate,
               "rate": max(0.5, min(2.0, float(rate))),
               "pitch": max(0.5, min(2.0, float(pitch))),

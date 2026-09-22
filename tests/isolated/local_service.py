@@ -26,15 +26,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-# 本文件在 <仓库>/tests/isolated/ 下，仓库根目录由位置推导；可用 HQ_REPO 覆盖。
-# 不写死任何机器上的绝对路径。
-REPO = Path(os.environ.get('HQ_REPO') or Path(__file__).resolve().parents[2])
+REPO = Path(os.environ.get('HQ_REPO') or HERE.parents[1])
 PORT = int(os.environ.get('HQ_SWITCH_PORT', '8901'))
 DATA = Path(os.environ.get('HQ_SWITCH_DATA', str(HERE / '.data')))
 
 # 本地隔离管理员：只为让控制台外壳解锁，权限与生产账号无关。
 LOCAL_ADMIN = {'username': 'local-admin', 'name': '本地隔离管理员', 'role': 'admin',
-               'points': 0, 'membership': 'internal', 'local_only': True}
+               'points': 1000000, 'points_billing_enabled': False, 'membership': 'internal', 'local_only': True}
 
 # 界面驱动回传的进度（见 _driver_script）。
 DRIVE_REPORT = []
@@ -43,7 +41,7 @@ DRIVE_REPORT = []
 def run_task_inline(binding, payload, job_id):
     """在服务进程里跑一次真实任务：假供应商就在本进程，能收到真实 HTTP 调用。"""
     import pathlib
-    from server.content_domains import channel_runtime as runtime, core
+    from content_domains import channel_runtime as runtime, core
     out = DATA / 'content_out'
     out.mkdir(parents=True, exist_ok=True)
     core.OUT_DIR = out
@@ -81,17 +79,19 @@ os.environ['MAX_USER_ACTIVE_JOBS'] = '20'
 
 from harness import MockProvider, _loopback_resolver   # noqa: E402
 
-from server.content_domains import channel_manager as cm             # noqa: E402
-from server.content_domains import channel_parameters as cp          # noqa: E402
-from server.content_domains import feature_flags as ff               # noqa: E402
-from server.content_domains import frontend_channel_matrix as fcm    # noqa: E402
-from server.content_domains import safe_http                         # noqa: E402
+from content_domains import channel_manager as cm             # noqa: E402
+from content_domains import channel_parameters as cp          # noqa: E402
+from content_domains import feature_flags as ff               # noqa: E402
+from content_domains import frontend_channel_matrix as fcm    # noqa: E402
+from content_domains import safe_http                         # noqa: E402
 # 复用【生产请求处理器】：真实的字段清洗、报价、版本校验、任务入库与渠道绑定。
 # 只有鉴权与扣费走上面的受控替身，供应商走本地假供应商。
 # /api/gen/banana 的生产处理器就是 imggen_api.H —— nginx 把该路径路由到 8101，
 # 由 imggen 服务处理；content_api.H（8096，域注册表分发）反而会把它 404 掉，
 from imggen_api import H as ProductionHandler                      # noqa: E402
 import imggen_api                                                  # noqa: E402
+from content_api import H as ContentHandler
+from content_domains import core as content_core
 
 
 # 沙箱 DNS：只为了让假供应商的 127.0.0.1 能通过地址校验
@@ -150,13 +150,16 @@ def repoint_channels():
         kind = kinds.get(item.get('adapter'))
         if not kind:
             continue
-        want = PROVIDER.base_url(kind)
+        from urllib.parse import urlsplit, urlunsplit
+        parsed=urlsplit(item['base_url'])
+        want=urlunsplit((parsed.scheme, '127.0.0.1:%d' % PROVIDER.port, parsed.path, '', ''))
         if item.get('base_url') == want:
             continue
         body = dict(item)
         body['base_url'] = want
         body['version'] = item['version']
-        body['secret'] = 'keep'
+        body['secret'] = ''
+        body['enabled'] = bool(item.get('enabled'))
         try:
             cm.save('seed', body)
         except Exception:
@@ -204,7 +207,7 @@ def seed():
     # （症状：no such table: jobs）。
     #
     # 因此这里显式把两处都对齐到同一个隔离文件，而不是各自回落。
-    from server.content_domains import core as _core
+    from content_domains import core as _core
     import imggen_api as _imggen
     _job_db = str(DATA / 'content_jobs.db')
     _core.JOB_DB = _job_db
@@ -243,6 +246,11 @@ def seed():
     cm.save_operation_mapping('seed', {
         'operation_id': 'video.sora.text', 'state': 'managed',
         'channels': [sora_a['id']], 'expected_revision': 0})
+    for label, model in (('a', 'Grok Image Video'), ('b', 'grok-video-1.5')):
+        cm.save('seed', {'name':'Video '+label, 'adapter':'lechuang_video', 'model':model,
+            'base_url':PROVIDER.base_url('lechuang-video-'+label), 'secret':'fake-video-'+label,
+            'supplier':'local mock', 'connection_type':'relay', 'enabled':True,
+            'fixture':{'prompt':'test'}, 'rpm':60, 'daily_limit':20, 'test_cost':1,'daily_budget':50})
     # 两条渠道发布【不同点数】的参数契约：报价跟着有效渠道走是可证的，
     # 而不是看起来对。
     publish_parameters(a['id'], 18)   # 甲：18 点
@@ -413,7 +421,7 @@ def _driver_script():
 </script>"""
 
 
-class Handler(ProductionHandler):
+class Handler(ContentHandler, ProductionHandler):
     """隔离处理器 = 生产处理器 + 少量本地路由。
 
     /api/gen/banana、/api/gen/image 等生成入口**不重写**，直接走生产代码。
@@ -461,7 +469,7 @@ class Handler(ProductionHandler):
         # 控制台外壳的登录门调的是 /api/auth/*（不是 /api/admin/*）。
         # 隔离环境里直接给一个本地管理员身份，不读也不写生产登录态。
         if path == '/api/auth/me':
-            return self._send(200, {'user': dict(LOCAL_ADMIN)})
+            return self._send(200, {'user': dict(LOCAL_ADMIN)},extra={'Set-Cookie':'hq_session=local-token; Path=/; HttpOnly; SameSite=Lax'})
         if path == '/__provider-calls':
             return self._send(200, {'calls': PROVIDER.calls, 'provider_port': PROVIDER.port})
         if path.startswith('/api/auth/'):
@@ -480,7 +488,8 @@ class Handler(ProductionHandler):
                 return self._send(503, {'detail': '参数目录读取失败：%s' % exc})
             return self._send(200, {'items': items, 'refresh_seconds': 30})
         if path.startswith('/api/gen/'):
-            return ProductionHandler.do_GET(self)
+            return (ProductionHandler.do_GET(self) if path == '/api/gen/banana/health'
+                    else ContentHandler.do_GET(self))
         if path == '/__ledger':
             return self._send(200, {'ledger': list(stub_auth.LEDGER), 'user': dict(stub_auth.USER)})
         if path.startswith('/api/admin/'):
@@ -503,7 +512,7 @@ class Handler(ProductionHandler):
             # 所以载荷要按目标功能的 task_match 构造，否则会被分类到另一个功能。
             body = self._json_body() or {}
             operation_id = str(body.get('operation_id') or 'image.openai.text')
-            from server.content_domains import function_registry as registry
+            from content_domains import function_registry as registry
             match = dict((registry.operation(operation_id) or {}).get('task_match') or {})
             # kind 必须先取出来再剔除：它决定 capture 按哪个任务类型分类，
             # 放在 pop 之后读会永远退回 'image'，Sora 载荷会被当生图处理。
@@ -538,6 +547,10 @@ class Handler(ProductionHandler):
                 'post_count': len(posts),
                 'delivered': {k: (result or {}).get(k) for k in ('channel_id', 'model', 'mode')},
             })
+        if path == '/__start-workers':
+            imggen_api.start_job_workers()
+            content_core.start_job_workers()
+            return self._send(200, {'ok': True, 'started': True})
         if path == '/__drive-report':
             body = self._json_body() or {}
             DRIVE_REPORT.append(body)
@@ -553,7 +566,9 @@ class Handler(ProductionHandler):
             return self._send(200, {'ok': True})
         if path.startswith('/api/gen/'):
             # 生成入口一律交回生产处理器：不在隔离服务里重写受理逻辑
-            return ProductionHandler.do_POST(self)
+            return (ProductionHandler.do_POST(self)
+                    if path in ('/api/gen/banana', '/api/gen/reverse')
+                    else ContentHandler.do_POST(self))
         body = self._json_body()
         if body is None:
             return self._send(400, {'detail': '请求体不是合法 JSON'})
@@ -569,7 +584,28 @@ class Handler(ProductionHandler):
             return self._send(400, {'ok': False, 'detail': '本地隔离服务只实现了 operation-mapping'})
         return self._send(404, {'detail': '隔离服务没有这个写接口'})
 
+    def _inject_drive(self, target, data):
+        """给工作台页面注入驱动脚本：真实浏览器里完成选择→填写→提交。
+
+        只在隔离服务里注入；生产页面不受影响。
+        """
+        if os.environ.get('HQ_WORKBENCH_DRIVE') != '1':
+            return data
+        if not str(target).endswith(('.html',)):
+            return data
+        end = data.lower().rfind(b'</body>')
+        if end < 0:
+            return data
+        script = (b"<script>(function(){var q=new URLSearchParams(location.search);"
+                  b"if(!q.get('hqdrive'))return;window.__hqdrive=[];"
+                  b"function log(s){window.__hqdrive.push(s);try{fetch('/__drive-report',{method:'POST',"
+                  b"headers:{'Content-Type':'application/json'},body:JSON.stringify({step:s})})}catch(e){}}"
+                  b"window.__hqlog=log;"
+                  b"</script>")
+        return data[:end] + script + data[end:]
+
     def _file(self, target):
+        self._inject_target = target
         try:
             target = Path(target).resolve()
             if not str(target).startswith(str(REPO.resolve())):
@@ -580,15 +616,23 @@ class Handler(ProductionHandler):
         kind = {'.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
                 '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
                 '.json': 'application/json; charset=utf-8'}.get(target.suffix, 'application/octet-stream')
-        return self._send(200, data, kind)
+        return self._send(200, self._inject_drive(target, data), kind)
 
 
 def main():
-    # 生产处理器把任务投进队列，由 worker 池消费；隔离服务必须同样启动它，
-    # 否则任务永远停在排队态，看不到真实的渠道执行。
-    imggen_api.start_job_workers()
     seed()
     repoint_channels()
+    # 生产处理器把任务投进队列，由 worker 池消费；隔离服务必须同样启动它，
+    # 否则任务永远停在排队态，看不到真实的渠道执行。
+    #
+    # HQ_WORKER_PAUSED=1 时不启动：用来验收「先创建待执行任务 → 切渠道 →
+    # 再放行执行」这个场景。这是【隔离测试设施】的开关，生产没有这个功能，
+    # 也不需要为测试新增暂停能力。
+    if os.environ.get('HQ_WORKER_PAUSED') == '1':
+        print('  [isolated] worker 已暂停（HQ_WORKER_PAUSED=1），等待 /__start-workers', flush=True)
+    else:
+        imggen_api.start_job_workers()
+        content_core.start_job_workers()
     httpd = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print('=' * 68)
     print(' 黄雀「后台直接切换接单渠道」本地隔离测试服务')
