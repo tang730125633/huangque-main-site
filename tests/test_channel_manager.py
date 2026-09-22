@@ -24,7 +24,8 @@ class ChannelTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.env = patch.dict(os.environ, {'HQ_CHANNEL_DB':self.tmp.name+'/channels.db',
+        self.env = patch.dict(os.environ, {'HQ_CHANNEL_STORE':'sqlite',
+            'HQ_CHANNEL_DB':self.tmp.name+'/channels.db',
             'HQ_OBSERVABILITY_DB':self.tmp.name+'/trace.db','HQ_PROVIDER_KEYS_MASTER_KEY':base64.urlsafe_b64encode(b'a'*32).decode()})
         self.env.start(); self.addCleanup(self.env.stop)
         self.body = dict(name='测试渠道',adapter='openai_image',model='test-model',base_url='http://127.0.0.1:9999/v1',
