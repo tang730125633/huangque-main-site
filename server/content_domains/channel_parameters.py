@@ -137,7 +137,14 @@ def _route_for_function(oid):
     cid = str(mapping.get('channel') or '')
     if state != 'managed' or not cid:
         return {'state': state or 'legacy', 'cfg': None, 'primary': ''}
-    return {'state': 'managed', 'cfg': store.version(cid), 'primary': cid}
+    try:
+        cfg = store.version(cid)
+    except ValueError:
+        # 映射指向的渠道已经不存在（被删或版本被回收）。这是**数据**情况，
+        # 不是读取失败：该功能当前没有可用渠道，不进目录，由后台如实显示。
+        # 其他异常（读库失败等）不在这里吞掉，继续向上抛。
+        return None
+    return {'state': 'managed', 'cfg': cfg, 'primary': cid}
 
 
 def _operation_items(existing):
