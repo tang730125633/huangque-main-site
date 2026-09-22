@@ -196,6 +196,90 @@ def _active_usage(owner_hash, now):
     return count, total
 
 
+def _reusable_upload(kind, owner_hash, sha256, content_type, length, now):
+    if kind == "image":
+        pattern, extensions = "img_*.json", MIME_EXTENSIONS.values()
+        paths, max_bytes, sniff = _paths, IMAGE_UPLOAD_MAX_BYTES, detect_mime
+    else:
+        pattern, extensions = "vid_*.json", VIDEO_MIME_EXTENSIONS.values()
+        paths, max_bytes, sniff = _video_paths, VIDEO_UPLOAD_MAX_BYTES, detect_video_mime
+    candidates = []
+    for meta_path in UPLOAD_ROOT.glob(pattern):
+        try:
+            raw_meta = meta_path.read_bytes()
+            if len(raw_meta) > 4096:
+                continue
+            meta = json.loads(raw_meta)
+            if (
+                meta.get("version") != 1
+                or meta.get("extension") not in extensions
+                or meta.get("mime") != content_type
+                or int(meta.get("bytes") or 0) != length
+                or int(meta.get("expires_at") or 0) <= now
+                or not hmac.compare_digest(str(meta.get("owner_hash") or ""), owner_hash)
+                or not hmac.compare_digest(str(meta.get("sha256") or ""), sha256)
+            ):
+                continue
+            candidates.append((int(meta["expires_at"]), meta_path, meta))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+    for _expires_at, meta_path, meta in sorted(candidates, reverse=True):
+        try:
+            data_path, _ = paths(meta_path.stem, meta["extension"])
+            _verify_file_stream(data_path, meta, max_bytes, sniff)
+            return meta_path.stem, meta_path, meta
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _validate_reupload_stream(stream, length, expected_sha256, content_type,
+                              sniff, header_bytes, label):
+    digest = hashlib.sha256()
+    header = b""
+    remaining = length
+    while remaining:
+        chunk = stream.read(min(64 * 1024, remaining))
+        if not chunk:
+            raise ValueError(label + "上传不完整")
+        if len(header) < header_bytes:
+            header += chunk[:header_bytes - len(header)]
+        digest.update(chunk)
+        remaining -= len(chunk)
+    if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+        raise ValueError(label + "上传过程中发生变化，请重新上传")
+    if sniff(header) != content_type:
+        raise ValueError(label + "内容与声明格式不一致")
+
+
+def _renew_upload(upload_id, meta_path, meta, now):
+    renewed = dict(meta)
+    renewed["expires_at"] = now + TTL
+    temporary = meta_path.with_name(
+        "." + meta_path.name + "." + uuid.uuid4().hex + ".tmp"
+    )
+    try:
+        temporary.write_text(
+            json.dumps(renewed, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, meta_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    result = {
+        "upload_id": upload_id,
+        "mime": renewed["mime"],
+        "bytes": renewed["bytes"],
+        "sha256": renewed["sha256"],
+        "expires_at": renewed["expires_at"],
+        "expires_in": TTL,
+    }
+    if "duration" in renewed:
+        result["duration"] = renewed["duration"]
+    return result
+
+
 def _valid_upload_length(length, max_bytes):
     return isinstance(length, int) and length > 0 and (
         max_bytes is None or length <= max_bytes
@@ -240,7 +324,17 @@ def _store_image(stream, length, username, content_type, expected_sha256, now):
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(UPLOAD_ROOT, 0o700)
     _cleanup(now)
-    count, total = _active_usage(_owner_hash(username), now)
+    owner_hash = _owner_hash(username)
+    reusable = _reusable_upload(
+        "image", owner_hash, expected_sha256, content_type, length, now,
+    )
+    if reusable:
+        _validate_reupload_stream(
+            stream, length, expected_sha256, content_type,
+            detect_mime, 16, "图片",
+        )
+        return _renew_upload(*reusable, now)
+    count, total = _active_usage(owner_hash, now)
     if count >= MAX_USER_FILES or total + length > MAX_USER_BYTES:
         raise ValueError("当前账号的临时图片或视频已达上限，请等待过期后重试")
     if shutil.disk_usage(UPLOAD_ROOT).free - length < MIN_FREE_BYTES:
@@ -338,7 +432,17 @@ def store_video(stream, length, username, content_type, expected_sha256, now=Non
         UPLOAD_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(UPLOAD_ROOT, 0o700)
         _cleanup(now)
-        count, total = _active_usage(_owner_hash(username), now)
+        owner_hash = _owner_hash(username)
+        reusable = _reusable_upload(
+            "video", owner_hash, expected_sha256, content_type, length, now,
+        )
+        if reusable:
+            _validate_reupload_stream(
+                stream, length, expected_sha256, content_type,
+                detect_video_mime, 32, "视频",
+            )
+            return _renew_upload(*reusable, now)
+        count, total = _active_usage(owner_hash, now)
         if count >= MAX_USER_FILES or total + length > MAX_USER_BYTES:
             raise ValueError("当前账号的临时图片或视频已达上限，请等待过期后重试")
         if shutil.disk_usage(UPLOAD_ROOT).free - length < MIN_FREE_BYTES:
