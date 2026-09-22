@@ -54,3 +54,29 @@ test('提交请求字段来自识别条件，且不覆写参考图数量与蒙�
   assert.match(src2,/const match=current\.match\|\|\{\}/);
   assert.match(src2,/if\(k==='kind'\|\|k==='reference_count'\|\|k==='mask_present'\)return;/);
 });
+const vm=require('node:vm');
+function redirectHarness(){
+  const prompt={value:''};
+  const text={operation_id:'image.banana.nb2.text',match:{kind:'image',source_page:'banana',provider:'banana',model:'nb2',reference_count:0}};
+  const ref={operation_id:'image.banana.nb2.reference',match:{...text.match,reference_count:'>0'}};
+  const ctx={kind:'image',sourceDraft:null,managedActive:false,showLegacy:false,current:null,currentKey:'',controls:null,
+    window:{},host:{querySelector:()=>prompt,scrollIntoView(){}},autoSelectable:()=>[text,ref],
+    keyOf:e=>e.operation_id,clearInvalid(){},render(){ctx.renderedKey=ctx.currentKey;},note(){}};
+  vm.createContext(ctx);
+  vm.runInContext(src.slice(src.indexOf('  function matchesInput('),src.indexOf('  (async()=>')),ctx);
+  return {ctx,prompt};
+}
+test('原生参考图入口选中参考图功能并保留提示词和素材',()=>{
+  const {ctx,prompt}=redirectHarness();
+  assert.equal(ctx.window.PublishedChannelParameters.redirect('image',{
+    source_page:'banana',provider:'banana',model:'nb2',prompt:'保留我的提示词',reference_images:['data:image/png;base64,AA==']}),true);
+  assert.equal(ctx.currentKey,'image.banana.nb2.reference');
+  assert.equal(ctx.renderedKey,ctx.currentKey);
+  assert.equal(prompt.value,'保留我的提示词');
+  assert.equal(ctx.sourceDraft.reference_images.length,1);
+});
+test('模型简称不会模糊匹配到其他功能',()=>{
+  const {ctx}=redirectHarness();
+  assert.equal(ctx.window.PublishedChannelParameters.redirect('image','nb2'),false);
+  assert.equal(ctx.current,null);
+});

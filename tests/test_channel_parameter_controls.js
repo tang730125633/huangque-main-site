@@ -71,7 +71,8 @@ test('both workbenches stay visible until a managed channel actually takes over'
   assert.match(source,/let managedActive=false/);
   assert.doesNotMatch(source,/let managedActive=kind==='image'/);
   assert.match(source,/if\(!managedActive\)\{if\(legacy\)legacy\.hidden=false;host\.hidden=true;host\.innerHTML=''/);
-  assert.match(source,/managedActive=true;showLegacy=false;current=found;render\(\)/);
+  assert.match(source,/managedActive=true;showLegacy=false;current=found;currentKey=keyOf\(found\)/);
+  assert.match(source,/sourceDraft=typeof input==='object'/);
   // 待确认的提交需要重新展示面板
   assert.match(source,/if\(pending\)\{managedActive=true;render\(\)/);
   // 前台布局仍由面板脚本在 load 中应用，与是否接管无关

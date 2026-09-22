@@ -528,7 +528,7 @@ def _generate_tts(cfg, payload, rid, job_id, metadata):
             # 量纲换算与原厂 audio.py 的 CosyVoice 分支保持一致
             pitch=max(0.5, min(2.0, 1.0 + pitch / 24.0)),
             volume=max(0, min(100, 50 + volume // 2)),
-            api_key=cfg['secret'], ws_host=ws_host),
+            api_key=cfg['secret'], ws_host=ws_host, model=cfg['model']),
         **metadata)
     if not data:
         raise ProviderError('配音未返回音频数据')

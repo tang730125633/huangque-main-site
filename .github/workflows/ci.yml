@@ -111,7 +111,7 @@ jobs:
           python -m unittest tests.test_provider_config tests.test_provider_config_loop tests.test_provider_config_recovery tests.test_provider_config_submission tests.test_provider_config_probe tests.test_provider_config_live_routes -v
           python -m unittest tests.test_channel_capabilities -q
           python -m unittest tests.test_channel_verification_rules -q
-            python -m unittest tests.test_channel_manager tests.test_channel_lifecycle tests.test_channel_parameters tests.test_frontend_channel_matrix tests.test_task_termination tests.test_runtime_observability tests.test_managed_channel_http_security tests.test_managed_channel_recovery tests.test_jobs_store tests.test_admin_request_logs tests.test_imggen_job_cas tests.test_admin_customer_overview_pg tests.test_invite_bulk_codes -q
+            python -m unittest tests.test_channel_manager tests.test_channel_lifecycle tests.test_channel_parameters tests.test_frontend_channel_matrix tests.test_task_termination tests.test_runtime_observability tests.test_managed_channel_http_security tests.test_managed_channel_recovery tests.test_jobs_store tests.test_admin_request_logs tests.test_imggen_job_cas tests.test_admin_customer_overview_pg tests.test_invite_bulk_codes tests.test_cosyvoice_channel_model -q
           node tests/test_admin_task_refresh.js
           node tests/test_channel_catalog.js
           node tests/test_channel_status_truth.js
@@ -123,6 +123,7 @@ jobs:
           node tests/test_channel_priority_publish.js
           node tests/test_channel_parameter_controls.js
           node tests/test_channel_parameter_editor.js
+          node tests/test_channel_parameters_identity.js
 
       - name: 编导自然对话与原生产边界回归
         env:

@@ -208,6 +208,49 @@ class HttpEntryE2E(unittest.TestCase):
         st, body = self.switch(a['id'])
         self.assertEqual(st, 200, body)
 
+    def test_generic_image_uses_content_handler(self):
+        """Match nginx: generic image belongs to content, banana to imggen."""
+        for model in ('gpt-image-2', 'seedream-5.0-pro'):
+            channel = next(c for c in self.channels()['items'] if c['model'] == model)
+            self.assertEqual(self.switch(channel['id'])[0], 200)
+            entry = self.catalog_entry()
+            payload = dict(entry.get('match') or {})
+            for key in ('kind', 'reference_count', 'mask_present'):
+                payload.pop(key, None)
+            payload.update(prompt='isolated cat', count=1,
+                           parameter_selection={'revision': entry['revision'],
+                                                'combination': entry['combinations'][0]['id']})
+            status, accepted = self.req('/api/gen/image', payload, token=True)
+            self.assertEqual(status, 200, accepted)
+            row = self.wait_job(accepted['job_id'])
+            self.assertEqual(row.get('status'), 'done', row)
+            self.assertEqual(self.provider_posts()[-1]['body']['model'], model)
+            status, fetched = self.req('/api/gen/job/%s' % accepted['job_id'], token=True)
+            self.assertEqual(status, 200, fetched)
+
+    def test_video_switch_uses_content_handler(self):
+        operation='video.grok.text'
+        for label in ('a','b'):
+            overview=self.channels()
+            channel=next(c for c in overview['items'] if c['name']=='Video '+label)
+            revision=next((m['revision'] for m in overview.get('operation_mappings',[])
+                           if m['operation_id']==operation),0)
+            status, saved=self.req('/api/admin/channel-manager/operation-mapping',
+                {'operation_id':operation,'state':'managed','channels':[channel['id']],
+                 'expected_revision':revision})
+            self.assertEqual(status,200,saved)
+            status, accepted=self.req('/api/gen/xiaole_video',
+                {'channel':'grok','operation':'generate','prompt':'local video',
+                 'ratio':'9:16','resolution':'720p','duration':5},token=True)
+            self.assertEqual(status,200,accepted)
+            row=self.wait_job(accepted['job_id'])
+            self.assertEqual(row.get('status'),'done',row)
+            call=self.provider_posts()[-1]
+            self.assertIn('/lechuang-video-'+label+'/',call['path'])
+            self.assertEqual(call['authorization'],'Bearer fake-video-'+label)
+            self.assertEqual(call['body']['model'],channel['model'])
+            self.assertEqual(call['body']['input']['duration_seconds'],5)
+
     def test_catalog_failure_is_reported_not_silently_fallback(self):
         """目录读不到要如实报错，不能让页面退回硬编码价格继续提交。"""
         # 隔离服务在读取失败时返回 503；这里验证正常路径返回 200 且带来源标记
