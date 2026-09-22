@@ -1,16 +1,16 @@
-From 76f7917768a4e81c80b9b360e1f0caff828423be Mon Sep 17 00:00:00 2001
+From 8df5f9952d3252dc87d749a178966735e1d65133 Mon Sep 17 00:00:00 2001
 From: LU-003 <LU-003@users.noreply.github.com>
 Date: Tue, 22 Sep 2026 11:41:23 +0800
 Subject: [PATCH] fix(ip12): keep onboarding composer accessible
 
 ---
- static/style.css       |  22 ++++++++
- static/v4.js           |  32 ++++++++++-
- tests/hq-ip12-test.mjs | 125 ++++++++++++++++++++++++++++++++++++++++-
- 3 files changed, 177 insertions(+), 2 deletions(-)
+ static/style.css       |  22 ++++++
+ static/v4.js           |  32 ++++++++-
+ tests/hq-ip12-test.mjs | 148 +++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 201 insertions(+), 1 deletion(-)
 
 diff --git a/static/style.css b/static/style.css
-index e3b80a7..f3ba56d 100644
+index e3b80a7..f88ed5f 100644
 --- a/static/style.css
 +++ b/static/style.css
 @@ -1210,0 +1211 @@ button { font-family: inherit; }
@@ -33,12 +33,12 @@ index e3b80a7..f3ba56d 100644
 +  }
 +}
 +
-+@media (min-width: 901px) and (max-height: 800px) {
++@media (min-width: 901px) and (max-height: 860px) {
 +  .main-col:has(#capability-launcher:not([hidden])) .capability-launcher {
 +    flex: 0 1 auto; min-height: 0; overflow-y: auto;
 +  }
 diff --git a/static/v4.js b/static/v4.js
-index 6552b65..5ec28aa 100644
+index 6552b65..4fc20db 100644
 --- a/static/v4.js
 +++ b/static/v4.js
 @@ -4601 +4601,31 @@
@@ -63,7 +63,7 @@ index 6552b65..5ec28aa 100644
 +        var messagesFloor = messages ? (parseFloat(getComputedStyle(messages).minHeight) || 0) : 0;
 +        var messagesShrinkRoom = Math.max(0, messagesHeight - messagesFloor);
 +        var launcherShrinkRoom = 0;
-+        if (window.matchMedia("(max-height: 800px)").matches) {
++        if (window.matchMedia("(max-height: 860px)").matches) {
 +          var launcherHeight = capLauncher.getBoundingClientRect().height;
 +          var launcherFloor = Math.min(120, capLauncher.scrollHeight || 120);
 +          launcherShrinkRoom = Math.max(0, launcherHeight - launcherFloor);
@@ -75,10 +75,10 @@ index 6552b65..5ec28aa 100644
 +    }
 +    return { min: min, max: max };
 diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
-index 62cbeaf..cf588c1 100644
+index 62cbeaf..33d829a 100644
 --- a/tests/hq-ip12-test.mjs
 +++ b/tests/hq-ip12-test.mjs
-@@ -154,0 +155,110 @@ async function mockRoutes(page, opts) {
+@@ -154,0 +155,135 @@ async function mockRoutes(page, opts) {
 +  const onboardingLayout = await page.evaluate(() => {
 +    const regionIds = ['intro', 'capability-launcher', 'messages'];
 +    const scrollableRegions = regionIds.filter((id) => {
@@ -148,6 +148,31 @@ index 62cbeaf..cf588c1 100644
 +  assert(shortOnboarding.scrollableRegions.length <= 1
 +      && shortOnboarding.scrollableRegions.every((id) => id === 'capability-launcher'),
 +    '1280×650 新会话只允许能力区按需滚动（实际=' + JSON.stringify(shortOnboarding.scrollableRegions) + '）');
++  for (const height of [800, 801, 830, 860, 861]) {
++    await page.setViewportSize({ width: 1280, height });
++    const boundaryLayout = await page.evaluate(() => {
++      const launcher = document.getElementById('capability-launcher');
++      const composerRect = document.querySelector('.composer-wrap').getBoundingClientRect();
++      const scrollableRegions = ['intro', 'capability-launcher', 'messages'].filter((id) => {
++        const node = document.getElementById(id);
++        const style = getComputedStyle(node);
++        return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
++      });
++      launcher.scrollTop = launcher.scrollHeight;
++      const lastCardRect = launcher.querySelector('.capability-card:last-child').getBoundingClientRect();
++      const launcherRect = launcher.getBoundingClientRect();
++      return {
++        composerInside: composerRect.bottom <= window.innerHeight + 1,
++        scrollableRegions,
++        lastCardReachable: lastCardRect.bottom <= launcherRect.bottom + 1,
++      };
++    });
++    assert(boundaryLayout.composerInside, '1280×' + height + ' 断点邻近高度输入框完整保留在视口内');
++    assert(boundaryLayout.scrollableRegions.length <= 1
++        && boundaryLayout.scrollableRegions.every((id) => id === 'capability-launcher'),
++      '1280×' + height + ' 断点邻近高度最多仅能力区滚动（实际=' + JSON.stringify(boundaryLayout.scrollableRegions) + '）');
++    assert(boundaryLayout.lastCardReachable, '1280×' + height + ' 断点邻近高度全部能力卡可访问');
++  }
 +  await page.setViewportSize({ width: 1280, height: 900 });
 +
 +  await page.fill('#input', '长文本输入 '.repeat(300));
@@ -189,9 +214,7 @@ index 62cbeaf..cf588c1 100644
 +  await page.waitForTimeout(100);
 +  assert(await page.$eval('#intro', (n) => getComputedStyle(n).display !== 'none'), '新会话清空输入后恢复 Hero');
 +
-@@ -423 +533,13 @@ async function mockRoutes(page, opts) {
--  assert(h2 > h1 + 60, '拖拽横条放大输入框（' + h1.toFixed(0) + ' → ' + h2.toFixed(0) + '）');
-+  assert(h2 >= h1, '拖拽横条不会意外缩小输入框（' + h1.toFixed(0) + ' → ' + h2.toFixed(0) + '）');
+@@ -423,0 +559,12 @@ async function mockRoutes(page, opts) {
 +  const draggedOnboarding = await page.evaluate(() => {
 +    const launcher = document.getElementById('capability-launcher');
 +    const composer = document.querySelector('.composer-wrap').getBoundingClientRect();
@@ -204,5 +227,5 @@ index 62cbeaf..cf588c1 100644
 +  assert(draggedOnboarding.composerInside, '拖拽后输入框仍完整保留在视口内');
 +  assert(draggedOnboarding.launcherFits && !/(auto|scroll)/.test(draggedOnboarding.launcherOverflow),
 +    '1280×900 拖拽输入框后能力面板仍完整展示且无内部滚动（' + JSON.stringify(draggedOnboarding) + '）');
-@@ -429,0 +552 @@ async function mockRoutes(page, opts) {
+@@ -429,0 +577 @@ async function mockRoutes(page, opts) {
 +  assert(await page.$eval('.composer-wrap', (n) => n.getBoundingClientRect().bottom <= window.innerHeight + 1), '长文本输入时输入框仍完整保留在视口内');
