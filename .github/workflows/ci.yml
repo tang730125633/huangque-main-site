@@ -65,6 +65,11 @@ jobs:
         with:
           node-version: "22"
 
+      - name: 安装视频成品校验工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: 安装主站回归依赖
         run: |
           python -m pip install -r deploy/requirements-content.txt
