@@ -280,6 +280,17 @@ def t_key_rowcounts():
     return "\n".join(lines)
 
 
+def journal(*args):
+    """Use the service account's existing journal access; never elevate privileges."""
+    result = subprocess.run(
+        ["journalctl", "--no-pager", *args], capture_output=True,
+        text=True, errors="replace", timeout=40, check=True,
+    )
+    if "permission" in result.stderr.lower() or "not seeing messages" in result.stderr.lower():
+        raise PermissionError("Journal access is incomplete")
+    return redact(result.stdout)
+
+
 def t_recent_logs(service, lines="40"):
     """某个服务最近的日志（已脱敏：含凭据的行会被打码）"""
     service = re.sub(r"[^a-zA-Z0-9_.@-]", "", service or "")
@@ -289,8 +300,7 @@ def t_recent_logs(service, lines="40"):
         n = max(5, min(int(lines), 200))
     except Exception:
         n = 40
-    out = run(f"sudo journalctl -u {service} -n {n} --no-pager 2>&1", timeout=30)
-    return redact(out)
+    return journal("-u", service, "-n", str(n))
 
 
 def t_error_summary(hours="6"):
@@ -299,14 +309,12 @@ def t_error_summary(hours="6"):
         h = max(1, min(int(hours), 72))
     except Exception:
         h = 6
-    out = run(f"sudo journalctl --since '{h} hours ago' -p err --no-pager 2>&1 | tail -60", timeout=40)
-    return redact(out)
+    return journal("--since", f"{h} hours ago", "-p", "err", "-n", "60")
 
 
 def t_backup_status():
     """PostgreSQL 备份状态（最近一次备份时间、大小、校验文件）"""
-    out = run("sudo journalctl -u huangque-postgres-backup --since '48 hours ago' --no-pager 2>&1 | tail -8",
-              timeout=25)
+    out = journal("-u", "huangque-postgres-backup", "--since", "48 hours ago", "-n", "8")
     files = run("sudo ls -lht /var/backups/huangque-postgres/ 2>/dev/null | head -6", timeout=20)
     return f"【最近备份日志】\n{out}\n\n【备份文件】\n{files}"
 
