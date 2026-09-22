@@ -192,8 +192,14 @@ _ACTION_INPUTS = {
     "text-video-styles": (), "text-video-voices": (),
     "text-video-generate": ("text", "template", "mode", "style", "voice", "speech_rate", "talking_material"),
     "matrix-template-capability": (), "matrix-template-templates": (),
+    "matrix-template-controls": ("template_id",),
+    "matrix-template-preview": (
+        "top_text", "bottom_text", "template_id", "font_family",
+        "user_materials", "bgm", "template_revision", "overrides",
+    ),
     "matrix-template-generate": (
         "top_text", "bottom_text", "template_id", "font_family", "voiceover",
+        "user_materials", "bgm", "template_revision", "overrides", "preview_id",
     ),
     "matrix-template-batch-generate": (
         "top_text", "bottom_text", "template_id", "font_family", "voiceover",
@@ -442,6 +448,8 @@ _ACTION_PURPOSES = {
     "audio-generate": "生成音频", "text-video-generate": "根据主题或完整文案生成成片",
     "matrix-template-capability": "读取模板成片服务状态",
     "matrix-template-templates": "读取模板成片视觉模板",
+    "matrix-template-controls": "读取单个模板的可调参数范围（只读）",
+    "matrix-template-preview": "生成模板参数微调对比预览（不扣点、不算交付）",
     "matrix-template-generate": "使用平台素材库创建模板成片",
     "matrix-template-batch-generate": "使用同一文案和模板批量创建 2-5 条模板成片",
     "video-timeline-compose": "把本人图片、视频和文字卡按时间轴拼接成片",
@@ -612,7 +620,65 @@ _MATRIX_TEMPLATE_VOICEOVER_SCHEMA = {
 }
 
 
+_MATRIX_TEMPLATE_OVERRIDES_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "description": "模板参数微调（合同 v1）；只有 tunable=true 的模板可用，字段名/范围与"
+                   "matrix-template-controls 的 overrides_schema 完全一致",
+    "properties": {
+        "title_scale": {"type": "number", "minimum": 0.85, "maximum": 1.10, "default": 1.0},
+        "title_offset_y": {"type": "integer", "minimum": -60, "maximum": 60, "default": 0},
+        "cta_scale": {"type": "number", "minimum": 0.85, "maximum": 1.10, "default": 1.0},
+        "cta_offset_y": {"type": "integer", "minimum": -60, "maximum": 60, "default": 0},
+        "accent_color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+        "media_focus": {
+            "type": "array", "minItems": 1, "maxItems": 21,
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["slot", "x", "y"],
+                "properties": {
+                    "slot": {"type": "integer", "minimum": 1, "maximum": 21},
+                    "x": {"type": "number", "minimum": 0, "maximum": 1},
+                    "y": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+            },
+        },
+    },
+}
 _MEDIA_SCHEMAS = {
+    "matrix-template-controls": {
+        "required": ["template_id"], "properties": {
+            "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+        },
+        "constraints": [
+            "template_id must come from matrix-template-templates",
+            "tunable=false means this template cannot be adjusted; do not invent parameters",
+            "overrides_schema/defaults/slots are owned by the renderer and echoed verbatim",
+        ],
+    },
+    "matrix-template-preview": {
+        "required": ["top_text", "bottom_text", "template_id", "template_revision"],
+        "properties": {
+            "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
+            "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
+            "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
+            "font_family": {"type": "string", "maxLength": 80},
+            "user_materials": {
+                "type": "array", "minItems": 1, "maxItems": 20,
+                "items": {"type": "object"},
+            },
+            "bgm": {"type": "boolean", "default": True},
+            "template_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "overrides": _MATRIX_TEMPLATE_OVERRIDES_SCHEMA,
+        },
+        "constraints": [
+            "read matrix-template-controls first; template_revision must match the current catalog",
+            "only tunable templates can be previewed; a preview charges nothing and never becomes a delivered work",
+            "voiceover, duration and batch fields are rejected by design",
+            "bgm must match the later generate call (generate defaults to true; a voiceover submit defaults to false)",
+            "poll the returned job_id with task and show the user both versions plus frames",
+            "the preview_id from the result must be passed to matrix-template-generate with the same input",
+        ],
+    },
     "image-generate": {
         "required": ["prompt"], "properties": {
             "prompt": {"type": "string", "minLength": 1, "maxLength": 2000},
@@ -706,6 +772,13 @@ _MEDIA_SCHEMAS = {
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
             "font_family": {"type": "string", "maxLength": 80},
             "voiceover": _MATRIX_TEMPLATE_VOICEOVER_SCHEMA,
+            "bgm": {"type": "boolean", "default": True},
+            "template_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "overrides": _MATRIX_TEMPLATE_OVERRIDES_SCHEMA,
+            "preview_id": {
+                "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+                "description": "matrix-template-preview 结果里的 preview_id；复用预览冻结的素材与参数",
+            },
         },
         "constraints": [
             "template_id must come from matrix-template-templates",
@@ -714,6 +787,8 @@ _MEDIA_SCHEMAS = {
             "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and must be between 0 and 1",
             "with voiceover, final duration always follows the generated narration",
             "duration is automatic and only approved platform-library media is used",
+            "overrides and template_revision only work for templates whose controls report tunable=true",
+            "with preview_id the submitted texts, materials, font and parameters must match that preview exactly",
         ],
     },
     "matrix-template-batch-generate": {
@@ -1413,6 +1488,7 @@ _FAMILIES = {
     "text-video-capability": "video", "text-video-templates": "video", "text-video-styles": "video", "text-video-voices": "video",
     "text-video-generate": "video",
     "matrix-template-capability": "video", "matrix-template-templates": "video",
+    "matrix-template-controls": "video", "matrix-template-preview": "video",
     "matrix-template-generate": "video", "matrix-template-batch-generate": "video",
     "video-timeline-compose": "video",
     "text-video-avatar-import": "video", "text-video-plan": "video",
@@ -1625,12 +1701,15 @@ def _catalog_entry(action, fields):
 
 def _upload_catalog_entry(action, family, max_bytes, mime_types, max_files):
     label = {"image": "图片", "video": "视频", "audio": "音频"}[family]
+    constraints = ["requires explicit confirmation", "uploads are private to the current account"]
+    if max_bytes is None:
+        constraints.append("image and video uploads share a 2 GiB temporary storage quota per account")
     return {
         "action": action, "family": family, "purpose": "上传本人生成所需的临时参考" + label,
         "input_schema": {"type": "object", "additionalProperties": False, "required": ["file"], "properties": {
             "file": {"type": "file", "path": "absolute", "maxBytes": max_bytes, "mimeTypes": mime_types},
         }},
-        "constraints": ["requires explicit confirmation", "uploads are private to the current account"],
+        "constraints": constraints,
         "billing": "free", "external_effect": True, "confirmation_required": True, "risk": "write",
         "result_type": "upload", "result": {"kind": "upload_id"}, "ui_route": _catalog_route(action),
         "transport": {"kind": "dedicated_upload", "supports": ["dedicated_upload"], "account_active_max_files": max_files},
@@ -1752,10 +1831,10 @@ def _creator_pdf_download_catalog_entry():
 
 
 ACTION_CATALOG = tuple(_catalog_entry(action, fields) for action, fields in _ACTION_INPUTS.items()) + (
-    _upload_catalog_entry("image-upload", "image", 200 * 1024 * 1024,
+    _upload_catalog_entry("image-upload", "image", None,
                           ["image/jpeg", "image/png", "image/webp"], 20),
-    _upload_catalog_entry("video-upload", "video", 200 * 1024 * 1024,
-                          ["video/mp4", "video/quicktime", "video/webm"], 6),
+    _upload_catalog_entry("video-upload", "video", None,
+                          ["video/mp4", "video/quicktime", "video/webm"], 20),
     _upload_catalog_entry("audio-upload", "audio", 10 * 1024 * 1024,
                           ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/ogg"], 20),
     _upload_catalog_entry("digital-human-oneclick-material-upload", "image", 10 * 1024 * 1024,
@@ -1837,9 +1916,9 @@ _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 _DIGITAL_HUMAN_RUN_RE = re.compile(r"^dh-run-[A-Za-z0-9._:-]{1,128}$")
 _DIRECTOR_WORKFLOW_RE = re.compile(r"^dw_[0-9a-f]{32}$")
 _CANVAS_BASE64_RE = re.compile(r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{512,}={0,2}(?![A-Za-z0-9+/_=-])")
-IMAGE_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+IMAGE_UPLOAD_MAX_BYTES = None
 IMAGE_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
-VIDEO_UPLOAD_MAX_BYTES = 200 * 1024 * 1024
+VIDEO_UPLOAD_MAX_BYTES = None
 VIDEO_UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 VIDEO_COMPOSE_IMPORT_MAX_BYTES = 2 * 1024 * 1024 * 1024
 VIDEO_COMPOSE_IMPORT_SLOTS = threading.BoundedSemaphore(1)
@@ -2635,14 +2714,14 @@ def _proxy_media_upload(stream, length, web_token, internal_token, content_type,
 def proxy_image_upload(stream, length, web_token, internal_token, content_type, digest):
     return _proxy_media_upload(
         stream, length, web_token, internal_token, content_type, digest,
-        "/api/gen/cli/image-upload", "X-HQ-Image-SHA256", "image",
+        "/api/gen/cli/image-upload", "X-HQ-Image-SHA256", "image", timeout=3600,
     )
 
 
 def proxy_video_upload(stream, length, web_token, internal_token, content_type, digest):
     return _proxy_media_upload(
         stream, length, web_token, internal_token, content_type, digest,
-        "/api/gen/cli/video-upload", "X-HQ-Video-SHA256", "video",
+        "/api/gen/cli/video-upload", "X-HQ-Video-SHA256", "video", timeout=3600,
     )
 
 
@@ -2911,22 +2990,93 @@ def _matrix_template_user_materials(value):
     return result
 
 
+_MATRIX_TEMPLATE_TUNING_FIELDS = frozenset(
+    {"template_revision", "overrides", "preview_id"}
+)
+
+
+def _matrix_template_overrides(value):
+    """Validate+normalize the contract §1 vocabulary (same values as the server)."""
+    if not isinstance(value, dict) or not value:
+        raise CLIAPIError(400, "overrides 需要是包含至少一项的对象")
+    unknown = sorted(set(value) - set(_MATRIX_TEMPLATE_OVERRIDES_SCHEMA["properties"]))
+    if unknown:
+        raise CLIAPIError(400, "overrides 不支持的参数：" + unknown[0])
+    result = {}
+    for key in ("title_scale", "cta_scale"):
+        if key in value:
+            result[key] = round(float(_number(value[key], "overrides." + key, 0.85, 1.10)), 4)
+    for key in ("title_offset_y", "cta_offset_y"):
+        if key in value:
+            result[key] = _integer(value[key], "overrides." + key, -60, 60)
+    if "accent_color" in value:
+        color = _string(value["accent_color"], "overrides.accent_color", 7, 7)
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+            raise CLIAPIError(400, "overrides.accent_color 需要是 #RRGGBB 格式")
+        result["accent_color"] = color.upper()
+    if "media_focus" in value:
+        focuses = value["media_focus"]
+        if not isinstance(focuses, list) or not 1 <= len(focuses) <= 21:
+            raise CLIAPIError(400, "overrides.media_focus 需要是 1-21 项的数组")
+        items = []
+        seen = set()
+        for index, item in enumerate(focuses):
+            label = "overrides.media_focus[%d]" % index
+            if not isinstance(item, dict) or set(item) != {"slot", "x", "y"}:
+                raise CLIAPIError(400, label + " 需要包含 slot、x、y")
+            slot = _integer(item["slot"], label + ".slot", 1, 21)
+            if slot in seen:
+                raise CLIAPIError(400, "overrides.media_focus 槽位不能重复")
+            seen.add(slot)
+            items.append({
+                "slot": slot,
+                "x": round(float(_number(item["x"], label + ".x", 0, 1)), 4),
+                "y": round(float(_number(item["y"], label + ".y", 0, 1)), 4),
+            })
+        result["media_focus"] = sorted(items, key=lambda item: item["slot"])
+    return result
+
+
+def _matrix_template_tuning(value):
+    """template_revision / overrides / preview_id from one CLI input."""
+    result = {}
+    if "template_revision" in value:
+        revision = _string(value["template_revision"], "template_revision", 64, 64).lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", revision):
+            raise CLIAPIError(400, "template_revision 需要是 64 位十六进制版本号")
+        result["template_revision"] = revision
+    if "overrides" in value:
+        result["overrides"] = _matrix_template_overrides(value["overrides"])
+    if "overrides" in result and "template_revision" not in result:
+        # 与 CLI/内容侧同一条规则：参数必须绑定它读到的那个模板版本。
+        raise CLIAPIError(400, "overrides 需要同时提供 template_revision")
+    if "preview_id" in value:
+        result["preview_id"] = _matched_string(
+            value["preview_id"], "preview_id",
+            re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}"), 64,
+        )
+    return result
+
+
 def _matrix_template_payload(value):
     _strict_object(
         value, {
             "top_text", "bottom_text", "template_id", "font_family",
-            "voiceover", "user_materials",
-        },
+            "voiceover", "user_materials", "bgm",
+        } | _MATRIX_TEMPLATE_TUNING_FIELDS,
         ("top_text", "bottom_text", "template_id"),
     )
     template_id = _string(value["template_id"], "template_id", 1, 64)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
         raise CLIAPIError(400, "template_id 格式不合法")
+    bgm = value.get("bgm", True)
+    if not isinstance(bgm, bool):
+        raise CLIAPIError(400, "bgm 必须是布尔值")
     result = {
         "top_text": _string(value["top_text"], "top_text", 2, 60),
         "bottom_text": _string(value["bottom_text"], "bottom_text", 2, 80),
         "template_id": template_id,
-        "bgm": True,
+        "bgm": bgm,
     }
     if "font_family" in value:
         font_family = _string(value["font_family"], "font_family", 0, 80)
@@ -2944,10 +3094,33 @@ def _matrix_template_payload(value):
         result["user_materials"] = _matrix_template_user_materials(
             value["user_materials"]
         )
+    result.update(_matrix_template_tuning(value))
     return result
 
 
+def _matrix_template_preview_payload(value):
+    """Single-generation fields + revision + overrides; batch/voiceover rejected."""
+    _strict_object(
+        value, {
+            "top_text", "bottom_text", "template_id", "font_family",
+            "user_materials", "bgm", "template_revision", "overrides",
+        },
+        ("top_text", "bottom_text", "template_id", "template_revision"),
+    )
+    payload = _matrix_template_payload(value)
+    payload.pop("voiceover", None)
+    return payload
+
+
 def _matrix_template_batch_payload(value):
+    if isinstance(value, dict):
+        tuning = sorted(set(value) & _MATRIX_TEMPLATE_TUNING_FIELDS)
+        if tuning:
+            raise CLIAPIError(
+                400,
+                "批量生成暂不支持模板参数微调（%s），请用 matrix-template-generate 单条生成"
+                % tuning[0],
+            )
     _strict_object(
         value, {
             "top_text", "bottom_text", "template_id", "font_family",
@@ -3856,6 +4029,24 @@ def action_plan(action, value):
         return _plan(
             "assets:read", "proxy", base=CONTENT_BASE,
             path="/api/gen/matrix-template/" + suffix,
+        )
+    if action == "matrix-template-controls":
+        _strict_object(value, {"template_id"}, ("template_id",))
+        template_id = _string(value["template_id"], "template_id", 1, 64)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", template_id):
+            raise CLIAPIError(400, "template_id 格式不合法")
+        return _plan(
+            "assets:read", "proxy", base=CONTENT_BASE,
+            path="/api/gen/matrix-template/controls?" + urllib.parse.urlencode(
+                {"template_id": template_id},
+            ),
+        )
+    if action == "matrix-template-preview":
+        # 预览零扣点、不登记作品：不取报价，直接建一条可查询的预览任务（合同 §6）。
+        payload = _matrix_template_preview_payload(value)
+        return _plan(
+            "generation:quote", "proxy", base=CONTENT_BASE, method="POST",
+            path="/api/gen/matrix-template/preview", body=payload,
         )
     if action in {
             "text-video-capability", "text-video-templates",

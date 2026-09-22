@@ -4944,9 +4944,12 @@ class H(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
             length = 0
-        if length <= 0 or length > max_bytes:
-            return self._cli_send(413, {"detail": "%s大小必须在 1B 到 %dMB 之间" %
-                (label, max_bytes // 1024 // 1024), "code": invalid_code})
+        if length <= 0 or (max_bytes is not None and length > max_bytes):
+            detail = "%s大小必须大于 0B" % label if max_bytes is None else (
+                "%s大小必须在 1B 到 %dMB 之间" %
+                (label, max_bytes // 1024 // 1024)
+            )
+            return self._cli_send(413, {"detail": detail, "code": invalid_code})
         content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         if content_type not in content_types:
             supported = {"image": "PNG / JPG / WebP", "video": "MP4 / MOV / WebM",
@@ -5747,6 +5750,7 @@ class H(BaseHTTPRequestHandler):
         catalog = hq_cli_api.action_catalog(states)
         allowed = {
             "matrix-template-capability", "matrix-template-templates",
+            "matrix-template-controls", "matrix-template-preview",
             "matrix-template-generate",
         }
         catalog["actions"] = [
@@ -5817,6 +5821,7 @@ class H(BaseHTTPRequestHandler):
             action = body.get("action")
             allowed_actions = {
                 "matrix-template-capability", "matrix-template-templates",
+                "matrix-template-controls", "matrix-template-preview",
                 "matrix-template-generate", "task",
             }
             if not isinstance(action, str) or action not in allowed_actions:
