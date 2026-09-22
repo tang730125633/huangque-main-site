@@ -141,15 +141,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({'data': {'status':'succeeded', 'output': {'videos':[
                 {'url':'http://127.0.0.1:%d/file.mp4' % self.server.port}]}}})
         elif self.path.endswith('/file.mp4'):
-            import subprocess
-            result=subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','color=c=blue:s=32x32:r=5',
-                                   '-t','1','-c:v','libx264','-movflags','frag_keyframe+empty_moov',
-                                   '-f','mp4','pipe:1'],capture_output=True,check=True)
+            data = (HERE / 'fixtures' / 'tiny.mp4').read_bytes()
             self.send_response(200)
             self.send_header('Content-Type','video/mp4')
-            self.send_header('Content-Length',str(len(result.stdout)))
+            self.send_header('Content-Length',str(len(data)))
             self.end_headers()
-            self.wfile.write(result.stdout)
+            self.wfile.write(data)
         elif '/lechuang-image/' in self.path and '/generations/' in self.path:
             self._json({'data': {
                 'status': 'succeeded',
