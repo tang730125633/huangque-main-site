@@ -5439,7 +5439,10 @@ class H(BaseHTTPRequestHandler):
                     submit_plan = {
                         "base": plan.get("submit_base", hq_cli_api.CONTENT_BASE),
                         "path": plan["endpoint"], "method": "POST",
-                        "body": dict(payload), "timeout": 120, "internal": True,
+                        # 直出提交的 validate_payload 会把每条本人素材同步转发到
+                        # 渲染中转（35-117 秒/条），9 条素材可能超过 15 分钟：
+                        # 超时必须覆盖整段校验，否则客户端在任务已受理后重试。
+                        "body": dict(payload), "timeout": 3600, "internal": True,
                         "headers": submit_headers,
                     }
                     status, result = self._cli_proxy(submit_plan, row["username"])
