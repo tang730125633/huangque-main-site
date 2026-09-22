@@ -1550,6 +1550,11 @@ _GENERATION_ACTIONS = frozenset({
     "short-drama-character-reference-generate",
 })
 
+# 直出生成（2026-09-22 老板定调「不要报价，直接生成」）：这些动作没有报价环节，
+# 一次调用直接提交扣点并出任务。auth 侧 generation 分支据此跳过 quote 校验，
+# 用确定性幂等键直接 POST 提交端点（cost 由内容侧即时计算入账）。
+_DIRECT_GENERATION_ACTIONS = frozenset({"matrix-template-generate"})
+
 
 _WEB_PARITY_INTEGER_FIELDS = frozenset({
     "amount", "revision", "expected_revision", "expected_quote_expires_at", "notification_id",
@@ -1672,6 +1677,7 @@ def _catalog_route(action):
 
 def _catalog_entry(action, fields):
     generation = action in _GENERATION_ACTIONS
+    direct = action in _DIRECT_GENERATION_ACTIONS
     external_effect = generation or action in CONFIRMATION_ACTIONS
     details = _MEDIA_SCHEMAS.get(action, {})
     schema = {
@@ -1682,15 +1688,15 @@ def _catalog_entry(action, fields):
     for keyword in ("allOf", "anyOf", "oneOf", "x-hq-channel-rules"):
         if keyword in details:
             schema[keyword] = details[keyword]
-    result_type = "quote" if generation else ("account" if action == "account" else "json")
+    result_type = "quote" if generation and not direct else ("account" if action == "account" else "json")
     return {
         "action": action,
         "purpose": _ACTION_PURPOSES.get(action, "执行黄雀已登记能力：" + action),
         "input_schema": schema,
         "constraints": list(details.get("constraints", ())),
-        "billing": "quote_then_confirm" if generation else "free",
+        "billing": "direct_submit" if direct else ("quote_then_confirm" if generation else "free"),
         "external_effect": external_effect,
-        "confirmation_required": generation or action in CONFIRMATION_ACTIONS,
+        "confirmation_required": (generation and not direct) or action in CONFIRMATION_ACTIONS,
         "risk": "production" if generation else ("write" if external_effect else "read"),
         "result_type": result_type, "result": {"kind": result_type},
         "ui_route": _catalog_route(action),
@@ -3999,10 +4005,14 @@ def action_plan(action, value):
         )
     if action == "matrix-template-generate":
         payload = _matrix_template_payload(value)
+        # 2026-09-22 老板定调「不要报价，直接生成」：直出计划。auth 侧 generation
+        # 分支见到 direct=True 即跳过报价段，直接用确定性幂等键 POST 提交端点
+        # （cost 由内容侧即时计算入账，不传 X-HQ-Expected-Cost 头）。
         return _plan(
             "generation:quote", "generation",
             generation_kind="matrix_template_video",
             endpoint="/api/gen/matrix-template", payload=payload,
+            direct=True,
         )
     if action == "video-timeline-compose":
         payload = _timeline_payload(value)
@@ -4779,6 +4789,22 @@ def _generation_payload(action, value):
 
 def _canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def direct_submission_key(username, generation_kind, payload):
+    """Deterministic idempotency key for direct (quote-less) generation submits.
+
+    The same user + generation kind + payload always maps to the same key, so a
+    verbatim retry (network hiccup, agent re-run) replays the original accepted
+    submission on the content side instead of charging and creating a second
+    job.  Different inputs produce different keys, so distinct jobs never
+    collide.  Shape matches the server idempotency key regex
+    ``^[A-Za-z0-9._:-]{8,128}$``.
+    """
+    digest = hashlib.sha256(_canonical({
+        "u": username, "k": generation_kind, "p": payload,
+    })).hexdigest()
+    return "hqcli-" + digest[:32]
 
 
 def issue_quote(secret, username, generation_kind, payload, cost, now=None, context=None):
