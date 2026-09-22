@@ -385,6 +385,32 @@
   var LECHUANG_QUALITY_LABELS={auto:'自动',low:'经济',medium:'标准',high:'高品质'};
   var LECHUANG_BACKGROUND_LABELS={auto:'自动',opaque:'不透明',transparent:'透明底'};
   var lechuangItems=[], lechuangItem=null, lechuangChoice=null, lechuangWanted=null, lechuangNote='';
+  // ── 原生引擎卡跟随【该功能当前有效渠道】 ────────────────────────────────
+  // 业务功能身份由 operation_id 决定，不由供应商模型名反推：
+  //   纳米香蕉 2 的模型卡 → image.banana.nb2.text（不是「nb2 这个模型」）
+  // 该功能被托管时，卡片显示的点数与提交的参数选择都取自目录里那条功能条目。
+  var hqCatalogItems=[];
+  function hqFuncFor(engine){
+    if(engine==='banana') return bananaVariant==='pro'?'image.banana.pro.text':'image.banana.nb2.text';
+    if(engine==='seedream') return seedreamVariant==='pro'?'image.seedream.pro.text':'image.seedream.std.text';
+    if(engine==='gpt') return 'image.openai.text';
+    return '';
+  }
+  function hqManagedEntry(engine){
+    var oid=hqFuncFor(engine);
+    if(!oid||!hqCatalogItems.length) return null;
+    for(var i=0;i<hqCatalogItems.length;i++){
+      if(hqCatalogItems[i]&&hqCatalogItems[i].operation_id===oid) return hqCatalogItems[i];
+    }
+    return null;
+  }
+  function hqManagedPoints(engine){
+    var entry=hqManagedEntry(engine);
+    if(!entry) return null;
+    var list=entry.combinations||[];
+    var combo=list.filter(function(c){return c.id===entry.default;})[0]||list[0];
+    return combo?(Number(combo.points)||0):null;
+  }
   // 候选模型：优先按已知前台标识排序，其余带「乐创」标签的生图映射排在后面（后台增删映射即可增删卡片）。
   function hqLechuangCandidates(items){
     var list=Array.isArray(items)?items.filter(function(x){return x&&x.kind==='image';}):[];
@@ -659,6 +685,8 @@
       .then(function(d){
         // 候选模型随后台映射增删；用户当前选中的模型只要还在就保留（契约重发布才重置参数）
         lechuangItems=hqLechuangCandidates(d&&d.items);
+        hqCatalogItems=(d&&d.items)||[];        // 整份目录：其余引擎卡也按它显示点数
+        updateCost();                           // 目录到了，卡片价格随之更新
         var keep=lechuangItem?lechuangItem.front:'';
         var next=hqLechuangPick(lechuangItems,keep);
         var changed=!lechuangItem||!next||lechuangItem.revision!==next.revision||lechuangItem.front!==next.front;
@@ -695,7 +723,13 @@
     {id:'avatar',name:'数字化 IP 首帧',ratio:'9:16',desc:'口播视频首帧，适合转视频',tpl:'{brand} 数字化 IP 视频首帧，真人主播半身出镜，手持项目卡片，主题：{selling}，{color}主色背景，底部字幕条显示{price}，镜头正面，商业短视频封面质感，9:16竖版'}
   ];
   var activeTemplate=TEMPLATES[0];
-  function engineCost(eng){ var t=COSTBASE[costKey(eng)]||COSTBASE.nb2; return eng==='zelong2' ? t.std : (t[quality]||t.hd)*count; }
+  function engineCost(eng){
+    // 该功能被托管时，点数必须来自它当前的有效渠道，不能再用本地价目表
+    var managed=hqManagedPoints(eng);
+    if(managed!==null) return managed*count;
+    var t=COSTBASE[costKey(eng)]||COSTBASE.nb2;
+    return eng==='zelong2' ? t.std : (t[quality]||t.hd)*count;
+  }
   function costFor(){
     if(engine==='lechuang'){ var chosen=lechuangControls&&lechuangControls.value(); return Number((chosen||{}).points)||lechuangDefaultPoints(); }
     return engineCost(engine);
@@ -703,7 +737,9 @@
   function updateEngineCosts(){
     document.querySelectorAll('[data-engine-cost]').forEach(function(x){
       if(x.getAttribute('data-engine-cost')==='lechuang') return;   // 乐创点数来自后台参数契约，由 syncLechuangCard 维护
-      x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
+      var engKey=x.getAttribute('data-engine-cost');
+      var managed=hqManagedPoints(engKey)!==null;
+      x.textContent=engineCost(engKey)+'点'+(managed?'（后台渠道）':'');
     });
     syncLechuangCard();
   };
@@ -1120,7 +1156,7 @@
   }
   function submit(payload, label, endpoint, opts){
     // 乐创引擎卡本身就是托管渠道的入口，直接提交；其他引擎命中托管映射时才引导到平台面板。
-    if(!(opts&&opts.managed)&&window.PublishedChannelParameters?.redirect('image',payload.model||''))return;
+    if(!(opts&&opts.managed)&&window.PublishedChannelParameters?.redirect('image',Object.assign({},payload,{source_page:'banana',provider:endpoint==='/api/gen/banana'?'banana':(payload.provider||'openai')})))return;
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint; lastLabel=label;
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
@@ -1650,6 +1686,6 @@
 </script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
-<script src="/workbench/channel-parameters.js?v=8a9d5be7"></script>
+<script src="/workbench/channel-parameters.js?v=507e2710"></script>
 </body>
 </html>

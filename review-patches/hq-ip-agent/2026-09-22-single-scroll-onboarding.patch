@@ -1,231 +1,63 @@
-From 8df5f9952d3252dc87d749a178966735e1d65133 Mon Sep 17 00:00:00 2001
+From edfff2887889a7073549d89237498760bd4bf6d8 Mon Sep 17 00:00:00 2001
 From: LU-003 <LU-003@users.noreply.github.com>
-Date: Tue, 22 Sep 2026 11:41:23 +0800
-Subject: [PATCH] fix(ip12): keep onboarding composer accessible
+Date: Tue, 22 Sep 2026 14:34:36 +0800
+Subject: [PATCH] fix(ip12): preserve template catalog layout
 
 ---
- static/style.css       |  22 ++++++
- static/v4.js           |  32 ++++++++-
- tests/hq-ip12-test.mjs | 148 +++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 201 insertions(+), 1 deletion(-)
+ static/style.css       |  2 +-
+ tests/hq-ip12-test.mjs | 38 ++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 37 insertions(+), 3 deletions(-)
 
 diff --git a/static/style.css b/static/style.css
-index e3b80a7..f88ed5f 100644
+index f88ed5f..ad8dfe0 100644
 --- a/static/style.css
 +++ b/static/style.css
-@@ -1210,0 +1211 @@ button { font-family: inherit; }
-+.main-col:has(#capability-launcher:not([hidden])) .example-grid { display: none; }
-@@ -1418,0 +1420,21 @@ button { font-family: inherit; }
-+  .main-col:has(#capability-launcher:not([hidden])) .intro {
-+    flex: 0 0 auto; padding: 18px 0 12px; overflow: visible;
-+  }
-+  .main-col:has(#capability-launcher:not([hidden])) .eyebrow { margin-bottom: 8px; }
-+  .main-col:has(#capability-launcher:not([hidden])) .intro-title { font-size: 28px; margin-bottom: 6px; }
-+  .main-col:has(#capability-launcher:not([hidden])) .intro-sub { margin-bottom: 0; }
-+  .main-col:has(#capability-launcher:not([hidden])):has(#input:not(:placeholder-shown)) .intro {
-+    display: none;
-+  }
-+  .main-col:has(#capability-launcher:not([hidden])) .capability-launcher {
-+    flex: 0 0 auto; max-height: none; margin-bottom: 10px; overflow: visible;
-+  }
-+  .main-col:has(#capability-launcher:not([hidden])) .messages {
-+    min-height: 72px; padding-top: 12px; padding-bottom: 14px;
-+  }
-+}
-+
-+@media (min-width: 901px) and (max-height: 860px) {
-+  .main-col:has(#capability-launcher:not([hidden])) .capability-launcher {
-+    flex: 0 1 auto; min-height: 0; overflow-y: auto;
-+  }
-diff --git a/static/v4.js b/static/v4.js
-index 6552b65..4fc20db 100644
---- a/static/v4.js
-+++ b/static/v4.js
-@@ -4601 +4601,31 @@
--    return { min: 44, max: Math.max(140, Math.round(window.innerHeight * 0.62) - 150) };
-+    var min = 44;
-+    var max = Math.max(140, Math.round(window.innerHeight * 0.62) - 150);
-+    var desktopOnboarding = false;
-+    try {
-+      desktopOnboarding = window.matchMedia("(min-width: 901px)").matches
-+        && capLauncher && !capLauncher.hidden;
-+    } catch (e) {}
-+    if (desktopOnboarding) {
-+      var mainCol = input.closest(".main-col");
-+      var composerWrap = composer && composer.parentElement;
-+      if (mainCol && composerWrap) {
-+        var mainRect = mainCol.getBoundingClientRect();
-+        var wrapRect = composerWrap.getBoundingClientRect();
-+        var inputHeight = input.getBoundingClientRect().height || min;
-+        var visibleBottom = Math.min(window.innerHeight, mainRect.bottom);
-+        var messages = $("messages");
-+        var messagesHeight = messages ? messages.getBoundingClientRect().height : 0;
-+        var messagesFloor = messages ? (parseFloat(getComputedStyle(messages).minHeight) || 0) : 0;
-+        var messagesShrinkRoom = Math.max(0, messagesHeight - messagesFloor);
-+        var launcherShrinkRoom = 0;
-+        if (window.matchMedia("(max-height: 860px)").matches) {
-+          var launcherHeight = capLauncher.getBoundingClientRect().height;
-+          var launcherFloor = Math.min(120, capLauncher.scrollHeight || 120);
-+          launcherShrinkRoom = Math.max(0, launcherHeight - launcherFloor);
-+        }
-+        var available = Math.floor(visibleBottom - wrapRect.bottom + inputHeight
-+          + messagesShrinkRoom + launcherShrinkRoom);
-+        max = Math.min(max, Math.max(140, available));
-+      }
-+    }
-+    return { min: min, max: max };
+@@ -722 +722 @@ button { font-family: inherit; }
+-.template-catalog-box { padding: 15px 16px 16px; overflow: hidden; }
++.template-catalog-box { flex: 0 0 auto; padding: 15px 16px 16px; overflow: hidden; }
 diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
-index 62cbeaf..33d829a 100644
+index 33d829a..c892a77 100644
 --- a/tests/hq-ip12-test.mjs
 +++ b/tests/hq-ip12-test.mjs
-@@ -154,0 +155,135 @@ async function mockRoutes(page, opts) {
-+  const onboardingLayout = await page.evaluate(() => {
-+    const regionIds = ['intro', 'capability-launcher', 'messages'];
-+    const scrollableRegions = regionIds.filter((id) => {
-+      const node = document.getElementById(id);
-+      const style = getComputedStyle(node);
-+      return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
-+    });
-+    const composerRect = document.querySelector('.composer-wrap').getBoundingClientRect();
+@@ -10,0 +11,19 @@ function assert(cond, name) { out[name] = cond ? 'PASS' : 'FAIL'; if (!cond) err
++async function inspectTemplateCatalogLayout(page) {
++  return page.evaluate(() => {
++    const box = document.querySelector('.template-catalog-box');
++    const catalog = box.querySelector('.template-catalog');
++    const detail = box.querySelector('.template-detail');
++    const messages = document.getElementById('messages');
++    const boxRect = box.getBoundingClientRect();
++    const catalogRect = catalog.getBoundingClientRect();
++    const messagesRect = messages.getBoundingClientRect();
++    messages.scrollTop = messages.scrollHeight;
++    const detailRect = detail.getBoundingClientRect();
 +    return {
-+      exampleGridDisplay: getComputedStyle(document.getElementById('example-grid')).display,
-+      scrollableRegions,
-+      composerInsideViewport: composerRect.top >= 0 && composerRect.bottom <= window.innerHeight + 1,
++      boxContainsCatalog: boxRect.height + 1 >= catalogRect.bottom - boxRect.top,
++      messagesHaveScrollRange: messages.scrollHeight > messages.clientHeight + 1,
++      detailFullyVisibleAfterScroll: detailRect.top >= messagesRect.top - 1 && detailRect.bottom <= messagesRect.bottom + 1,
 +    };
 +  });
-+  assert(onboardingLayout.exampleGridDisplay === 'none', '新会话不同时展示重复的 Hero 示例入口');
-+  assert(onboardingLayout.scrollableRegions.length <= 1,
-+    '新会话欢迎区、能力区和消息区最多一个滚动容器（实际=' + JSON.stringify(onboardingLayout.scrollableRegions) + '）');
-+  assert(onboardingLayout.composerInsideViewport, '新会话输入框完整保留在首屏视口内');
-+  await page.setViewportSize({ width: 1920, height: 1080 });
-+  const wideOnboardingScrollers = await page.evaluate(() => ['intro', 'capability-launcher', 'messages'].filter((id) => {
-+    const node = document.getElementById(id);
-+    const style = getComputedStyle(node);
-+    return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
-+  }));
-+  assert(wideOnboardingScrollers.length <= 1,
-+    '1920×1080 新会话最多一个滚动容器（实际=' + JSON.stringify(wideOnboardingScrollers) + '）');
-+  await page.setViewportSize({ width: 1280, height: 768 });
-+  const compactOnboarding = await page.evaluate(() => {
-+    const regionIds = ['intro', 'capability-launcher', 'messages'];
-+    const scrollableRegions = regionIds.filter((id) => {
-+      const node = document.getElementById(id);
-+      const style = getComputedStyle(node);
-+      return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
-+    });
-+    const launcher = document.getElementById('capability-launcher');
-+    const composerRect = document.querySelector('.composer-wrap').getBoundingClientRect();
-+    launcher.scrollTop = launcher.scrollHeight;
-+    const lastCardRect = launcher.querySelector('.capability-card:last-child').getBoundingClientRect();
-+    const launcherRect = launcher.getBoundingClientRect();
-+    const lastCardReachable = lastCardRect.top >= launcherRect.top - 1 && lastCardRect.bottom <= launcherRect.bottom + 1;
-+    launcher.scrollTop = 0;
-+    return {
-+      scrollableRegions,
-+      composerInsideViewport: composerRect.top >= 0 && composerRect.bottom <= window.innerHeight + 1,
-+      lastCardReachable,
-+    };
-+  });
-+  assert(compactOnboarding.composerInsideViewport, '1280×768 新会话输入框完整保留在视口内');
-+  assert(compactOnboarding.scrollableRegions.length <= 1
-+      && compactOnboarding.scrollableRegions.every((id) => id === 'capability-launcher'),
-+    '1280×768 新会话只允许能力区按需滚动（实际=' + JSON.stringify(compactOnboarding.scrollableRegions) + '）');
-+  assert(compactOnboarding.lastCardReachable, '1280×768 能力区可滚动访问全部 8 张能力卡');
-+  await page.setViewportSize({ width: 1280, height: 650 });
-+  const shortOnboarding = await page.evaluate(() => {
-+    const composerRect = document.querySelector('.composer-wrap').getBoundingClientRect();
-+    const scrollableRegions = ['intro', 'capability-launcher', 'messages'].filter((id) => {
-+      const node = document.getElementById(id);
-+      const style = getComputedStyle(node);
-+      return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
-+    });
-+    return {
-+      scrollableRegions,
-+      composerInsideViewport: composerRect.top >= 0 && composerRect.bottom <= window.innerHeight + 1,
-+    };
-+  });
-+  assert(shortOnboarding.composerInsideViewport, '1280×650 新会话输入框完整保留在视口内');
-+  assert(shortOnboarding.scrollableRegions.length <= 1
-+      && shortOnboarding.scrollableRegions.every((id) => id === 'capability-launcher'),
-+    '1280×650 新会话只允许能力区按需滚动（实际=' + JSON.stringify(shortOnboarding.scrollableRegions) + '）');
-+  for (const height of [800, 801, 830, 860, 861]) {
-+    await page.setViewportSize({ width: 1280, height });
-+    const boundaryLayout = await page.evaluate(() => {
-+      const launcher = document.getElementById('capability-launcher');
-+      const composerRect = document.querySelector('.composer-wrap').getBoundingClientRect();
-+      const scrollableRegions = ['intro', 'capability-launcher', 'messages'].filter((id) => {
-+        const node = document.getElementById(id);
-+        const style = getComputedStyle(node);
-+        return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 2;
-+      });
-+      launcher.scrollTop = launcher.scrollHeight;
-+      const lastCardRect = launcher.querySelector('.capability-card:last-child').getBoundingClientRect();
-+      const launcherRect = launcher.getBoundingClientRect();
-+      return {
-+        composerInside: composerRect.bottom <= window.innerHeight + 1,
-+        scrollableRegions,
-+        lastCardReachable: lastCardRect.bottom <= launcherRect.bottom + 1,
-+      };
-+    });
-+    assert(boundaryLayout.composerInside, '1280×' + height + ' 断点邻近高度输入框完整保留在视口内');
-+    assert(boundaryLayout.scrollableRegions.length <= 1
-+        && boundaryLayout.scrollableRegions.every((id) => id === 'capability-launcher'),
-+      '1280×' + height + ' 断点邻近高度最多仅能力区滚动（实际=' + JSON.stringify(boundaryLayout.scrollableRegions) + '）');
-+    assert(boundaryLayout.lastCardReachable, '1280×' + height + ' 断点邻近高度全部能力卡可访问');
++}
++
+@@ -121 +140 @@ async function mockRoutes(page, opts) {
+-      const history = opts.restoreHistory === 'user'
++      const history = Array.isArray(opts.restoreHistoryItems) ? opts.restoreHistoryItems : opts.restoreHistory === 'user'
+@@ -799 +818,7 @@ async function mockRoutes(page, opts) {
+-    restoreHistory: 'user',
++    restoreHistoryItems: [
++      { role: 'assistant', content: '你好，我是黄雀的 IP 定位顾问。先聊聊你现在主要想做什么？' },
++      { role: 'user', content: '你好' },
++      { role: 'assistant', content: '你好呀～我在的。想从哪里开始？可以聊定位，也可以直接做成片。' },
++      { role: 'user', content: '我想做模板成片' },
++      { role: 'assistant', content: '好，模板成片通道已经就绪。22 款模板卡已经挂在下面了，横滑挑一款即可。' },
++    ],
+@@ -806,0 +832,9 @@ async function mockRoutes(page, opts) {
++  for (const viewport of [{ width: 1280, height: 900 }, { width: 1969, height: 1080 }]) {
++    await page.setViewportSize(viewport);
++    await page.waitForTimeout(100);
++    const layout = await inspectTemplateCatalogLayout(page);
++    const label = viewport.width + '×' + viewport.height;
++    assert(layout.boxContainsCatalog, label + ' 模板盒高度包含横向卡片与详情区');
++    assert(layout.messagesHaveScrollRange, label + ' 模板详情通过消息区纵向滚动查看');
++    assert(layout.detailFullyVisibleAfterScroll, label + ' 滚到底后模板详情完整位于输入框上方');
 +  }
-+  await page.setViewportSize({ width: 1280, height: 900 });
-+
-+  await page.fill('#input', '长文本输入 '.repeat(300));
-+  await page.waitForTimeout(150);
-+  assert(await page.$eval('#intro', (n) => getComputedStyle(n).display === 'none'), '新会话长文本输入时收起 Hero 为输入区让出空间');
-+  const longInput900 = await page.evaluate(() => {
-+    const wrapRect = document.querySelector('.composer-wrap').getBoundingClientRect();
-+    const footerRect = document.querySelector('.composer-footer').getBoundingClientRect();
-+    const launcher = document.getElementById('capability-launcher');
-+    return {
-+      wrapInside: wrapRect.top >= 0 && wrapRect.bottom <= window.innerHeight + 1,
-+      footerInside: footerRect.top >= 0 && footerRect.bottom <= window.innerHeight + 1,
-+      launcherFits: launcher.scrollHeight <= launcher.clientHeight + 2,
-+      launcherOverflow: getComputedStyle(launcher).overflowY,
-+    };
-+  });
-+  assert(longInput900.wrapInside && longInput900.footerInside, '1280×900 新会话超长输入时 composer 和 footer 完整保留在视口内');
-+  assert(longInput900.launcherFits && !/(auto|scroll)/.test(longInput900.launcherOverflow),
-+    '1280×900 新会话超长输入时能力面板完整展示且无内部滚动（' + JSON.stringify(longInput900) + '）');
-+  await page.setViewportSize({ width: 1920, height: 1080 });
-+  await page.fill('#input', '长文本输入 '.repeat(301));
-+  await page.waitForTimeout(100);
-+  const longInput1080 = await page.evaluate(() => {
-+    const wrapRect = document.querySelector('.composer-wrap').getBoundingClientRect();
-+    const footerRect = document.querySelector('.composer-footer').getBoundingClientRect();
-+    const launcher = document.getElementById('capability-launcher');
-+    return {
-+      wrapInside: wrapRect.top >= 0 && wrapRect.bottom <= window.innerHeight + 1,
-+      footerInside: footerRect.top >= 0 && footerRect.bottom <= window.innerHeight + 1,
-+      launcherFits: launcher.scrollHeight <= launcher.clientHeight + 2,
-+      launcherOverflow: getComputedStyle(launcher).overflowY,
-+    };
-+  });
-+  assert(longInput1080.wrapInside && longInput1080.footerInside, '1920×1080 新会话超长输入时 composer 和 footer 完整保留在视口内');
-+  assert(longInput1080.launcherFits && !/(auto|scroll)/.test(longInput1080.launcherOverflow),
-+    '1920×1080 新会话超长输入时能力面板完整展示且无内部滚动（' + JSON.stringify(longInput1080) + '）');
-+  await page.setViewportSize({ width: 1280, height: 900 });
-+  await page.fill('#input', '');
-+  await page.waitForTimeout(100);
-+  assert(await page.$eval('#intro', (n) => getComputedStyle(n).display !== 'none'), '新会话清空输入后恢复 Hero');
-+
-@@ -423,0 +559,12 @@ async function mockRoutes(page, opts) {
-+  const draggedOnboarding = await page.evaluate(() => {
-+    const launcher = document.getElementById('capability-launcher');
-+    const composer = document.querySelector('.composer-wrap').getBoundingClientRect();
-+    return {
-+      composerInside: composer.bottom <= window.innerHeight + 1,
-+      launcherFits: launcher.scrollHeight <= launcher.clientHeight + 2,
-+      launcherOverflow: getComputedStyle(launcher).overflowY,
-+    };
-+  });
-+  assert(draggedOnboarding.composerInside, '拖拽后输入框仍完整保留在视口内');
-+  assert(draggedOnboarding.launcherFits && !/(auto|scroll)/.test(draggedOnboarding.launcherOverflow),
-+    '1280×900 拖拽输入框后能力面板仍完整展示且无内部滚动（' + JSON.stringify(draggedOnboarding) + '）');
-@@ -429,0 +577 @@ async function mockRoutes(page, opts) {
-+  assert(await page.$eval('.composer-wrap', (n) => n.getBoundingClientRect().bottom <= window.innerHeight + 1), '长文本输入时输入框仍完整保留在视口内');
