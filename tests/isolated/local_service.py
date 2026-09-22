@@ -421,6 +421,59 @@ def _driver_script():
 </script>"""
 
 
+_WORKBENCH_DRIVER = r"""
+<script>
+(function(){
+  var q=new URLSearchParams(location.search);
+  if(!q.get('hqdrive'))return;
+  function log(s){try{fetch('/__drive-report',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({step:s})})}catch(e){}}
+  window.confirm=function(){return true;};
+  var native=window.fetch;
+  window.fetch=function(input,init){
+    var url=(typeof input==='string')?input:((input&&input.url)||'');
+    var p=native.apply(this,arguments);
+    if(url.indexOf('/api/gen/')===0&&init&&init.method==='POST'){
+      log('REQ '+url+' payload='+String(init.body||'').slice(0,700));
+      p=p.then(function(resp){return resp.clone().json().then(function(j){
+        log('RESP '+url+' status='+resp.status+' body='+JSON.stringify(j).slice(0,700));
+        if(j&&j.job_id)window.__hqJobId=j.job_id;
+        return resp;}).catch(function(){log('RESP '+url+' status='+resp.status+' non-json');return resp;});});
+    }
+    return p;
+  };
+  var want=q.get('hqdrive'),prompt=q.get('hqprompt')||'cat',n=0;
+  // 先等目录到位（页面要按当前有效渠道的 revision 提交；点太快会因 revision
+  // 过期被判 400，那是服务端正确行为，但不是我们要验的场景）。
+  var settle=0;
+  var t=setInterval(function(){
+    if(++n>150){clearInterval(t);log('TIMEOUT');return;}
+    if(settle<14){settle++;return;}   // 约 5.6 秒后再开始点，等目录刷新
+    var cards=document.querySelectorAll('[data-engine]');
+    for(var i=0;i<cards.length;i++){
+      var c=cards[i];
+      if(c.getAttribute('aria-hidden')==='true')continue;
+      if((c.textContent||'').indexOf(want)<0)continue;
+      if(!c.getAttribute('data-hq-picked')){c.setAttribute('data-hq-picked','1');c.click();log('pick '+want);return;}
+    }
+    var ta=document.querySelector('#prompt')||document.querySelector('textarea');
+    if(ta&&!ta.value){ta.value=prompt;ta.dispatchEvent(new Event('input',{bubbles:true}));log('prompt filled');return;}
+    if(ta&&ta.value&&!window.__hqSubmitted){
+      var btns=document.querySelectorAll('button'),best=null;
+      for(var j=0;j<btns.length;j++){
+        var b=btns[j],txt=(b.textContent||'').trim();
+        if(b.disabled||b.offsetParent===null)continue;
+        if(/最近|作品|清空|上传|优化|反推|模板|套用/.test(txt))continue;
+        if(/生成/.test(txt))best=b;
+      }
+      if(best){window.__hqSubmitted=1;best.click();log('submit');return;}
+    }
+  },400);
+})();
+</script>
+"""
+
+
 class Handler(ContentHandler, ProductionHandler):
     """隔离处理器 = 生产处理器 + 少量本地路由。
 
@@ -596,12 +649,7 @@ class Handler(ContentHandler, ProductionHandler):
         end = data.lower().rfind(b'</body>')
         if end < 0:
             return data
-        script = (b"<script>(function(){var q=new URLSearchParams(location.search);"
-                  b"if(!q.get('hqdrive'))return;window.__hqdrive=[];"
-                  b"function log(s){window.__hqdrive.push(s);try{fetch('/__drive-report',{method:'POST',"
-                  b"headers:{'Content-Type':'application/json'},body:JSON.stringify({step:s})})}catch(e){}}"
-                  b"window.__hqlog=log;"
-                  b"</script>")
+        script = _WORKBENCH_DRIVER.encode('utf-8')
         return data[:end] + script + data[end:]
 
     def _file(self, target):
