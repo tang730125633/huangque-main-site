@@ -38,10 +38,27 @@ ADAPTERS = {
                       # 当成渠道不可用，会让真实能出成品的渠道永久变红。
                       # auth 仍留在 checks_supported：管理员可以手动跑，失败记录照常展示。
                       'verification': ('connection', 'full'),
-                      'checks_supported': ('connection', 'auth', 'full')},
+                      'checks_supported': ('connection', 'auth', 'full'),
+                      # 乐创前面挂着 Cloudflare，开了「按浏览器特征封禁」：只带
+                      # Content-Type + Authorization 的请求会被 403 error code 1010
+                      # 直接挡掉，与走哪条出口代理无关（隧道/mihomo/直连三级全一样）。
+                      # 补上浏览器特征头后 Cloudflare 放行，才拿得到乐创自己的响应。
+                      # 按【协议】声明，不按渠道名或 base_url 硬编码。
+                      'request_headers': {
+                          'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                                         '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'),
+                          'Accept': 'application/json, text/plain, */*',
+                          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                      }},
     'lechuang_video': {'name': '乐创统一视频', 'kind': 'xiaole_video', 'references': True,
                       'verification': ('connection', 'full'),
-                      'checks_supported': ('connection', 'auth', 'full')},
+                      'checks_supported': ('connection', 'auth', 'full'),
+                      'request_headers': {
+                          'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                                         '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'),
+                          'Accept': 'application/json, text/plain, */*',
+                          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                      }},
     # Sora：复用原厂 video_openai 客户端（已支持注入 api_key / api_base），
     # kind 用任务类型 sora_video，与 function_registry 的 task_match.kind 一致。
     'sora_video': {'name': 'OpenAI Sora 协议', 'kind': 'sora_video', 'references': True,

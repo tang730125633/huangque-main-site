@@ -209,7 +209,11 @@ def validate_payload(cfg, payload):
 
 
 def request(cfg, method, path, body=None, extra_headers=None, files=None):
-    headers = (
+    # 协议声明的固定请求头（例如乐创需要的浏览器特征头，用于通过其 Cloudflare 校验）。
+    # 先合并声明头，再覆盖鉴权字段——鉴权始终由这里决定，协议声明覆盖不到它。
+    from .channel_manager import ADAPTERS as _ADAPTERS
+    headers = dict((_ADAPTERS.get(cfg['adapter']) or {}).get('request_headers') or {})
+    headers.update(
         {'x-goog-api-key': cfg['secret']}
         if cfg['adapter'] == 'gemini_image'
         else {'Authorization': 'Bearer ' + cfg['secret']}
