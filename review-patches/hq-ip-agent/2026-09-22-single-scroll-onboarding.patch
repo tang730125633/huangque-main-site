@@ -1,17 +1,20 @@
-From 29c636a788b865855e80449373d802016f56c740 Mon Sep 17 00:00:00 2001
+From 4c8453abe688d29415b74ee99edd797482605765 Mon Sep 17 00:00:00 2001
 From: LU-003 <293645289+LU-003@users.noreply.github.com>
 Date: Tue, 22 Sep 2026 11:04:53 +0800
-Subject: [PATCH] fix(ip12): simplify new-session onboarding layout
+Subject: [PATCH] fix(ip12): stabilize onboarding and template layout
 
 ---
- static/style.css       | 16 ++++++++++++++++
- tests/hq-ip12-test.mjs | 30 ++++++++++++++++++++++++++++++
- 2 files changed, 46 insertions(+)
+ static/style.css       | 18 ++++++++++-
+ tests/hq-ip12-test.mjs | 68 ++++++++++++++++++++++++++++++++++++++++--
+ 2 files changed, 83 insertions(+), 3 deletions(-)
 
 diff --git a/static/style.css b/static/style.css
-index e3b80a7..6a3be94 100644
+index e3b80a7..c83772f 100644
 --- a/static/style.css
 +++ b/static/style.css
+@@ -722 +722 @@ button { font-family: inherit; }
+-.template-catalog-box { padding: 15px 16px 16px; overflow: hidden; }
++.template-catalog-box { flex: 0 0 auto; padding: 15px 16px 16px; overflow: hidden; }
 @@ -1210,0 +1211 @@ button { font-family: inherit; }
 +.main-col:has(#capability-launcher:not([hidden])) .example-grid { display: none; }
 @@ -1418,0 +1420,15 @@ button { font-family: inherit; }
@@ -31,10 +34,33 @@ index e3b80a7..6a3be94 100644
 +    min-height: 72px; padding-top: 12px; padding-bottom: 14px;
 +  }
 diff --git a/tests/hq-ip12-test.mjs b/tests/hq-ip12-test.mjs
-index 62cbeaf..8bb6fa2 100644
+index 62cbeaf..63a4ce1 100644
 --- a/tests/hq-ip12-test.mjs
 +++ b/tests/hq-ip12-test.mjs
-@@ -154,0 +155,28 @@ async function mockRoutes(page, opts) {
+@@ -10,0 +11,19 @@ function assert(cond, name) { out[name] = cond ? 'PASS' : 'FAIL'; if (!cond) err
++async function inspectTemplateCatalogLayout(page) {
++  return page.evaluate(() => {
++    const box = document.querySelector('.template-catalog-box');
++    const catalog = box.querySelector('.template-catalog');
++    const detail = box.querySelector('.template-detail');
++    const messages = document.getElementById('messages');
++    const boxRect = box.getBoundingClientRect();
++    const catalogRect = catalog.getBoundingClientRect();
++    const messagesRect = messages.getBoundingClientRect();
++    messages.scrollTop = messages.scrollHeight;
++    const detailRect = detail.getBoundingClientRect();
++    return {
++      boxContainsCatalog: boxRect.height + 1 >= catalogRect.bottom - boxRect.top,
++      messagesHaveScrollRange: messages.scrollHeight > messages.clientHeight + 1,
++      detailFullyVisibleAfterScroll: detailRect.top >= messagesRect.top - 1 && detailRect.bottom <= messagesRect.bottom + 1,
++    };
++  });
++}
++
+@@ -121 +140 @@ async function mockRoutes(page, opts) {
+-      const history = opts.restoreHistory === 'user'
++      const history = Array.isArray(opts.restoreHistoryItems) ? opts.restoreHistoryItems : opts.restoreHistory === 'user'
+@@ -154,0 +174,28 @@ async function mockRoutes(page, opts) {
 +  const onboardingLayout = await page.evaluate(() => {
 +    const regionIds = ['intro', 'capability-launcher', 'messages'];
 +    const scrollableRegions = regionIds.filter((id) => {
@@ -63,7 +89,26 @@ index 62cbeaf..8bb6fa2 100644
 +    '1920×1080 新会话最多一个滚动容器（实际=' + JSON.stringify(wideOnboardingScrollers) + '）');
 +  await page.setViewportSize({ width: 1280, height: 900 });
 +
-@@ -412,0 +441 @@ async function mockRoutes(page, opts) {
+@@ -412,0 +460 @@ async function mockRoutes(page, opts) {
 +  assert(await page.$eval('#intro', (n) => getComputedStyle(n).display === 'none'), '新会话开始输入后收起 Hero 为输入区让出空间');
-@@ -429,0 +459 @@ async function mockRoutes(page, opts) {
+@@ -429,0 +478 @@ async function mockRoutes(page, opts) {
 +  assert(await page.$eval('.composer-wrap', (n) => n.getBoundingClientRect().bottom <= window.innerHeight + 1), '长文本输入时输入框仍完整保留在视口内');
+@@ -651 +700,7 @@ async function mockRoutes(page, opts) {
+-    restoreHistory: 'user',
++    restoreHistoryItems: [
++      { role: 'assistant', content: '你好，我是黄雀的 IP 定位顾问。先聊聊你现在主要想做什么？' },
++      { role: 'user', content: '你好' },
++      { role: 'assistant', content: '你好呀～我在的。想从哪里开始？可以聊定位，也可以直接做成片。' },
++      { role: 'user', content: '我想做模板成片' },
++      { role: 'assistant', content: '好，模板成片通道已经就绪。22 款模板卡已经挂在下面了，横滑挑一款即可。' },
++    ],
+@@ -658,0 +714,9 @@ async function mockRoutes(page, opts) {
++  for (const viewport of [{ width: 1280, height: 900 }, { width: 1969, height: 1080 }]) {
++    await page.setViewportSize(viewport);
++    await page.waitForTimeout(100);
++    const layout = await inspectTemplateCatalogLayout(page);
++    const label = viewport.width + '×' + viewport.height;
++    assert(layout.boxContainsCatalog, label + ' 模板盒高度包含横向卡片与详情区');
++    assert(layout.messagesHaveScrollRange, label + ' 模板详情通过消息区纵向滚动查看');
++    assert(layout.detailFullyVisibleAfterScroll, label + ' 滚到底后模板详情完整位于输入框上方');
++  }
