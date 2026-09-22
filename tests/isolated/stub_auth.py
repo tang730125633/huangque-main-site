@@ -15,7 +15,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USER = {'username': 'local-user', 'role': 'admin', 'points': 10 ** 6,
-        'points_billing_enabled': True, 'membership_tier': 'initiator'}
+        'points_billing_enabled': False, 'membership_tier': 'initiator'}
 LEDGER = []          # [{'kind':'deduct'|'refund','username','amount','reason','transaction_key'}]
 
 

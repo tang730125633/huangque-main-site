@@ -26,9 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-# 本文件在 <仓库>/tests/isolated/ 下，仓库根目录由位置推导；可用 HQ_REPO 覆盖。
-# 不写死任何机器上的绝对路径。
-REPO = Path(os.environ.get('HQ_REPO') or Path(__file__).resolve().parents[2])
+REPO = Path(os.environ.get('HQ_REPO') or r'E:\AI\临时\hq-cov')
 PORT = int(os.environ.get('HQ_SWITCH_PORT', '8901'))
 DATA = Path(os.environ.get('HQ_SWITCH_DATA', str(HERE / '.data')))
 
@@ -538,6 +536,9 @@ class Handler(ProductionHandler):
                 'post_count': len(posts),
                 'delivered': {k: (result or {}).get(k) for k in ('channel_id', 'model', 'mode')},
             })
+        if path == '/__start-workers':
+            imggen_api.start_job_workers()
+            return self._send(200, {'ok': True, 'started': True})
         if path == '/__drive-report':
             body = self._json_body() or {}
             DRIVE_REPORT.append(body)
@@ -569,7 +570,28 @@ class Handler(ProductionHandler):
             return self._send(400, {'ok': False, 'detail': '本地隔离服务只实现了 operation-mapping'})
         return self._send(404, {'detail': '隔离服务没有这个写接口'})
 
+    def _inject_drive(self, target, data):
+        """给工作台页面注入驱动脚本：真实浏览器里完成选择→填写→提交。
+
+        只在隔离服务里注入；生产页面不受影响。
+        """
+        if os.environ.get('HQ_WORKBENCH_DRIVE') != '1':
+            return data
+        if not str(target).endswith(('.html',)):
+            return data
+        end = data.lower().rfind(b'</body>')
+        if end < 0:
+            return data
+        script = (b"<script>(function(){var q=new URLSearchParams(location.search);"
+                  b"if(!q.get('hqdrive'))return;window.__hqdrive=[];"
+                  b"function log(s){window.__hqdrive.push(s);try{fetch('/__drive-report',{method:'POST',"
+                  b"headers:{'Content-Type':'application/json'},body:JSON.stringify({step:s})})}catch(e){}}"
+                  b"window.__hqlog=log;"
+                  b"</script>")
+        return data[:end] + script + data[end:]
+
     def _file(self, target):
+        self._inject_target = target
         try:
             target = Path(target).resolve()
             if not str(target).startswith(str(REPO.resolve())):
@@ -580,13 +602,20 @@ class Handler(ProductionHandler):
         kind = {'.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
                 '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml',
                 '.json': 'application/json; charset=utf-8'}.get(target.suffix, 'application/octet-stream')
-        return self._send(200, data, kind)
+        return self._send(200, self._inject_drive(target, data), kind)
 
 
 def main():
     # 生产处理器把任务投进队列，由 worker 池消费；隔离服务必须同样启动它，
     # 否则任务永远停在排队态，看不到真实的渠道执行。
-    imggen_api.start_job_workers()
+    #
+    # HQ_WORKER_PAUSED=1 时不启动：用来验收「先创建待执行任务 → 切渠道 →
+    # 再放行执行」这个场景。这是【隔离测试设施】的开关，生产没有这个功能，
+    # 也不需要为测试新增暂停能力。
+    if os.environ.get('HQ_WORKER_PAUSED') == '1':
+        print('  [isolated] worker 已暂停（HQ_WORKER_PAUSED=1），等待 /__start-workers', flush=True)
+    else:
+        imggen_api.start_job_workers()
     seed()
     repoint_channels()
     httpd = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
