@@ -1,0 +1,406 @@
+diff --git a/agent/v4/delivery.py b/agent/v4/delivery.py
+index bdd11e23104ad8ac08538a80ad65a66310141ee4..8b55cccef04852721ea578f9990d97d00ae23c86 100644
+--- a/agent/v4/delivery.py
++++ b/agent/v4/delivery.py
+@@ -158,3 +158,6 @@ _IMAGE_URL_RE = re.compile(r"\.(?:jpe?g|png|webp|gif)(?:[?#]|$)", re.I)
+-_VIDEO_PRODUCT_DOMAINS = {"hq-video", "hq-digital-human", "hq-clip", "hq-compose"}
+-_AUDIO_PRODUCT_DOMAINS = {"hq-audio"}
+-_IMAGE_PRODUCT_DOMAINS = {"hq-image"}
++_VIDEO_PRODUCT_DOMAINS = {
++    "video", "digital-human", "clip", "compose",
++    "hq-video", "hq-digital-human", "hq-clip", "hq-compose",
++}
++_AUDIO_PRODUCT_DOMAINS = {"audio", "hq-audio"}
++_IMAGE_PRODUCT_DOMAINS = {"image", "hq-image"}
+@@ -216,0 +220,19 @@ def _media_urls(value) -> dict:
++def _product_media(domain: str, value) -> dict:
++    """按任务域挑选真正应交付的产物，避免把封面、配音等副产物混成成品。"""
++    media = _media_urls(value)
++    if domain in _VIDEO_PRODUCT_DOMAINS:
++        return {"videos": media["videos"], "audios": [], "images": []}
++    if domain in _AUDIO_PRODUCT_DOMAINS:
++        return {"videos": [], "audios": media["audios"], "images": []}
++    if domain in _IMAGE_PRODUCT_DOMAINS:
++        return {"videos": [], "audios": [], "images": media["images"]}
++    return media
++
++
++def product_urls(domain: str, value, limit: int | None = 3) -> list:
++    """返回领域成品 URL；``limit=None`` 用于必须完整恢复的多图交付。"""
++    media = _product_media(domain, value)
++    urls = media["videos"] + media["audios"] + media["images"]
++    return urls if limit is None else urls[:limit]
++
++
+@@ -245 +267 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
+-        media = _media_urls(payload)
++        media = _product_media(domain, payload)
+@@ -247,9 +269,4 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
+-        # 贴进正文的链接按产品类型收敛：视频产品只贴视频；音频/图片产品贴对应链接；
+-        # 其它域（画布/线索/文案等）保持旧行为照贴全部公网链接。
+-        text_urls = list(urls)
+-        if domain in _AUDIO_PRODUCT_DOMAINS:
+-            text_urls += media["audios"]
+-        elif domain in _IMAGE_PRODUCT_DOMAINS:
+-            text_urls += media["images"]
+-        elif domain not in _VIDEO_PRODUCT_DOMAINS:
+-            text_urls += media["audios"] + media["images"]
++        # 视频/音频沿用正文链接渲染；图片走结构化 images，避免同一图片被正文 URL 再渲染一次。
++        text_urls = list(urls) + media["audios"][:3]
++        # 图片生成可能一次返回多张；历史与 SSE 必须完整交付，不能静默截成 3 张。
++        image_urls = media["images"]
+@@ -276,0 +294 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
++        if text_urls:
+@@ -277,0 +296 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
++        delivered_media = bool(urls or media["audios"] or image_urls)
+@@ -286 +305,2 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
+-            {"role": "assistant", "content": text, "task_job": str(job_id), "task_domain": domain},
++            {"role": "assistant", "content": text, "images": image_urls,
++             "task_job": str(job_id), "task_domain": domain},
+@@ -292 +312 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
+-            "images": [],
++            "images": image_urls,
+@@ -301,8 +321,14 @@ def deliver_terminal(sid: str, domain: str, job_id, terminal: str, payload: dict
+-                _TURN_SPAWNER(sid, (
+-                    "（系统事件，用户不可见：%s 任务 %s 的完成消息已推给用户。"
+-                    "请用一两句话自然收尾本次交付：产物是什么、存在哪里、想改想重做怎么说；"
+-                    "若你此前向用户承诺过「等它好了再做××」（如配 BGM、接着出下一步），"
+-                    "现在就检查承诺并立即执行，不要等用户催。"
+-                    "绝对不要再贴视频/图片/音频链接：成片链接已经以卡片单独发在对话里，"
+-                    "再贴一遍会重复出现一张点不开的卡，用户已投诉。）" % (domain, job_id)
+-                ))
++                if delivered_media:
++                    followup = (
++                        "（系统事件，用户不可见：%s 任务 %s 已完成，产物已经以卡片或链接实际发送给用户。"
++                        "请用一两句话自然收尾：说明产物是什么、在哪里、想修改或重做怎么说；"
++                        "若此前承诺完成后继续下一步，现在立即履行，不要等用户催。"
++                        "不要重复粘贴媒体链接，避免重复卡片。）" % (domain, job_id)
++                    )
++                else:
++                    followup = (
++                        "（系统事件，用户不可见：%s 任务 %s 状态已完成，但交付层未提取到任何可展示产物。"
++                        "不要声称图片、视频、音频或卡片已经发送，也不要说产物就在下方。"
++                        "请如实说明暂未拿到可展示结果，并先查询任务或恢复产物后再交付。）" % (domain, job_id)
++                    )
++                _TURN_SPAWNER(sid, followup)
+diff --git a/app.py b/app.py
+index 6cc908a3c8940b0c7ddf91af7c8ee03dd7e72e15..9b307c633d1bef251114bf1b5a95222412c3fe52 100644
+--- a/app.py
++++ b/app.py
+@@ -189 +189 @@ def health():
+-def _visible_history(messages: list) -> list:
++def _visible_history(messages: list, include_task_metadata: bool = False) -> list:
+@@ -199,0 +200,4 @@ def _visible_history(messages: list) -> list:
++                if include_task_metadata:
++                    for key in ("task_job", "media_job", "task_domain"):
++                        if m.get(key) is not None:
++                            item[key] = m[key]
+@@ -393,3 +397 @@ def v4_tasks(sid):
+-            r = job.get("output") if isinstance(job.get("output"), dict) else {}
+-            if not r.get("id"):
+-                r = job.get("result") or {}
++            r = _task_result(job)
+@@ -427 +429,2 @@ def v4_tasks(sid):
+-    visible = _visible_history(v4_state.get_main_history(sid))
++    visible = _visible_history(
++        v4_state.get_main_history(sid), include_task_metadata=True)
+@@ -432,15 +435 @@ def v4_tasks(sid):
+-        pat = re.compile(r"(?<!\d)%s(?!\d)" % re.escape(jid))
+-        urls = []
+-        anchor = None
+-        for i, m in enumerate(visible):
+-            if m.get("role") != "assistant" or not pat.search(m.get("content") or ""):
+-                continue
+-            if anchor is None:
+-                anchor = i
+-            for u in re.findall(r"https?://[^\s\"'<>）】)]+", m.get("content") or ""):
+-                if u not in urls:
+-                    urls.append(u)
+-                if len(urls) >= 3:
+-                    break
+-            if len(urls) >= 3:
+-                break
++        anchor, urls = _task_history_products(visible, jid, t.get("domain") or "")
+@@ -448,2 +437,4 @@ def v4_tasks(sid):
+-            urls = v4_delivery._result_urls(t.get("result") or {})
+-        t["products"] = urls[:3]
++            limit = None if t.get("domain") in ("image", "hq-image") else 3
++            urls = v4_delivery.product_urls(
++                t.get("domain") or "", t.get("result") or {}, limit=limit)
++        t["products"] = urls
+@@ -943,0 +935,62 @@ v4_subagent.set_running_job_hook(v4_delivery.watch_sid)
++def _task_result(job: dict) -> dict:
++    """统一解包任务记录，兼容 output/result 两代结构与仅有 job_id 的 output。"""
++    result = job.get("output") if isinstance(job.get("output"), dict) else {}
++    if not result.get("id") and not result.get("job_id"):
++        result = job.get("result") if isinstance(job.get("result"), dict) else {}
++    return result
++
++
++def _task_history_products(history: list, job_id, domain: str) -> tuple:
++    """只用结构化任务标记关联消息，正文里偶然出现同号不能抢走产物。"""
++    wanted = str(job_id)
++    limit = None if domain in ("image", "hq-image") else 3
++    for index, message in enumerate(history):
++        marker = message.get("task_job") or message.get("media_job")
++        if str(marker or "") != wanted:
++            continue
++        message_domain = str(message.get("task_domain") or "")
++        if message_domain and message_domain != domain:
++            continue
++        products = v4_delivery.product_urls(domain, {
++            "content": message.get("content") or "",
++            "images": list(message.get("images") or []),
++        }, limit=limit)
++        return index, products
++    return None, []
++
++
++def _task_image_products(sid: str) -> dict:
++    """从任务台账补回旧版未写入历史的图片产物，供断线/刷新恢复使用。"""
++    products = {}
++    if not hasattr(v4_state, "all_domains") or not hasattr(v4_state, "get_subagent"):
++        return products
++    for domain in v4_state.all_domains(sid):
++        if domain not in ("image", "hq-image"):
++            continue
++        sess = v4_state.get_subagent(sid, domain) or {}
++        for job in v4_subagent._job_records(sess.get("last_result") or {}):
++            if job.get("state") != "completed":
++                continue
++            result = _task_result(job)
++            job_id = result.get("job_id") or result.get("id")
++            urls = v4_delivery.product_urls(domain, result.get("result") or {}, limit=None)
++            if job_id and urls:
++                products[str(job_id)] = urls
++    return products
++
++
++def _history_with_recovered_images(sid: str, history: list) -> list:
++    """给旧版漏图的结构化任务消息补上台账图片，不改写持久化历史。"""
++    task_images = _task_image_products(sid)
++    recovered = []
++    for message in history:
++        item = dict(message)
++        job_id = str(item.get("task_job") or "")
++        domain = str(item.get("task_domain") or "")
++        images = task_images.get(job_id) if job_id and domain in ("", "image", "hq-image") else None
++        if images and not item.get("images"):
++            item["images"] = list(images)
++        recovered.append(item)
++    return recovered
++
++
+@@ -951,0 +1005 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
++    task_images = _task_image_products(sid)
+@@ -953,2 +1007,3 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+-    for m in reversed(v4_state.get_main_history(sid)):
+-        if m.get("images") and m.get("media_job"):
++    history = _history_with_recovered_images(sid, v4_state.get_main_history(sid))
++    for m in reversed(history):
++        if m.get("images") and (m.get("media_job") or m.get("task_job")):
+@@ -958 +1013 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+-                "job": m.get("media_job"),
++                "job": m.get("media_job") or str(m.get("task_job")),
+@@ -962,0 +1018 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
++            images = list(task_images.get(str(m.get("task_job"))) or [])
+@@ -967 +1023,5 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+-                    cover = u
++                    if m.get("task_domain") in ("image", "hq-image"):
++                        if u not in images:
++                            images.append(u)
++                    else:
++                        cover = u
+@@ -972 +1032 @@ def _recent_deliveries(sid: str, cap: int = 5) -> list:
+-                "images": [],
++                "images": images,
+@@ -1975 +2035,3 @@ def v4_restore(sid):
+-    history = _visible_history(v4_state.get_main_history(sid))
++    history = _history_with_recovered_images(
++        sid, v4_state.get_main_history(sid))
++    history = _visible_history(history)
+diff --git a/tests/hq-delivery-fallback-test.py b/tests/hq-delivery-fallback-test.py
+index 4ebbbef6ce95397aff129a9c890ee73d3d2ae34a..875c98e39e596b096064efab2cea4f60a32e3d5c 100644
+--- a/tests/hq-delivery-fallback-test.py
++++ b/tests/hq-delivery-fallback-test.py
+@@ -54 +54 @@ assert_ok(d[0]["videos"] == [{"url": MP4, "cover": COVER}],
+-# 2) 图片终态交付（无 mp4）：条目仍在（正文图片由前端文本渲染），videos 为空
++# 2) 旧版图片终态交付（URL 只在正文）：恢复为结构化 images，videos 为空
+@@ -59,2 +59,3 @@ d = app_mod._recent_deliveries(SID)
+-assert_ok(len(d) == 1 and d[0]["job"] == "9768" and d[0]["videos"] == [],
+-          "图片终态交付也进清单（videos 为空）", str(d)[:140])
++assert_ok(len(d) == 1 and d[0]["job"] == "9768" and d[0]["videos"] == []
++          and d[0]["images"] == [IMG],
++          "旧版图片正文链接恢复为结构化 images", str(d)[:180])
+diff --git a/tests/hq-job-watcher-test.py b/tests/hq-job-watcher-test.py
+index 25bd4c17fd1d526afa8cf5625808873f45fe9ef6..b7b6f3845fdfbcd9cbc8d6f311270a6d448e9695 100644
+--- a/tests/hq-job-watcher-test.py
++++ b/tests/hq-job-watcher-test.py
+@@ -153,0 +154,167 @@ assert_ok(not _contradiction, "无图采集交付不再说「图片在下面」
++# ⑤ 普通图片任务完成后，产物必须进入历史消息和实时 delivery 事件。
++# 这是 2026-09-22 任务 9807 的真实故障模式：上游 result.url 有 PNG，
++# 但消息 images 与 SSE images 都为空，Agent 随后却声称“图片卡片已发出”。
++SID4 = "watcher-image-delivery-sid"
++IMAGE_URL = "https://media.example.com/output-9807.webp?signature=unit"
++v4_state.set_owner(SID4, OWNER)
++v4_state.is_loaded(SID4)
++_events4 = []
++_spawned5 = []
++_original_emit = v4_delivery.streaming.emit
++v4_delivery.streaming.emit = lambda sid, event, data: _events4.append((sid, event, data))
++v4_delivery.set_turn_spawner(lambda sid, text: _spawned5.append((sid, text)) or 1)
++try:
++    v4_delivery.deliver_terminal(SID4, "image", 999904, "completed", {
++        "id": 999904,
++        "job_id": 999904,
++        "status": "done",
++        "result": {"url": IMAGE_URL, "urls": [IMAGE_URL], "count": 1},
++    })
++finally:
++    v4_delivery.set_turn_spawner(None)
++    v4_delivery.streaming.emit = _original_emit
++
++_hist4 = v4_state.get_main_history(SID4)
++_image_msg4 = next((m for m in reversed(_hist4)
++                    if str(m.get("task_job")) == "999904"), {})
++assert_ok(_image_msg4.get("images") == [IMAGE_URL],
++          "图片任务产物写入历史消息 images")
++assert_ok(any(event == "delivery" and data.get("images") == [IMAGE_URL]
++              for _, event, data in _events4),
++          "图片任务产物写入实时 delivery 事件")
++assert_ok(v4_delivery.product_urls("image", {
++              "url": IMAGE_URL,
++              "audio_url": "https://media.example.com/output-9807.mp3",
++              "video_url": "https://media.example.com/output-9807.mp4",
++          }) == [IMAGE_URL],
++          "短域名图片任务只把图片产物送进任务面板兜底")
++assert_ok(v4_delivery.product_urls("hq-image", {"url": IMAGE_URL}) == [IMAGE_URL],
++          "Agent id 域名图片任务同样只交付图片")
++import app as hq_app
++assert_ok(any(item.get("images") == [IMAGE_URL]
++              for item in hq_app._recent_deliveries(SID4)),
++          "图片任务产物进入 SSE 断线恢复兜底")
++
++# 多图任务必须完整写入历史、实时事件与恢复兜底，不能静默只交付前三张。
++SID7 = "watcher-multi-image-delivery-sid"
++MULTI_IMAGES = [
++    "https://media.example.com/multi-%d.webp?signature=unit" % i
++    for i in range(1, 6)
++]
++v4_state.set_owner(SID7, OWNER)
++v4_state.is_loaded(SID7)
++_events7 = []
++_original_emit = v4_delivery.streaming.emit
++v4_delivery.streaming.emit = lambda sid, event, data: _events7.append((sid, event, data))
++try:
++    v4_delivery.deliver_terminal(SID7, "hq-image", 999907, "completed", {
++        "id": 999907, "job_id": 999907, "status": "done",
++        "result": {"urls": MULTI_IMAGES, "count": len(MULTI_IMAGES)},
++    })
++finally:
++    v4_delivery.streaming.emit = _original_emit
++_multi_message = next(m for m in reversed(v4_state.get_main_history(SID7))
++                      if str(m.get("task_job")) == "999907")
++assert_ok(_multi_message.get("images") == MULTI_IMAGES,
++          "多图任务全部写入历史消息 images")
++assert_ok(any(event == "delivery" and data.get("images") == MULTI_IMAGES
++              for _, event, data in _events7),
++          "多图任务全部写入实时 delivery 事件")
++assert_ok(any(item.get("images") == MULTI_IMAGES
++              for item in hq_app._recent_deliveries(SID7)),
++          "多图任务全部进入断线恢复兜底")
++
++# 任务面板只认结构化 task_job/media_job；正文偶然提到同号不能绑定无关媒体。
++_history_products = [
++    {"role": "assistant", "content":
++     "稍后再看任务 999908：https://media.example.com/unrelated.mp4"},
++    {"role": "assistant", "content": "任务 999908 ✅ 已完成。",
++     "task_job": "999908", "task_domain": "video",
++     "images": ["https://media.example.com/wrong-domain.png"]},
++    {"role": "assistant", "content": "任务 999908 ✅ 已完成。",
++     "task_job": "999908", "task_domain": "image", "images": MULTI_IMAGES},
++]
++_visible_products = hq_app._visible_history(
++    _history_products, include_task_metadata=True)
++_anchor, _products = hq_app._task_history_products(
++    _visible_products, "999908", "image")
++assert_ok(_anchor == 2 and _products == MULTI_IMAGES,
++          "任务面板真实可见历史投影保留结构化关联并返回全部图片")
++assert_ok(hq_app._task_history_products(
++              hq_app._visible_history(
++                  _history_products[:1], include_task_metadata=True),
++              "999908", "image") == (None, []),
++          "正文偶然提到任务号不能误绑定无关媒体")
++assert_ok(hq_app._task_result({
++              "output": {"job_id": 999909, "result": {"urls": MULTI_IMAGES}},
++              "result": {"id": 111111},
++          }).get("job_id") == 999909,
++          "统一任务记录解包保留 output 仅有 job_id 的权威结果")
++
++# 旧版历史已写 task_job 但漏了 images：部署修复后应从持久化任务结果自动补回，
++# 不要求用户重新扣点生成，也不直接改线上会话文件。
++SID6 = "watcher-legacy-image-delivery-sid"
++LEGACY_IMAGE_URL = "https://media.example.com/legacy-9807.png?signature=unit"
++v4_state.set_owner(SID6, OWNER)
++v4_state.is_loaded(SID6)
++v4_state.save_subagent(SID6, "image", last_result={
++    "state": v4_protocol.COMPLETED,
++    "_runtime_jobs": [{
++        "state": v4_protocol.COMPLETED,
++        "result": {"id": 999906, "job_id": 999906},
++        "output": {
++            "id": 999906, "job_id": 999906, "status": "done",
++            "result": {"url": LEGACY_IMAGE_URL, "count": 1},
++        },
++    }],
++})
++v4_state.append_main_history(SID6, [{
++    "role": "assistant", "content": "任务 999906 ✅ 已完成。",
++    "task_job": "999906", "task_domain": "image",
++}])
++assert_ok(any(item.get("images") == [LEGACY_IMAGE_URL]
++              for item in hq_app._recent_deliveries(SID6)),
++          "旧版漏图消息从任务台账自动恢复图片")
++for offset in range(6):
++    v4_state.append_main_history(SID6, [{
++        "role": "assistant", "content": "较新的任务 %d 已完成" % offset,
++        "task_job": "new-%d" % offset, "task_domain": "video",
++    }])
++_recovered_history = hq_app._visible_history(
++    hq_app._history_with_recovered_images(
++        SID6, v4_state.get_main_history(SID6)))
++_legacy_message = next(m for m in _recovered_history
++                       if m.get("content") == "任务 999906 ✅ 已完成。")
++assert_ok(_legacy_message.get("images") == [LEGACY_IMAGE_URL],
++          "恢复真实调用顺序先补图再投影，深历史仍从台账补回图片")
++assert_ok(not any(m.get("task_job") or m.get("task_domain")
++                  for m in _recovered_history),
++          "恢复响应不会泄露内部任务关联元数据")
++_wrong_domain = hq_app._history_with_recovered_images(SID6, [{
++    "role": "assistant", "content": "同号视频任务", "task_job": "999906",
++    "task_domain": "video",
++}])[0]
++assert_ok(not _wrong_domain.get("images"),
++          "跨业务域同号任务不能从图片台账误补产物")
++assert_ok(any("已经" in prompt and "卡片" in prompt for _, prompt in _spawned5),
++          "成功交付图片后才允许 Agent 说明卡片已发送")
++
++# ⑥ completed 但没有可交付产物时，回注必须明确禁止 Agent 谎称已发卡片。
++SID5 = "watcher-image-missing-sid"
++v4_state.set_owner(SID5, OWNER)
++v4_state.is_loaded(SID5)
++_spawned6 = []
++v4_delivery.set_turn_spawner(lambda sid, text: _spawned6.append((sid, text)) or 1)
++try:
++    v4_delivery.deliver_terminal(SID5, "hq-image", 999905, "completed", {
++        "id": 999905,
++        "job_id": 999905,
++        "status": "done",
++        "result": {"count": 1},
++    })
++finally:
++    v4_delivery.set_turn_spawner(None)
++assert_ok(any("未提取到" in prompt and "不要声称" in prompt
++              for _, prompt in _spawned6),
++          "没有产物时禁止 Agent 声称已发送")
++
