@@ -30,10 +30,9 @@
 - 红灯复现：初版补丁存在最近五条之外无法恢复、多图第 4 张起丢失、正文任务号误关联；第一次修复又暴露 UI 投影过早剥离任务元数据的真实调用链阻塞。
 - `python tests/hq-job-watcher-test.py`：通过；覆盖历史、实时 SSE、任务面板、完整多图、深历史恢复、真实 UI 投影组合、内部元数据不泄露、结构化关联、跨域同号、旧任务结构和无产物事实约束。
 - `python tests/hq-delivery-fallback-test.py`：通过。
-- 最终候选的直接前置修复提交 `c5fc586...` 在隔离 Linux 工作区执行 `tests/run_unit.sh`：全绿。
+- 精确最终候选 `04d733091e86346db7a114ff76795a4ea0c9e2e4` 在隔离 Linux 工作区执行 `tests/run_unit.sh`：全绿；未切换生产运行目录、未重启服务、未部署。
 - 最终调用链增量仅修改 `app.py` 与对应测试；定向 watcher/fallback、Python 编译和 diff-check 在精确最终候选上重跑通过。
 - 精确最终候选在 Windows 执行全部 33 个后端命令为 `31 PASS / 2 FAIL`；干净当前基线的相同两项也失败（缺少 Linux 字体/`fakeredis`），候选未新增失败。
-- Windows 全部 33 个后端命令对照：候选与干净当前基线均为 `29 PASS / 4 FAIL`，失败项完全相同，均为跨盘路径或缺少 `fakeredis` 的环境限制。
 - 完整 17 套浏览器回归对照：候选与干净当前基线均为 `168 PASS / 2 FAIL`，失败套件和两条既有断言完全相同；候选未新增失败。最新基线相对该对照仅修改 `subagents/hq-compose/SKILL.md`，随后完整 Linux 后端门禁已在最终候选上重跑全绿。
 - `python -m py_compile agent/v4/delivery.py app.py tests/hq-job-watcher-test.py tests/hq-delivery-fallback-test.py`：通过。
 - `git diff --check`：通过。
