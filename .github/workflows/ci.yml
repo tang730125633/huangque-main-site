@@ -117,6 +117,7 @@ jobs:
           node tests/test_channel_status_truth.js
           node tests/test_channel_test_progress.js
           python -m unittest tests.isolated.test_http_entry_e2e -v
+          python -m unittest tests.isolated.test_old_task_channel -v
           node tests/test_channel_latency_ui.js
           node tests/test_channel_category_drawer.js
           node tests/test_channel_priority_publish.js
