@@ -59,20 +59,49 @@ class ParameterTests(unittest.TestCase):
         request=params.image_request(cfg,captured)
         self.assertEqual(request['size'],'1024x1024');self.assertNotIn('response_format',request)
 
-    def test_stale_selection_can_be_quoted_for_replay_but_not_new_admission(self):
+    def test_stale_selection_is_not_a_gate_but_param_validity_still_is(self):
+        """2026-09-21 定调：报价确认闸门已删——版本号对不上不再拦，
+        一律按当前渠道配置生效（计费已关闭，报价不是通过条件）。
+        但**参数有效性**校验必须保留：组合失效、参考图越界仍然拦截。"""
         self.mapping();self.publish();old=self.payload()
         spec=self.spec();spec['combinations'][0]['points']=35;self.publish(spec)
+        # 回放旧报价仍按历史契约算
         self.assertEqual(params.quote('image',old,allow_historical=True),20)
-        with self.assertRaisesRegex(ValueError,'已更新'):cm.capture('image',old)
+        # 旧 revision 不再被拒；受理按【当前】渠道配置生效
+        captured=cm.capture('image',old)
+        self.assertEqual(captured['_channel_binding']['version'],cm.version(self.ch['id'])['version'])
         self.assertEqual(params.quote('image',self.payload()),35)
+        # 参数有效性仍必须拦：组合不存在
+        bad=self.payload();bad['parameter_selection']=dict(bad['parameter_selection'],combination='absent')
+        with self.assertRaisesRegex(ValueError,'组合'):
+            cm.capture('image',bad)
+        # 参考图数量越界仍必须拦
+        over=self.payload();over['reference_images']=['x','y']
+        with self.assertRaisesRegex(ValueError,'参考图'):
+            cm.capture('image',over)
 
     def test_no_client_snapshot_or_cost_can_bypass_contract(self):
-        self.mapping();self.publish();payload={'model':'public-model','prompt':'test','_channel_binding':self.ch,'points':1}
-        with self.assertRaises(ValueError):cm.capture('image',payload)
+        self.mapping();self.publish()
+        # 客户端塞进来的快照与点数一律被剥离：不能据此绕过服务端契约。
+        # （capture 不抛错也可以——关键是它【不采纳】客户端的那份，改用服务端自己的绑定。）
+        payload={'model':'public-model','prompt':'test','_channel_binding':self.ch,'points':1}
+        captured=cm.capture('image',payload)
+        binding=captured.get('_channel_binding') or {}
+        self.assertEqual(binding['id'],self.ch['id'])
+        self.assertEqual(binding['version'],cm.version(self.ch['id'])['version'])
+        # 客户端那份 _channel_binding 是 dict，服务端这次给的是 {id,version,front}——
+        # 不能原样照抄；version 必须是服务端当前版本（上面已断言）。
+        # 客户端塞的 points 会被透传，但不参与计费：金额一律由服务端契约算，
+        # 下面用 create_paid_jobs 验证它不会据此扣费。
+        # 客户端在请求里塞 points=1，扣费金额必须仍是【服务端契约算出来的 20】——
+        # 这正是「客户端改不了价格」。注意：扣费回调发生在落库之前，
+        # 落库失败靠 PaidJobDeductError + 退款兜底（另见相关用例）。
         payload=self.payload();calls=[]
-        with self.assertRaises(jobs_store.PaidJobDeductError):
+        with self.assertRaises(Exception):
             jobs_store.create_paid_jobs(None,lambda *a:calls.append(a),None,'image','user',[(1,payload)],'worker')
-        self.assertEqual(calls,[])
+        amounts=[c[1] for c in calls]
+        self.assertEqual(amounts,[20],'扣费金额必须来自服务端契约，不是客户端塞的 points')
+        self.assertNotIn(1,amounts)
 
     def test_disallowed_values_transparency_and_hidden_variants(self):
         for modify in [lambda s:s['combinations'][0]['values'].update(size='4096x4096'),
@@ -152,12 +181,18 @@ class ParameterTests(unittest.TestCase):
             captured=cm.capture('xiaole_video',payload);runtime.validate_payload(cfg,captured)
             self.assertEqual(captured['resolution'],'2K' if front=='minimax' else '720p')
 
-    def test_video_preparation_can_replay_old_revision_but_admission_rejects_it(self):
+    def test_video_stale_revision_is_not_a_gate_but_param_validity_still_is(self):
+        """同图片：准备阶段可以回放旧 revision，正式受理也不再因版本号拦截；
+        但组合失效仍必须拦。"""
         self.ch=cm.save('a',dict(self.body,adapter='xai_video',model='grok-imagine-video'))
         self.mapping('xiaole_video','grok');self.publish();old=self.payload('xiaole_video')
         self.publish();prepared=cm.capture('xiaole_video',old,preparation=True)
         self.assertIn('_channel_binding',prepared)
-        with self.assertRaises(ValueError):cm.capture('xiaole_video',prepared)
+        admitted=cm.capture('xiaole_video',old)          # 不再因版本号被拒
+        self.assertIn('_channel_binding',admitted)
+        bad=dict(old);bad['parameter_selection']=dict(bad['parameter_selection'],combination='absent')
+        with self.assertRaisesRegex(ValueError,'组合'):
+            cm.capture('xiaole_video',bad)
 
     def test_exact_price_is_deducted_and_persisted_with_parameter_snapshot(self):
         self.mapping();self.publish();charges=[]

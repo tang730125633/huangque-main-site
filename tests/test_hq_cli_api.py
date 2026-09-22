@@ -2001,12 +2001,13 @@ class HQCLIAPITests(unittest.TestCase):
         request = {"action": "matrix-template-generate", "input": input_body, "confirm": False}
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
             status, quote = self._request("/api/auth/cli/action", request, token=token)
-            self.assertEqual((200, 5), (status, quote["cost"]))
-            self.assertIsInstance(quote["expires_at"], int)
-            self.assertGreater(quote["expires_at"], int(time.time()))
+            # 2026-09-22 老板定调「不要报价，直接生成」（08a2da68）：
+            # matrix-template-generate 是直出动作——一次调用直接提交扣点出任务，
+            # 不再有报价环节，因此也没有 quote_token / expires_at / 期望点数头。
+            # 报价仍是免费的这一性质由 fake_proxy 不产生副作用来保证。
             status, result = self._request(
                 "/api/auth/cli/action",
-                dict(request, confirm=True, quote_token=quote["quote_token"]),
+                dict(request, confirm=True),
                 token=token,
             )
         self.assertEqual((200, 92), (status, result["job_id"]))
@@ -2018,7 +2019,9 @@ class HQCLIAPITests(unittest.TestCase):
             "bgm_volume": 0.35,
             "voiceover": normalized_voiceover,
         }, submitted[0]["body"])
-        self.assertEqual("5", submitted[0]["headers"]["X-HQ-Expected-Cost"])
+        # 直出动作不发期望点数头：cost 由内容侧即时计算入账
+        self.assertNotIn("X-HQ-Expected-Cost", submitted[0]["headers"])
+        self.assertNotIn("quote_token", submitted[0].get("body") or {})
         self.assertTrue(submitted[0]["headers"]["Idempotency-Key"].startswith("hqcli-"))
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
             status, task = self._request(
@@ -2270,13 +2273,12 @@ class HQCLIAPITests(unittest.TestCase):
         ))
         self.assertEqual(["/api/gen/matrix-template/templates"], paths)
 
-    def test_matrix_template_hyperframes_single_still_quotes_and_submits(self):
+    def test_matrix_template_hyperframes_single_submits_directly(self):
+        """直出动作：一次调用直接提交，没有报价环节。"""
         token = self._token(["generation:quote", "generation:submit"])
         submitted = []
 
         def fake_proxy(plan, _web_token, _internal_token):
-            if plan["path"] == "/api/gen/cli/quote":
-                return 200, {"kind": "matrix_template_video", "cost": 5, "points": 100}
             if plan["path"] == "/api/gen/matrix-template":
                 submitted.append(plan)
                 return 200, {"job_id": 193, "cost": 5, "points_left": 95}
@@ -2292,15 +2294,11 @@ class HQCLIAPITests(unittest.TestCase):
             "confirm": False,
         }
         with mock.patch.object(self.auth.hq_cli_api, "proxy_json", side_effect=fake_proxy):
-            status, quote = self._request(
+            status, result = self._request(
                 "/api/auth/cli/action", request, token=token
             )
-            status, result = self._request(
-                "/api/auth/cli/action",
-                dict(request, confirm=True, quote_token=quote["quote_token"]),
-                token=token,
-            )
         self.assertEqual((200, 193, 1), (status, result["job_id"], len(submitted)))
+        self.assertNotIn("X-HQ-Expected-Cost", submitted[0]["headers"])
 
     def test_matrix_template_batch_quotes_once_and_replays_stable_children(self):
         from content_domains import matrix_template_video
