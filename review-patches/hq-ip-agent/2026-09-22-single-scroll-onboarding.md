@@ -10,7 +10,7 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 
 - 新会话显示能力面板时隐藏重复的 Hero 示例卡，只保留精简标题说明和 8 张能力卡。
 - 桌面端欢迎区与能力面板按内容自然占位；空间充足时不产生内部滚动条，矮屏时仅允许能力面板按需滚动；消息区仍是聊天内容的滚动容器。
-- 用户开始输入后自动收起精简 Hero，并按主列实际剩余高度限制输入框增长；能力面板可收缩但始终可滚动访问全部入口，清空输入可恢复 Hero。
+- 用户开始输入后自动收起精简 Hero，并优先使用消息区可压缩空间限制输入框增长；900p/1080p 的能力面板保持完整无内滚，只有 800px 及以下矮屏才允许能力区按需滚动，清空输入可恢复 Hero。
 - 增加新会话重复入口、滚动容器数量、1280×650、1280×768、1280×900、1920×1080、超长文本输入和输入框可见性的浏览器回归断言。
 
 ## 用户可见结果
@@ -24,9 +24,9 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 
 完整基线提交：`hq-ip-agent@d1cb79756a2e89eeac4f950a3dd32100fe2e3bee`
 
-补丁 SHA-256：`177b3c910a150ab3d1d98c8ff6c73fd46eb8e6fa7dc251369bc0f2d5350f1b89`
+补丁 SHA-256：`80ba364e7f64c29e34c4b91198216b814eaa53fbce45df766abab9e22297eb01`
 
-预期结果树：`9160967e240b65c958a5e69f77836e1d5d71c3fe`
+预期结果树：`1deea69fc0114b544a6e2975ea03433f07274952`
 
 涉及文件：
 
@@ -39,7 +39,7 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 - 红灯验证：旧实现仍显示重复 Hero 示例入口，且 `intro`、`capability-launcher`、`messages` 同时成为实际滚动容器。
 - 修复后，1280×900 与 1920×1080 的新增布局断言全部通过；候选区域实际滚动容器数量从 3 降为 0，输入框完整留在视口内。
 - 1280×768 与 1280×650 下，能力面板按需成为唯一滚动容器，全部 8 张卡可访问，输入框不再被主列裁掉。
-- 900p/1080p 超长输入会收起 Hero，动态高度上限确保 composer 与 footer 都在视口内；拖拽、双击恢复与消息区滚轮测试继续通过。
+- 900p/1080p 超长输入会收起 Hero，动态高度上限优先压缩消息区，确保 composer 与 footer 都在视口内且能力面板完整无内滚；拖拽后同样满足该约束，双击恢复与消息区滚轮测试继续通过。
 - 既有模板、桌面和移动端相关场景通过；`hq-widget-lifecycle-test.mjs` 通过。
 - `node --check static/v4.js`、`node --check tests/hq-ip12-test.mjs` 与 `git diff --check`：通过。
 - 为避免审查仓库把嵌套 patch 的空白上下文误判为尾随空格，本文件使用零上下文 Git patch；在精确基线上以 `--unidiff-zero` 校验并应用后，结果树与修复提交完全一致。
@@ -52,7 +52,7 @@ IP12 v4 由独立 `hq-ip-agent` 仓库维护，主站只反向代理 `/workbench
 
 ```bash
 git apply --unidiff-zero --index /path/to/huangque-main-site/review-patches/hq-ip-agent/2026-09-22-single-scroll-onboarding.patch
-test "$(git write-tree)" = "9160967e240b65c958a5e69f77836e1d5d71c3fe"
+test "$(git write-tree)" = "1deea69fc0114b544a6e2975ea03433f07274952"
 ```
 
 应用前先核对补丁 SHA-256，应用后核对结果树并重新运行上述测试；确认无误后创建独立仓库提交并推送其权威 origin，再按独立服务发布流程部署。本 PR 自身不部署任何文件；审核通过前不得推送到生产 bare 远端，也不得上线。
