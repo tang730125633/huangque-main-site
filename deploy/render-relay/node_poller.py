@@ -8,12 +8,14 @@
 import csv
 import base64
 import hashlib
+import hmac
 import http.client
 import json
 import math
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -290,7 +292,10 @@ def _image_to_video(data, content_type, duration):
         source = os.path.join(temp, "source" + suffix)
         output = os.path.join(temp, "clip.mp4")
         with open(source, "wb") as handle:
-            handle.write(data)
+            if isinstance(data, bytes):
+                handle.write(data)
+            else:
+                shutil.copyfileobj(data, handle, 64 * 1024)
         process = subprocess.run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-loop", "1", "-i", source, "-map", "0:v:0", "-an", "-vf",
@@ -316,21 +321,34 @@ def sync_user_assets(payload, job_id):
             RELAY + "/v1/job-assets/" + job_id + "/" + sha,
             headers={"Authorization": "Bearer " + NODE_TOKEN, "X-HQ-Node": NODE_NAME},
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            content_type = (resp.headers.get("Content-Type") or "").split(";")[0]
-            data = resp.read()
-        if item.get("media_type") == "image":
-            data = _image_to_video(data, content_type, payload.get("duration"))
-            sha = hashlib.sha256(data).hexdigest()
-            content_type = "video/mp4"
-            item.update({
-                "sha256": sha, "media_type": "video", "clip_start_seconds": 0,
-            })
-        _call(
-            LOCAL + "/v1/user-assets", LOCAL_TOKEN, "POST", raw=data,
-            headers={"Content-Type": content_type, "X-HQ-Asset-Sha256": sha},
-            timeout=120,
-        )
+        with tempfile.TemporaryFile() as source:
+            total, digest = 0, hashlib.sha256()
+            with urllib.request.urlopen(req, timeout=3600) as resp:
+                content_type = (resp.headers.get("Content-Type") or "").split(";")[0]
+                while chunk := resp.read(64 * 1024):
+                    total += len(chunk)
+                    if total > 2 * 1024 * 1024 * 1024:
+                        raise RuntimeError("素材超出账号传输空间预算")
+                    source.write(chunk)
+                    digest.update(chunk)
+            if not total or not hmac.compare_digest(digest.hexdigest(), sha):
+                raise RuntimeError("用户素材传输校验失败")
+            source.seek(0)
+            data = source
+            if item.get("media_type") == "image":
+                data = _image_to_video(source, content_type, payload.get("duration"))
+                sha = hashlib.sha256(data).hexdigest()
+                total = len(data)
+                content_type = "video/mp4"
+                item.update({
+                    "sha256": sha, "media_type": "video", "clip_start_seconds": 0,
+                })
+            _call(
+                LOCAL + "/v1/user-assets", LOCAL_TOKEN, "POST", raw=data,
+                headers={"Content-Type": content_type, "X-HQ-Asset-Sha256": sha,
+                         "Content-Length": str(total)},
+                timeout=3600,
+            )
 
 
 def report(job_id, ok, result=None, error=None, claim_token=None):

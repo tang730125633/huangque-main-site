@@ -4283,7 +4283,6 @@
   try{sourceInspirationId=Number(new URLSearchParams(location.search).get('inspiration')||0);if(sourceInspirationId<1000000)sourceInspirationId=0}catch(e){}
   // 共用现有 xiaole_video 任务外壳；各渠道在后端调用对应 Provider API。
   function submitXiaole(channel){
-    if(window.PublishedChannelParameters?.redirect('xiaole_video',channel))return;
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     if(channel==='omni'&&!omniAvailable){toast(officialVideoHealthKnown?'Omni 测试通道暂未开放':'正在检查 Omni 官方通道');return;}
     if(channel==='micro'&&!seedanceAvailable){toast(officialVideoHealthKnown?'Seedance 测试通道暂未开放':'正在检查 Seedance 官方通道');return;}
@@ -4297,6 +4296,7 @@
     if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
     var ratio=channel==='grok'?(editing?null:selectedGrokRatio):(channel==='omni'?selectedOmniRatio:(channel==='minimax'?selectedMiniMaxRatio:selectedSeedanceRatio));
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:(channel==='minimax'?minimaxRefData:null)));
+    if(window.PublishedChannelParameters?.redirect('xiaole_video',{channel:channel,operation:editing?'edit':'generate',prompt:prompt,reference_images:editing?[]:(_refArr||[])}))return;
     if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && (!_refArr||!_refArr.length)){
       toast('Grok Video 1.5 至少上传1张参考图（最多7张）'); return;
     }
@@ -4928,6 +4928,6 @@
 </script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
-<script src="/workbench/channel-parameters.js?v=8a9d5be7"></script>
+<script src="/workbench/channel-parameters.js?v=507e2710"></script>
 </body>
 </html>

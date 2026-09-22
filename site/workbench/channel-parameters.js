@@ -11,6 +11,7 @@
   // 当前选择的功能身份：功能条目取 operation_id，兼容条目取 legacy:<kind>:<front>。
   // 用身份而不是 front 查找——同一个 front 可能对应多个业务功能。
   let currentKey='';
+  let sourceDraft=null;
   let layoutApplied=false;
   host.className='cp-panel';
   const request=async(url,options={})=>{const r=await fetch(url,{credentials:'same-origin',cache:'no-store',...options});const d=await r.json();if(!r.ok){const e=Error(d.detail||'请求失败');e.status=r.status;throw e}return d};
@@ -190,13 +191,14 @@
       const user=await identity();if(owner&&owner!==user)throw Error('登录账户已变化，请刷新页面');owner=user;
       const prompt=host.querySelector('#cpPrompt').value.trim();if(!prompt)throw Error('请输入提示词');
       const files=[...host.querySelector('#cpUpload').files];
-      if(files.length<current.reference_min||files.length>current.reference_max||files.reduce((n,f)=>n+f.size,0)>8*1024*1024)throw Error('参考图数量或大小不符合要求');
+      const inherited=files.length?[]:(sourceDraft?.reference_images|| (sourceDraft?.image?[sourceDraft.image]:[]));
+      if((files.length+inherited.length)<current.reference_min||(files.length+inherited.length)>current.reference_max||files.reduce((n,f)=>n+f.size,0)>8*1024*1024)throw Error('参考图数量或大小不符合要求');
       const maskInput=host.querySelector('#cpMaskUpload'),maskFile=maskInput&&maskInput.files&&maskInput.files[0]||null;
       if(maskFile&&files.length!==1)throw Error('局部修图需要恰好 1 张参考图');
       if(maskFile&&maskFile.size>10*1024*1024)throw Error('蒙版图片不能超过 10MB');
       const choice=controls.value();if(!confirm(billingEnabled?'生成 1 个产物，本次共 '+choice.points+' 点。确认提交？':'生成 1 个产物，内测期间免费。确认提交？'))return;
       const readFile=file=>new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)});
-      const refs=await Promise.all(files.map(readFile));
+      const refs=files.length?await Promise.all(files.map(readFile)):inherited;
       const payload={prompt,count:1,parameter_selection:{revision:current.revision,combination:choice.id}};
       // 请求字段按后端下发的识别条件填写 —— 前后端用同一个功能身份，
       // 不再让前端自己拼 provider/model 去猜是哪个功能。
@@ -212,6 +214,8 @@
       }
       if(refs.length)payload.reference_images=refs;
       if(maskFile)payload.mask=await readFile(maskFile);
+      else if(sourceDraft?.mask)payload.mask=sourceDraft.mask;
+      if(sourceDraft?.source_inspiration_id)payload.source_inspiration_id=sourceDraft.source_inspiration_id;
       pending={key:crypto.randomUUID(),payload,owner};
       try{savePending()}catch(error){pending=null;throw Error('无法保存防重复提交信息，请释放浏览器会话存储后重试')}
     }catch(error){note(error.status===401?'请先登录后生成。':error.message);return}
@@ -255,13 +259,26 @@
     }catch(error){if(host.innerHTML)note('参数暂时无法刷新；提交时会再次校验。')}
     finally{fetching=false}
   }
-  window.PublishedChannelParameters={redirect:(k,front)=>{
+  function matchesInput(entry,input){
+    const refs=input.reference_images||input.images||(input.image?[input.image]:[]);
+    const actual={...input,kind,provider:input.provider||(kind==='image'?'openai':''),
+      operation:input.operation||(input.channel==='grok'?'generate':''),
+      reference_count:refs.length,mask_present:!!input.mask};
+    return Object.entries(entry.match||{}).every(([key,value])=>
+      value==='>0'?actual[key]>0:actual[key]===value);
+  }
+  window.PublishedChannelParameters={redirect:(k,input)=>{
     if(k!==kind)return false;
-    // 调用方可能给 front，也可能给 operation_id；两者都按身份解析，
-    // 并且只接受非兼容条目
-    const found=autoSelectable().find(i=>keyOf(i)===front||i.front===front||i.operation_id===front);
-    if(!found)return false;
-    managedActive=true;showLegacy=false;current=found;render();host.scrollIntoView({behavior:'smooth',block:'start'});note('该模型已启用新的参数配置，请在此选择参数并提交。');return true;
+    const choices=autoSelectable().filter(i=>typeof input==='string'
+      ?keyOf(i)===input:!!i.match&&matchesInput(i,input));
+    if(choices.length!==1)return false;
+    const found=choices[0];
+    sourceDraft=typeof input==='object'?{...input}:null;
+    managedActive=true;showLegacy=false;current=found;currentKey=keyOf(found);controls=null;clearInvalid();render();
+    if(sourceDraft?.prompt)host.querySelector('#cpPrompt').value=sourceDraft.prompt;
+    host.scrollIntoView({behavior:'smooth',block:'start'});
+    note('已载入该功能当前渠道的参数，请确认后提交。'+(sourceDraft?.reference_images?.length||sourceDraft?.image?'已保留参考图。':''));
+    return true;
   }};
   (async()=>{try{owner=await identity();pending=JSON.parse(sessionStorage.getItem(storageKey())||'null')}catch(e){}await load();if(pending){managedActive=true;render();sync();if(pending.job_id)poll()}})();
   window.addEventListener('hq:auth-changed',event=>{billingEnabled=event.detail?.verified===true&&event.detail?.user?.points_billing_enabled===true;sync()});

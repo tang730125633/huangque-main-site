@@ -280,6 +280,7 @@ def dispatch_http(handler, method, verify_token, must_change_password):
             uploaded = cli_uploads.store_image(
                 handler.rfile, length, user["username"], content_type,
                 handler.headers.get("X-HQ-Image-SHA256"),
+                max_bytes=cli_uploads.MAX_BYTES,
             )
             data, meta = cli_uploads.read_image_bytes(
                 uploaded["upload_id"], user["username"],

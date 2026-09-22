@@ -110,7 +110,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({'id': 'vid-%s-1' % self.server.port, 'status': 'queued',
                         'model': body.get('model'), 'seconds': str(body.get('seconds') or ''),
                         'size': str(body.get('size') or '')})
-        elif '/lechuang-image/' in self.path and self.path.rstrip('/').endswith('/generations'):
+        elif ('/lechuang-image/' in self.path or '/lechuang-video-' in self.path) and self.path.rstrip('/').endswith('/generations'):
             self._json({'data': {'request_id': 'req-lechuang-0001', 'status': 'queued'}})
         elif '/openai-image/' in self.path and self.path.rstrip('/').endswith('/generations'):
             size = self.server.image_size or '1024x1024'
@@ -137,7 +137,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({'id': vid, 'status': 'completed', 'model': 'sora-2-pro',
                         'seconds': '4', 'size': '720x1280'})
             return
-        if '/lechuang-image/' in self.path and '/generations/' in self.path:
+        if '/lechuang-video-' in self.path and '/generations/' in self.path:
+            self._json({'data': {'status':'succeeded', 'output': {'videos':[
+                {'url':'http://127.0.0.1:%d/file.mp4' % self.server.port}]}}})
+        elif self.path.endswith('/file.mp4'):
+            data = (HERE / 'fixtures' / 'tiny.mp4').read_bytes()
+            self.send_response(200)
+            self.send_header('Content-Type','video/mp4')
+            self.send_header('Content-Length',str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        elif '/lechuang-image/' in self.path and '/generations/' in self.path:
             self._json({'data': {
                 'status': 'succeeded',
                 'output': {'images': [{'url': 'http://127.0.0.1:%d/lechuang-image/file.png' % self.server.port}]},

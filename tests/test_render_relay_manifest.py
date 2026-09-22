@@ -24,6 +24,26 @@ def load(name, relative):
 
 
 class RenderRelayManifestTests(unittest.TestCase):
+    def test_large_user_asset_is_cached_in_bounded_chunks(self):
+        relay = load("render_relay_large_asset", "deploy/render-relay/relay.py")
+        length = 257 * 1024 * 1024
+        class Stream:
+            remaining = length
+            def read(self, size):
+                assert 0 < size <= 64 * 1024
+                size = min(size, self.remaining)
+                self.remaining -= size
+                return b"x" * size
+        digest = hashlib.sha256()
+        source = Stream()
+        while chunk := source.read(64 * 1024):
+            digest.update(chunk)
+        with tempfile.TemporaryDirectory() as root:
+            relay.USER_ASSET_DIR = Path(root)
+            target = relay._store_user_asset(Stream(), digest.hexdigest(), "video/mp4", length)
+            self.assertEqual(length, target.stat().st_size)
+            self.assertEqual(0, len(list(Path(root).glob("*.part"))))
+
     def test_metadata_merge_preserves_delivery_and_adds_manifest(self):
         relay = load("render_relay", "deploy/render-relay/relay.py")
         existing = {
@@ -126,10 +146,10 @@ class RenderRelayManifestTests(unittest.TestCase):
         response = mock.MagicMock()
         response.__enter__.return_value = response
         response.headers.get.return_value = "image/jpeg"
-        response.read.return_value = b"image"
+        response.read.side_effect = [b"image", b""]
         payload = {
             "duration": 8.0,
-            "user_materials": [{"sha256": "a" * 64, "media_type": "image"}],
+            "user_materials": [{"sha256": hashlib.sha256(b"image").hexdigest(), "media_type": "image"}],
         }
         with mock.patch.object(
             poller.urllib.request, "urlopen", return_value=response,

@@ -176,6 +176,14 @@ class TimelineComposeTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg required")
     def test_local_renderer_outputs_two_images_two_videos_text_fade_and_bgm(self):
+        font_path = next((path for path in (
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/arial.ttf"),
+            Path("/System/Library/Fonts/STHeiti Medium.ttc"),
+        ) if path.is_file()), None)
+        if font_path is None:
+            self.skipTest("render font required")
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             images = [root / "image-1.png", root / "image-2.png"]
@@ -227,7 +235,7 @@ class TimelineComposeTests(unittest.TestCase):
                     (str(bgm), timeline_compose._snapshot(bgm)),
                 ],
             ), mock.patch.object(
-                timeline_compose, "FONT_PATH", "/System/Library/Fonts/STHeiti Medium.ttc",
+                timeline_compose, "FONT_PATH", str(font_path),
             ), mock.patch.object(core, "OUT_DIR", root), mock.patch.object(
                 core, "public_url", return_value="https://example.com/timeline.mp4",
             ), mock.patch(

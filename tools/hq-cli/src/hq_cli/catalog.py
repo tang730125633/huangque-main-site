@@ -718,6 +718,10 @@ CAPABILITIES["image-upload"] = _upload(
     "把一张本地 PNG、JPG 或 WebP 流式上传为本人短期私有 upload_id；不扣点，不返回公开素材地址。",
     "assets:upload",
 )
+CAPABILITIES["image-upload"]["file_input"].update({
+    "maxBytes": None, "accountActiveMaxFiles": 20,
+    "accountActiveMaxBytes": 2 * 1024 * 1024 * 1024,
+})
 CAPABILITIES["image-upload"]["next_actions"] = [
     "把返回的 upload_id 写入 image-generate 的 image_upload_id、mask_upload_id 或 reference_upload_ids。",
 ]
@@ -727,9 +731,9 @@ CAPABILITIES["video-upload"] = _upload(
     "assets:upload",
 )
 CAPABILITIES["video-upload"]["file_input"] = {
-    "argument": "--file", "path": "absolute", "maxBytes": 32 * 1024 * 1024,
+    "argument": "--file", "path": "absolute", "maxBytes": None,
     "mimeTypes": ["video/mp4", "video/quicktime", "video/webm"],
-    "accountActiveMaxFiles": 6, "accountActiveMaxBytes": 96 * 1024 * 1024,
+    "accountActiveMaxFiles": 20, "accountActiveMaxBytes": 2 * 1024 * 1024 * 1024,
 }
 CAPABILITIES["video-upload"]["next_actions"] = [
     "把返回的 upload_id 写入电影化身或经典换装动作的 reference_video_upload_ids / person_video_upload_id。",

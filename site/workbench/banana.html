@@ -1156,7 +1156,7 @@
   }
   function submit(payload, label, endpoint, opts){
     // 乐创引擎卡本身就是托管渠道的入口，直接提交；其他引擎命中托管映射时才引导到平台面板。
-    if(!(opts&&opts.managed)&&window.PublishedChannelParameters?.redirect('image',payload.model||''))return;
+    if(!(opts&&opts.managed)&&window.PublishedChannelParameters?.redirect('image',Object.assign({},payload,{source_page:'banana',provider:endpoint==='/api/gen/banana'?'banana':(payload.provider||'openai')})))return;
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint; lastLabel=label;
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
@@ -1686,6 +1686,6 @@
 </script>
 <link rel="stylesheet" href="/workbench/channel-parameters.css?v=b324c976">
 <script src="/workbench/channel-parameter-controls.js?v=8eb8b293"></script>
-<script src="/workbench/channel-parameters.js?v=8a9d5be7"></script>
+<script src="/workbench/channel-parameters.js?v=507e2710"></script>
 </body>
 </html>
