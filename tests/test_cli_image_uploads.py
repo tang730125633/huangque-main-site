@@ -236,7 +236,7 @@ class CLIImageUploadTests(unittest.TestCase):
         os.utime(stale, (0, 0))
         with mock.patch.object(cli_uploads, "MAX_USER_FILES", 1):
             self.upload(now=1000)
-            with self.assertRaisesRegex(ValueError, "临时图片已达上限"):
+            with self.assertRaisesRegex(ValueError, "临时图片或视频已达上限"):
                 self.upload(now=1001)
         self.assertFalse(stale.exists())
         with mock.patch.object(

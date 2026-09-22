@@ -1794,7 +1794,7 @@ def dispatch_http(handler, method, verify, must_change_password, db_factory):
                     )
                 handler.send_header("Content-Length", str(end - start + 1))
                 handler.end_headers()
-                # 流式发送：预览最多 32MB，绝不整块读入内存放大并发。
+                # 流式发送：不整块读入内存放大并发。
                 handle.seek(start)
                 remaining = end - start + 1
                 while remaining:

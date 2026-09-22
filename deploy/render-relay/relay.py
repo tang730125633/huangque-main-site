@@ -18,6 +18,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -202,6 +203,8 @@ def _priority_has_room(now, template=None, gpu_only=False):
         if name in PRIORITY_NODES and (not (REQUIRE_GPU or gpu_only) or _gpu_capable(name, template, now))
     )
 MAX_BODY = 256 * 1024 * 1024
+USER_ASSET_BUDGET = 2 * 1024 * 1024 * 1024  # Matches upstream account aggregate space.
+_USER_ASSET_LOCK = threading.Lock()
 OUT_DIR = os.environ.get("RELAY_OUT_DIR", "/home/ubuntu/render-relay/out")
 USER_ASSET_DIR = Path(os.environ.get(
     "RELAY_USER_ASSET_DIR", "/home/ubuntu/render-relay/user-assets"
@@ -408,25 +411,41 @@ def _valid_sha(value):
     return value if len(value) == 64 and all(c in "0123456789abcdef" for c in value) else ""
 
 
-def _store_user_asset(data, sha, content_type):
+def _store_user_asset(data, sha, content_type, length=None):
     sha = _valid_sha(sha)
     content_type = str(content_type or "").split(";")[0].strip().lower()
     suffix = USER_ASSET_SUFFIXES.get(content_type)
-    if not sha or not suffix or not hmac.compare_digest(hashlib.sha256(data).hexdigest(), sha):
+    if isinstance(data, bytes):
+        length, data = len(data), io.BytesIO(data)
+    if not sha or not suffix or not isinstance(length, int) or not 0 < length <= USER_ASSET_BUDGET:
         raise ValueError("用户素材校验失败")
-    USER_ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    target = USER_ASSET_DIR / (sha + suffix)
-    temporary = USER_ASSET_DIR / (target.name + "." + uuid.uuid4().hex + ".part")
-    try:
-        temporary.write_bytes(data)
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    cutoff = time.time() - USER_ASSET_RETENTION_SECONDS
-    for old in USER_ASSET_DIR.iterdir():
-        if old.is_file() and old.stat().st_mtime < cutoff:
-            old.unlink(missing_ok=True)
-    return target
+    # ponytail: serialize disk admission; use byte reservations if upload concurrency grows.
+    with _USER_ASSET_LOCK:
+        USER_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+        if shutil.disk_usage(USER_ASSET_DIR).free - length < 512 * 1024 * 1024:
+            raise OSError("素材临时存储空间不足")
+        target = USER_ASSET_DIR / (sha + suffix)
+        temporary = USER_ASSET_DIR / (target.name + "." + uuid.uuid4().hex + ".part")
+        digest, remaining = hashlib.sha256(), length
+        try:
+            with temporary.open("xb") as handle:
+                while remaining:
+                    chunk = data.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("素材传输不完整")
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+            if not hmac.compare_digest(digest.hexdigest(), sha):
+                raise ValueError("用户素材校验失败")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        cutoff = time.time() - USER_ASSET_RETENTION_SECONDS
+        for old in USER_ASSET_DIR.iterdir():
+            if old.is_file() and old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+        return target
 
 
 def _find_user_asset(sha):
@@ -760,29 +779,28 @@ class Handler(BaseHTTPRequestHandler):
                                     "created_at": now, "updated_at": now})
 
         if p == "/v1/user-assets":
-            # 用户素材：转发给云端渲染服务（当前生产路径）
             if not self._auth(RELAY_TOKEN):
                 return self._send(401, {"error": "unauthorized"})
-            n = int(self.headers.get("Content-Length") or "0")
-            if n <= 0 or n > MAX_BODY:
-                return self._send(400, {"error": "invalid_request", "detail": "素材大小无效"})
-            data = self.rfile.read(n)
             headers = {
                 "Authorization": "Bearer " + UPSTREAM_TOKEN,
                 "Content-Type": self.headers.get("Content-Type") or "application/octet-stream",
                 "X-HQ-Asset-Sha256": self.headers.get("X-HQ-Asset-Sha256") or "",
             }
             try:
-                req = urllib.request.Request(UPSTREAM + "/v1/user-assets", data=data,
-                                             headers=headers, method="POST")
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    code = resp.status
-                    response = json.loads(resp.read() or b"{}")
-                _store_user_asset(data, headers["X-HQ-Asset-Sha256"], headers["Content-Type"])
+                n = int(self.headers.get("Content-Length") or "0")
+                path = _store_user_asset(self.rfile, headers["X-HQ-Asset-Sha256"],
+                                         headers["Content-Type"], length=n)
+                headers["Content-Length"] = str(n)
+                with path.open("rb") as source:
+                    req = urllib.request.Request(UPSTREAM + "/v1/user-assets", data=source,
+                                                 headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=3600) as resp:
+                        code = resp.status
+                        response = json.loads(resp.read(1024 * 1024) or b"{}")
                 self._send(code, response)
             except urllib.error.HTTPError as exc:
                 self._send(exc.code, {"error": "upstream_rejected",
-                                      "detail": exc.read().decode("utf-8", "replace")[:200]})
+                                      "detail": exc.read(200).decode("utf-8", "replace")})
             except ValueError as exc:
                 self._send(400, {"error": "invalid_request", "detail": str(exc)})
             except Exception as exc:

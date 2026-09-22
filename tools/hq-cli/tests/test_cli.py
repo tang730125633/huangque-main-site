@@ -192,7 +192,7 @@ class HqCliTests(unittest.TestCase):
             self.assertEqual(0, code, error)
             self.assertTrue(self.payload(output)["schema"].startswith("hq."))
         code, output, _ = self.invoke(["version"])
-        self.assertEqual("0.15.13", self.payload(output)["cli_version"])
+        self.assertEqual("0.15.14", self.payload(output)["cli_version"])
         self.assertEqual("Huangque main-site CLI", self.payload(output)["product"])
         self.assertEqual("https://huangquechuanmei.com", self.payload(output)["origin"])
 
@@ -335,8 +335,11 @@ class HqCliTests(unittest.TestCase):
         self.assertEqual("hq_device_authorization", by_id["digital-ip-projects"]["target_auth"])
         self.assertEqual("assets:upload", by_id["image-upload"]["required_scope"])
         self.assertEqual(20, by_id["image-upload"]["file_input"]["accountActiveMaxFiles"])
-        self.assertEqual(96 * 1024 * 1024, by_id["image-upload"]["file_input"]["accountActiveMaxBytes"])
-        self.assertEqual(32 * 1024 * 1024, by_id["video-upload"]["file_input"]["maxBytes"])
+        self.assertIsNone(by_id["image-upload"]["file_input"]["maxBytes"])
+        self.assertEqual(2 * 1024 ** 3, by_id["image-upload"]["file_input"]["accountActiveMaxBytes"])
+        self.assertIsNone(by_id["video-upload"]["file_input"]["maxBytes"])
+        self.assertEqual(20, by_id["video-upload"]["file_input"]["accountActiveMaxFiles"])
+        self.assertEqual(2 * 1024 ** 3, by_id["video-upload"]["file_input"]["accountActiveMaxBytes"])
         self.assertEqual(
             ["video/mp4", "video/quicktime", "video/webm"],
             by_id["video-upload"]["file_input"]["mimeTypes"],
@@ -1935,7 +1938,7 @@ class HqCliTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.upload_image(str(linked_dir / "inside.png"), "t" * 43)
 
-    def test_streaming_video_client_enforces_magic_size_and_private_transport(self):
+    def test_streaming_video_client_enforces_magic_and_private_transport(self):
         raw = b"\x00\x00\x00\x18ftypisom" + b"private-video"
         video_path = Path(self.temp.name) / "secret-name.mp4"
         video_path.write_bytes(raw)
@@ -1990,12 +1993,79 @@ class HqCliTests(unittest.TestCase):
                 client.upload_video(str(link), "t" * 43)
         with self.assertRaises(ValueError):
             client.upload_video("relative.mp4", "t" * 43)
-        oversized = Path(self.temp.name) / "oversized.mp4"
-        with oversized.open("wb") as handle:
-            handle.write(b"\x00\x00\x00\x18ftypisom")
-            handle.truncate(client.MAX_VIDEO_UPLOAD_BYTES + 1)
+
+    def test_ordinary_uploads_accept_large_sparse_files_in_bounded_chunks(self):
+        for name, header, size, upload, path, digest_header, upload_id in (
+            ("large.png", b"\x89PNG\r\n\x1a\n", 201 * 1024 * 1024,
+             client.upload_image, client.IMAGE_UPLOAD_PATH, "X-HQ-Image-SHA256", "img_" + "a" * 32),
+            ("large.mp4", b"\x00\x00\x00\x18ftypisom", 33 * 1024 * 1024,
+             client.upload_video, client.VIDEO_UPLOAD_PATH, "X-HQ-Video-SHA256", "vid_" + "a" * 32),
+        ):
+            with self.subTest(name=name):
+                source = Path(self.temp.name) / name
+                with source.open("wb") as handle:
+                    handle.write(header)
+                    handle.truncate(size)
+
+                class Response:
+                    status = 200
+
+                    def __init__(self, digest):
+                        self.digest = digest
+
+                    def read(self, _limit):
+                        return json.dumps({"upload_id": upload_id, "sha256": self.digest}).encode()
+
+                class Connection:
+                    def __init__(self):
+                        self.headers, self.sent_bytes, self.max_chunk = {}, 0, 0
+
+                    def putrequest(self, method, request_path, **_kwargs):
+                        self.method, self.path = method, request_path
+
+                    def putheader(self, key, value):
+                        self.headers[key] = value
+
+                    def endheaders(self):
+                        pass
+
+                    def send(self, chunk):
+                        self.sent_bytes += len(chunk)
+                        self.max_chunk = max(self.max_chunk, len(chunk))
+
+                    def getresponse(self):
+                        return Response(self.headers[digest_header])
+
+                    def close(self):
+                        pass
+
+                connection = Connection()
+                with patch.object(client.http.client, "HTTPSConnection", return_value=connection):
+                    status, payload = upload(str(source), "t" * 43)
+                self.assertEqual((200, upload_id), (status, payload["upload_id"]))
+                self.assertEqual(path, connection.path)
+                self.assertEqual(str(size), connection.headers["Content-Length"])
+                self.assertEqual(size, connection.sent_bytes)
+                self.assertLessEqual(connection.max_chunk, 64 * 1024)
+
+    def test_ordinary_uploads_keep_file_security_checks(self):
+        empty = Path(self.temp.name) / "empty.png"
+        empty.write_bytes(b"")
+        invalid = Path(self.temp.name) / "invalid.png"
+        invalid.write_bytes(b"not-an-image")
+        directory = Path(self.temp.name) / "directory.png"
+        directory.mkdir()
+        for source in (empty, invalid, directory):
+            with self.subTest(source=source.name), self.assertRaises(ValueError):
+                client.upload_image(str(source), "t" * 43)
+
+    def test_digital_human_material_retains_image_limit(self):
+        source = Path(self.temp.name) / "too-large.png"
+        with source.open("wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+            handle.truncate(client.MAX_DIGITAL_HUMAN_MATERIAL_BYTES + 1)
         with self.assertRaises(ValueError):
-            client.upload_video(str(oversized), "t" * 43)
+            client.upload_digital_human_material(str(source), "t" * 43)
 
     def test_streaming_audio_client_enforces_magic_size_and_private_transport(self):
         raw = b"ID3" + b"private-audio"

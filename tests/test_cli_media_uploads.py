@@ -17,7 +17,59 @@ PNG = base64.b64decode(
 MP4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 32
 
 
+class RepeatingStream:
+    """Produces a large payload without allocating it in test memory."""
+
+    def __init__(self, prefix, length):
+        self.prefix = prefix
+        self.length = length
+        self.position = 0
+
+    def read(self, size=-1):
+        if self.position >= self.length:
+            return b""
+        size = self.length - self.position if size < 0 else min(size, self.length - self.position)
+        start, self.position = self.position, self.position + size
+        prefix = self.prefix[start:start + size]
+        return prefix + b"\0" * (size - len(prefix))
+
+
+def repeated_digest(prefix, length):
+    digest = hashlib.sha256()
+    digest.update(prefix)
+    remaining = length - len(prefix)
+    zeroes = b"\0" * (64 * 1024)
+    while remaining:
+        chunk = zeroes[:min(len(zeroes), remaining)]
+        digest.update(chunk)
+        remaining -= len(chunk)
+    return digest.hexdigest()
+
+
 class CLIMediaUploadTests(unittest.TestCase):
+    def test_inference_size_guard_runs_before_reading_large_media(self):
+        import json
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(root)):
+            for prefix, suffix, ceiling, loader in [
+                ("img_", ".png", cli_uploads.MAX_BYTES, cli_uploads._load_image),
+                ("vid_", ".mp4", cli_uploads.VIDEO_MAX_BYTES, cli_uploads._load_video_bytes),
+            ]:
+                uid = prefix + "a" * 32
+                media = Path(root) / (uid + suffix)
+                with media.open("wb") as handle:
+                    handle.truncate(ceiling + 1)
+                (Path(root) / (uid + ".json")).write_text(json.dumps({
+                    "version": 1, "extension": suffix, "bytes": ceiling + 1,
+                    "expires_at": 200, "owner_hash": cli_uploads._owner_hash("alice"),
+                }))
+                original_open = Path.open
+                def guarded_open(path, *args, **kwargs):
+                    if path == media:
+                        raise AssertionError("large model reference read before guard")
+                    return original_open(path, *args, **kwargs)
+                with mock.patch.object(Path, "open", guarded_open), self.assertRaisesRegex(ValueError, "模型参考输入"):
+                    loader(uid, "alice", 100)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root_patch = mock.patch.object(cli_uploads, "UPLOAD_ROOT", Path(self.temp.name))
@@ -145,6 +197,22 @@ class CLIMediaUploadTests(unittest.TestCase):
                 cli_uploads.store_video(
                     io.BytesIO(MP4), len(MP4), "alice", "video/mp4",
                     hashlib.sha256(MP4).hexdigest(), now=100,
+                )
+
+    def test_generic_video_over_legacy_cap_streams_and_shared_quota_still_applies(self):
+        length = 32 * 1024 * 1024 + 1
+        digest = repeated_digest(MP4, length)
+        with mock.patch.object(cli_uploads, "_probe_video_duration", return_value=5), \
+                mock.patch.object(cli_uploads, "MAX_USER_BYTES", length):
+            stored = cli_uploads.store_video(
+                RepeatingStream(MP4, length), length, "alice", "video/mp4", digest, now=100,
+            )
+            self.assertEqual(length, stored["bytes"])
+            self.assertTrue(cli_uploads.verify_upload("video", stored["upload_id"], "alice", now=101))
+            with self.assertRaisesRegex(ValueError, "临时图片或视频已达上限"):
+                cli_uploads.store_image(
+                    io.BytesIO(PNG), len(PNG), "alice", "image/png",
+                    hashlib.sha256(PNG).hexdigest(), now=101,
                 )
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),

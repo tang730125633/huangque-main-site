@@ -4,6 +4,7 @@ import concurrent.futures
 import array
 import http.server
 import hashlib
+import io
 import importlib
 import json
 import math
@@ -799,7 +800,10 @@ class MatrixTemplateVideoTests(unittest.TestCase):
              mock.patch.object(self.module, "public_templates", return_value=[template]), \
              mock.patch.object(
                  self.module, "_read_user_upload",
-                 return_value=(b"owned-image", "image/png"),
+                 return_value=(
+                     io.BytesIO(b"owned-image"), len(b"owned-image"), "image/png",
+                     hashlib.sha256(b"owned-image").hexdigest(),
+                 ),
              ), mock.patch.object(
                  self.module, "_upload_user_asset", return_value=True,
              ) as upload, mock.patch.object(
@@ -869,7 +873,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             content_type = (
                 "image/png" if item["media_type"] == "image" else "video/mp4"
             )
-            return item["upload_id"].encode(), content_type
+            data = item["upload_id"].encode()
+            return io.BytesIO(data), len(data), content_type, hashlib.sha256(data).hexdigest()
 
         with mock.patch.object(self.module, "require_available"), \
              mock.patch.object(self.module, "public_templates", return_value=[template]), \
@@ -958,8 +963,8 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                     self.module._resolve_user_materials(value, "alice")
                 upload.assert_not_called()
         with mock.patch(
-            "content_domains.cli_uploads.read_image_bytes",
-            return_value=(b"video", {"mime": "video/mp4"}),
+            "content_domains.cli_uploads.open_upload",
+            return_value=(io.BytesIO(b"video"), len(b"video"), {"mime": "video/mp4", "sha256": "a" * 64}),
         ), mock.patch.object(self.module, "_upload_user_asset") as upload:
             with self.assertRaisesRegex(ValueError, "MIME 不一致"):
                 self.module._read_user_upload(value[0], "alice")

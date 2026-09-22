@@ -983,34 +983,33 @@ def _normalize_user_materials(value, *, trusted_frozen=False):
 
 def _read_user_upload(item, username):
     from . import cli_uploads
-    if item["media_type"] == "image":
-        data, meta = cli_uploads.read_image_bytes(item["upload_id"], username)
-    else:
-        data, meta = cli_uploads._load_video_bytes(
-            item["upload_id"], username, int(time.time())
-        )
+    handle, size, meta = cli_uploads.open_upload(
+        item["media_type"], item["upload_id"], username,
+    )
     mime = str((meta or {}).get("mime") or "").strip().lower()
     if mime not in {
         "image/png", "image/jpeg", "image/webp",
         "video/mp4", "video/quicktime",
     }:
+        handle.close()
         raise ValueError("本人素材文件格式不支持")
     if (
         (item["media_type"] == "image" and not mime.startswith("image/"))
         or (item["media_type"] == "video" and not mime.startswith("video/"))
     ):
+        handle.close()
         raise ValueError("本人素材类型与文件 MIME 不一致")
-    return data, mime
+    return handle, size, mime, str(meta["sha256"])
 
 
-def _upload_user_asset(data, sha256, content_type, timeout=120):
+def _upload_user_asset(stream, length, sha256, content_type, timeout=3600):
     request = urllib.request.Request(
-        API_URL + "/v1/user-assets", data=data,
+        API_URL + "/v1/user-assets", data=stream,
         headers={
             "Authorization": "Bearer " + API_TOKEN,
             "Content-Type": content_type,
             "X-HQ-Asset-Sha256": sha256,
-            "Content-Length": str(len(data)),
+            "Content-Length": str(length),
         },
         method="POST",
     )
@@ -1037,13 +1036,14 @@ def _resolve_user_materials(
     resolved = []
     for item in materials:
         try:
-            data, content_type = _read_user_upload(item, username)
+            handle, length, content_type, sha256 = _read_user_upload(item, username)
         except Exception as exc:
             raise ValueError("本人素材不存在、已过期或不属于当前账号，请重新上传") from exc
-        if not data:
+        if not length:
+            handle.close()
             raise ValueError("本人素材内容为空，请重新上传")
-        sha256 = hashlib.sha256(data).hexdigest()
-        _upload_user_asset(data, sha256, content_type)
+        with handle:
+            _upload_user_asset(handle, length, sha256, content_type)
         record = {"sha256": sha256, "media_type": item["media_type"]}
         if "clip_start_seconds" in item:
             record["clip_start_seconds"] = item["clip_start_seconds"]

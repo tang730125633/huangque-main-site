@@ -89,7 +89,7 @@ class NginxCspTest(unittest.TestCase):
                 self.assertIn("add_header X-Request-ID $request_id always;", config)
 
         deploy = self._config("deploy/nginx-huangquechuanmei.conf")
-        self.assertEqual(deploy.count("proxy_set_header X-Request-ID $request_id;"), 2)
+        self.assertEqual(deploy.count("proxy_set_header X-Request-ID $request_id;"), 4)
 
     def test_workbench_ip12_proxies_only_to_v4_agent(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
@@ -129,7 +129,7 @@ class NginxCspTest(unittest.TestCase):
         self.assertNotIn("/hermes-ip12", config)
         self.assertNotIn("127.0.0.1:3102", config)
 
-    def test_cli_image_upload_is_streamed_and_bounded(self):
+    def test_cli_image_video_upload_is_streamed_with_shared_quota_ceiling(self):
         for relative_path in self.CONFIGS:
             config = self._config(relative_path)
             with self.subTest(config=relative_path):
@@ -139,10 +139,11 @@ class NginxCspTest(unittest.TestCase):
                 self.assertIn("proxy_pass http://127.0.0.1:8095;", block)
                 self.assertIn("proxy_request_buffering off;", block)
                 self.assertIn("proxy_buffering off;", block)
-                self.assertIn("client_max_body_size 10m;", block)
+                self.assertIn("client_max_body_size 2048m;", block)
                 self.assertIn("limit_req zone=hq_cli_upload_rate burst=8 nodelay;", block)
                 self.assertIn("limit_conn hq_cli_upload_conn 2;", block)
-                self.assertIn("client_body_timeout 20s;", block)
+                self.assertIn("client_body_timeout 3600s;", block)
+                self.assertIn("proxy_send_timeout 3600s;", block)
                 self.assertIn(
                     "limit_req_zone $binary_remote_addr zone=hq_cli_upload_rate:10m rate=12r/m;",
                     config,
@@ -157,8 +158,9 @@ class NginxCspTest(unittest.TestCase):
                 video_end = config.index("\n    }", video_start)
                 video_block = config[video_start:video_end]
                 self.assertIn("proxy_request_buffering off;", video_block)
-                self.assertIn("client_max_body_size 32m;", video_block)
-                self.assertIn("client_body_timeout 45s;", video_block)
+                self.assertIn("client_max_body_size 2048m;", video_block)
+                self.assertIn("client_body_timeout 3600s;", video_block)
+                self.assertIn("proxy_send_timeout 3600s;", video_block)
                 self.assertIn('proxy_set_header X-HQ-Internal-Token "";', video_block)
 
                 audio_start = config.index("location = /api/auth/cli/audio-upload {")
