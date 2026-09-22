@@ -930,7 +930,20 @@ def execute(rid, payload=None):
             _spec = _ADAPTERS.get(cfg['adapter']) or {}
             if 'auth' not in (_spec.get('verification') or ('connection', 'auth', 'full')):
                 raise CheckUnsupported('此协议无独立鉴权端点，鉴权由完整生成证明')
-            result = request(cfg,'GET','/v1beta/models' if cfg['adapter']=='gemini_image' else '/models')
+            try:
+                result = request(cfg,'GET','/v1beta/models' if cfg['adapter']=='gemini_image' else '/models')
+            except safe_http.SafeHttpError as exc:
+                status = int(getattr(exc, 'status', 0) or 0)
+                if status in (401, 403):
+                    raise ValueError('凭据被拒绝（供应商 HTTP %d）' % status) from None
+                if 500 <= status < 600:
+                    # 上游辅助接口异常。不能据此判定 Key 无效——真正的鉴权证据是完整生成。
+                    # 如实报失败：既不写成通过，也不标成不适用。
+                    raise ValueError(
+                        '模型列表鉴权检测失败：供应商 HTTP %d。'
+                        '已收到供应商响应，属于上游服务端错误；不能据此判定 Key 无效。' % status
+                    ) from None
+                raise
             data = result.get('models') if cfg['adapter']=='gemini_image' else result.get('data')
             if isinstance(data, dict):
                 # 乐创统一协议：{code,message,data:{list:[{id,...}]}}
