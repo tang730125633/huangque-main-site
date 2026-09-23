@@ -843,6 +843,10 @@ def _effective_overrides(echoed, sent):
     """Contract-fixed defaults filled in, renderer-declared values kept."""
     effective = dict(OVERRIDE_DEFAULTS)
     effective.update(echoed)
+    # Renderer emits [] for unchanged focus; omit this no-op in the strict
+    # persisted contract so worker revalidation accepts the same prepared job.
+    if effective.get("media_focus") == []:
+        effective.pop("media_focus")
     return {key: effective[key] for key in OVERRIDE_FIELDS if key in effective}
 
 
