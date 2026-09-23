@@ -1677,7 +1677,7 @@ def _media_probe(path, timeout=30):
         completed = run_process(
             [
                 "ffprobe", "-v", "error", "-show_entries",
-                "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,color_primaries,color_transfer,color_space,color_range",
+                "format=duration:stream=codec_type,codec_name,width,height,duration,pix_fmt,color_primaries,color_transfer,color_space,color_range",
                 "-of", "json", str(path),
             ],
             check=True, capture_output=True, text=True,
@@ -1897,6 +1897,7 @@ def _mux_voiceover(
         )
         video_streams = [item for item in streams if item.get("codec_type") == "video"]
         audio_streams = [item for item in streams if item.get("codec_type") == "audio"]
+        audio_duration = float(audio_streams[0].get("duration") or actual_duration) if len(audio_streams) == 1 else 0
         output_size = temporary.stat().st_size
         if (
             len(video_streams) != 1 or len(audio_streams) != 1
@@ -1908,7 +1909,10 @@ def _mux_voiceover(
             or audio_streams[0].get("codec_name") != "aac"
             or (video_streams[0].get("width"), video_streams[0].get("height"))
                 != (1080, 1920)
-            or abs(actual_duration - duration) > 0.12
+            # Packet copy can retain a few reordered video frames at the tail.
+            # Keep narration timing strict, with a bounded container allowance.
+            or abs(audio_duration - duration) > 0.12
+            or abs(actual_duration - duration) > 0.25
             or not 1024 <= output_size <= MAX_VIDEO_BYTES
         ):
             raise MatrixTemplateProviderFailed("模板成片配音合成校验失败")

@@ -2525,6 +2525,26 @@ class MatrixTemplateVideoTests(unittest.TestCase):
                                               if s["codec_type"] == "audio"])
                     self.assertAlmostEqual(duration, 1.7, delta=0.12)
 
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg required")
+    def test_mux_voiceover_accepts_reordered_video_tail_but_preserves_audio_duration(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            video, voice = root / "video.mp4", root / "voice.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                            "color=blue:s=1080x1920:r=30:d=2", "-c:v", "libx264",
+                            "-bf", "3", "-pix_fmt", "yuv420p", str(video)],
+                           check=True, capture_output=True, timeout=30)
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                            "sine=frequency=440:duration=1.3755", str(voice)],
+                           check=True, capture_output=True, timeout=30)
+            with mock.patch.object(self.module, "OUT_DIR", root):
+                self.module._mux_voiceover(video.name, {"path": voice, "duration": 1.3755}, time.time()+30)
+            streams, duration = self.module._media_probe(video)
+            self.assertAlmostEqual(float(next(s for s in streams if s["codec_type"] == "audio")["duration"]), 1.3755, delta=.03)
+            self.assertLessEqual(abs(duration-1.3755), .25)
+            subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-f", "null", "-"],
+                           check=True, capture_output=True, timeout=30)
+
     def test_mux_voiceover_uses_ffmpeg_44_compatible_limiter_options(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
