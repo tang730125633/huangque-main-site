@@ -77,7 +77,9 @@ def _renderer_capability():
     try:
         health = _call(LOCAL + "/health", LOCAL_TOKEN, timeout=5)
         value = health.get("gpu_render") if isinstance(health, dict) and health.get("ok") is True else None
-        return value if isinstance(value, dict) and value.get("ready") is True else None
+        if isinstance(value, dict) and value.get("ready") is True:
+            return dict(value, text_style_delivery_protocol=2) if value.get("text_style_contract") else value
+        return None
     except Exception:
         return None
 

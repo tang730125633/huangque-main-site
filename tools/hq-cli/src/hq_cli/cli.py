@@ -294,6 +294,7 @@ def _validate(capability, payload):
     if capability.get("id") in {
             "matrix-template-generate", "matrix-template-batch-generate"}:
         _validate_matrix_template_voiceover(capability, payload)
+        _validate_matrix_text_controls(capability, payload)
     if capability.get("id") in {
             "matrix-template-generate", "matrix-template-preview"}:
         _validate_matrix_template_tuning(capability, payload)
@@ -323,6 +324,26 @@ def _validate_matrix_template_voiceover(capability, payload):
             EXIT_INPUT, "input_error",
             "voiceover.bgm_volume requires voiceover.bgm=true",
         )
+
+
+def _validate_matrix_text_controls(capability, payload):
+    changes = payload.get("text_overrides")
+    if changes is None or changes == {}:
+        return
+    if not isinstance(changes, dict) or not 1 <= len(changes) <= 8:
+        raise CliError(EXIT_INPUT, "input_error", "text_overrides must contain at most 8 text layers")
+    revision = payload.get("text_revision")
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision):
+        raise CliError(EXIT_INPUT, "input_error", "text_overrides requires text_revision from matrix-template-controls")
+    if payload.get("overrides") or payload.get("preview_id"):
+        raise CliError(EXIT_INPUT, "input_error", "text_overrides cannot be mixed with overrides or preview_id")
+    schema = capability["input_schema"]["properties"]["text_overrides"]["additionalProperties"]
+    for layer, values in changes.items():
+        if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,31}", layer) or not isinstance(values, dict):
+            raise CliError(EXIT_INPUT, "input_error", "invalid text layer")
+        _validate({"id": "matrix-text-layer", "input_schema": dict(schema, required=[])}, values)
+        if any(isinstance(v, (int, float)) and (isinstance(v, bool) or not math.isfinite(v)) for v in values.values()):
+            raise CliError(EXIT_INPUT, "input_error", "text parameters must be finite numbers")
 
 
 def _validate_matrix_template_tuning(capability, payload):

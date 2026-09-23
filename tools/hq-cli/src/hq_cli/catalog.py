@@ -413,12 +413,12 @@ CAPABILITIES["matrix-template-controls"]["input_schema"]["properties"] = {
 }
 CAPABILITIES["matrix-template-controls"]["input_schema"]["required"] = ["template_id"]
 CAPABILITIES["matrix-template-controls"]["constraints"] = [
-    "tunable=false means this template cannot be adjusted; never invent parameters for it",
+    "tunable=false disables legacy overrides only; inspect text_tunable and text_controls for per-layer text styles",
     "template_revision, overrides_schema, defaults and slots are owned by the renderer and echoed verbatim",
     "read this before previewing; without it overrides must not be sent",
 ]
 CAPABILITIES["matrix-template-controls"]["next_actions"] = [
-    "tunable=true 时按 overrides_schema 组装参数，用 matrix-template-preview 出对比预览；tunable=false 时明确告诉用户这款模板不可调。",
+    "text_tunable=true 时，从 text_controls 读取文字层、默认值、字体和范围，携带 text_revision 与 text_overrides 调用生成；旧版 overrides 仍按 tunable 判断。",
 ]
 CAPABILITIES["pricing"] = _api(
     "pricing", "点数价格", "pricing", "读取主站当前点数价格目录。", scope="profile:read")
@@ -1299,6 +1299,22 @@ MATRIX_TEMPLATE_OVERRIDES_FIELDS = {
         "description": "画面焦点；数组项为 {slot,x,y}，槽位不重复",
     },
 }
+MATRIX_TEMPLATE_TEXT_PROPERTIES = {
+    "font_family": {"type": "string", "minLength": 1, "maxLength": 80},
+    "font_size_px": {"type": "integer", "minimum": 16, "maximum": 240},
+    "color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+    "offset_x_px": {"type": "number", "minimum": -60, "maximum": 60},
+    "offset_y_px": {"type": "number", "minimum": -60, "maximum": 60},
+    "stroke_width_px": {"type": "number", "minimum": 0, "maximum": 24},
+    "stroke_color": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+}
+MATRIX_TEMPLATE_TEXT_FIELDS = {
+    "text_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$",
+                      "description": "matrix-template-controls.text_controls.text_revision；逐层文字微调必须回传"},
+    "text_overrides": {"type": "object", "maxProperties": 8,
+                       "additionalProperties": {"type": "object", "additionalProperties": False, "properties": MATRIX_TEMPLATE_TEXT_PROPERTIES},
+                       "description": "按查询返回的文字层名称传字体、字号、颜色、位置偏移、描边；未传参数沿用模板默认值"},
+}
 MATRIX_TEMPLATE_TUNING_FIELDS = {
     "bgm": {
         "type": "boolean", "default": True,
@@ -1533,7 +1549,12 @@ CAPABILITIES["matrix-template-generate"]["constraints"] = [
 CAPABILITIES["matrix-template-generate"]["input_schema"]["properties"] = {
     **CAPABILITIES["matrix-template-generate"]["input_schema"]["properties"],
     **MATRIX_TEMPLATE_TUNING_FIELDS,
+    **MATRIX_TEMPLATE_TEXT_FIELDS,
 }
+CAPABILITIES["matrix-template-batch-generate"]["input_schema"]["properties"].update(MATRIX_TEMPLATE_TEXT_FIELDS)
+CAPABILITIES["matrix-template-generate"]["constraints"].append(
+    "text_overrides requires text_controls.text_revision and advertised layer/font names; omitted fields keep defaults; cannot mix with legacy overrides or preview_id"
+)
 CAPABILITIES["matrix-template-generate"]["next_actions"] = [
     "核对报价后，用完全相同的输入、quote_token 与 --confirm 提交；拿到 job_id 后仅使用 task 轮询。",
 ]

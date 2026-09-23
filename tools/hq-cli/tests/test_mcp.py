@@ -241,7 +241,7 @@ class McpServerTests(unittest.TestCase):
         responses = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(mcp_server.PROTOCOL_VERSION, responses[0]["result"]["supportedVersions"][0])
         self.assertEqual(
-            {"name": "huangque", "version": "0.15.14"},
+            {"name": "huangque", "version": "0.15.15"},
             responses[1]["result"]["_meta"][mcp_server.SERVER_INFO_META],
         )
         self.assertEqual([(["version"], "")], calls)
