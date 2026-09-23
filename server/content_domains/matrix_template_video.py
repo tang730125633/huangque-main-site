@@ -46,6 +46,10 @@ FAN_WHIP_TEMPLATE_ID = "fan-whip-static"
 FAN_WHIP_VARIANT = "fan-whip"
 BRUSH_PANEL_TEMPLATE_ID = "brush-panel-transitions"
 BRUSH_PANEL_VARIANT = "brush-panel"
+INSET_FLIP_TEMPLATE_ID = "inset-flip-whip"
+FIXED_OPENING_TEMPLATE_ID = "fixed-opening-whip"
+BILINGUAL_TEMPLATE_ID = "bilingual-stagger-salon"
+MOTION_V3_TEMPLATE_IDS = (INSET_FLIP_TEMPLATE_ID, FIXED_OPENING_TEMPLATE_ID)
 FIXED_SKILL_TEMPLATE_IDS = (
     TRIPLE_STRIP_TEMPLATE_ID, YELLOW_BANNER_TEMPLATE_ID,
     FAN_WHIP_TEMPLATE_ID, BRUSH_PANEL_TEMPLATE_ID,
@@ -72,6 +76,8 @@ def _catalog_is_complete(templates) -> bool:
 
 
 FIXED_SKILL_TEMPLATE_CONTRACTS = {
+    INSET_FLIP_TEMPLATE_ID: {"variant":"inset-flip", "duration":443/30, "required_visuals":7},
+    FIXED_OPENING_TEMPLATE_ID: {"variant":"fixed-opening", "duration":17.3, "required_visuals":4},
     TRIPLE_STRIP_TEMPLATE_ID: {
         "variant": TRIPLE_STRIP_VARIANT,
         "duration": 17.6,
@@ -582,6 +588,7 @@ def _refresh_catalog(force=False):
                 "duration_mode", "required_visuals",
                 "required_visuals_max", "bgm_mode", "bgm_optional",
                 "fixed_duration_seconds",
+                "requires_voiceover", "copy_mode", "narration_contract_version",
             ):
                 if key in raw:
                     template[key] = raw[key]
@@ -591,7 +598,7 @@ def _refresh_catalog(force=False):
             fixed_duration = template.get("fixed_duration_seconds")
             if (
                 duration_mode not in {
-                    None, "fixed", "fixed_12",
+                    None, "fixed", "fixed_12", "narration",
                     "random_integer_7_15", "random_integer_8_15",
                 }
                 or (
@@ -607,7 +614,7 @@ def _refresh_catalog(force=False):
                     and (
                         isinstance(required_visuals_max, bool)
                         or not isinstance(required_visuals_max, int)
-                        or not 1 <= required_visuals_max <= 21
+                        or not 1 <= required_visuals_max <= (22 if template_id == BILINGUAL_TEMPLATE_ID else 21)
                         or (
                             isinstance(required_visuals, int)
                             and required_visuals_max < required_visuals
@@ -627,6 +634,11 @@ def _refresh_catalog(force=False):
                     "bgm_optional" in template
                     and not isinstance(template["bgm_optional"], bool)
                 )
+            ):
+                continue
+            if duration_mode == "narration" and (
+                template_id != BILINGUAL_TEMPLATE_ID or template.get("requires_voiceover") is not True
+                or template.get("copy_mode") != "bilingual_titles" or template.get("narration_contract_version") != 1
             ):
                 continue
             accepted_media_types = raw.get("accepted_media_types")
@@ -1243,9 +1255,17 @@ def validate_payload(
         body.get("voiceover"), username,
         allow_legacy_text=trusted_frozen_execution,
     )
+    if template_id == BILINGUAL_TEMPLATE_ID:
+        if not voiceover:
+            raise ValueError("双语字幕模板必须启用口播配音")
+        from . import matrix_bilingual
+        if not trusted_frozen_execution:
+            matrix_bilingual.ensure_ready()
     bgm = body.get("bgm", False if voiceover else True)
     if not isinstance(bgm, bool):
         raise ValueError("背景音乐设置无效")
+    if template_id == BILINGUAL_TEMPLATE_ID and bgm:
+        raise ValueError("双语字幕模板按原版规则不使用背景音乐")
     if (
         template.get("bgm_mode") == "bound"
         and template.get("bgm_optional") is not True
@@ -1260,6 +1280,8 @@ def validate_payload(
     elif voiceover and bgm:
         bgm_volume = DEFAULT_VOICEOVER_BGM_VOLUME
     fixed_duration = None
+    if template_id == BILINGUAL_TEMPLATE_ID:
+        fixed_duration = 8.0  # Admission only; execution uses measured narration.
     if template.get("duration_mode") == "fixed_12":
         fixed_duration = 12.0
     elif template.get("duration_mode") == "fixed":
@@ -1289,6 +1311,16 @@ def validate_payload(
         duration = None
     if fixed_duration is not None:
         duration = fixed_duration
+    material_durations = None
+    auto_materials = False
+    if template_id in (*MOTION_V3_TEMPLATE_IDS, BILINGUAL_TEMPLATE_ID) and not trusted_frozen_execution:
+        from . import matrix_template_account_media as account_media
+        if not body.get("user_materials"):
+            body["user_materials"], material_durations = account_media.initial(template_id, username)
+            auto_materials = True
+        elif template_id == BILINGUAL_TEMPLATE_ID:
+            explicit = _normalize_user_materials(body["user_materials"])
+            material_durations = account_media.explicit_durations(explicit, username)
     raw_user_materials = body.get("user_materials")
     user_material_count = (
         len(raw_user_materials) if isinstance(raw_user_materials, list) else 0
@@ -1327,7 +1359,7 @@ def validate_payload(
     video_only = (
         "image" not in accepted_media_types
         if isinstance(accepted_media_types, list)
-        else template.get("duration_mode") in {"fixed", "fixed_12"}
+        else template.get("duration_mode") in {"fixed", "fixed_12", "narration"}
     )
     user_materials = _resolve_user_materials(
         body.get("user_materials"), username,
@@ -1378,7 +1410,7 @@ def validate_payload(
         candidate["overrides"] = overrides
     if template_revision:
         candidate["template_revision"] = template_revision
-    if allow_shared_materials is not None:
+    if allow_shared_materials is not None or template_id in (*MOTION_V3_TEMPLATE_IDS, BILINGUAL_TEMPLATE_ID):
         candidate["material_policy"] = material_policy
     # 素材范围（2026-09-17）：受限账号（一次性邀请码注册）只允许公网素材；
     # 标记只在受限时出现，其余账号的候选载荷与历史逐字节一致。
@@ -1581,6 +1613,9 @@ def validate_payload(
             )):
         raise RuntimeError("模板成片预检时长无效")
     result = dict(payload, duration=float(authoritative_duration))
+    if material_durations is not None:
+        result["_matrix_material_durations"] = material_durations
+        result["_matrix_auto_materials"] = auto_materials
     result.pop("effective_overrides", None)
     if preview_record is not None:
         # 带 preview_id 的正式任务必须按预览冻结的发送版参数转发：渲染端以
@@ -1794,19 +1829,26 @@ def _valid_template_video_codec(stream):
 
 def _mux_voiceover(
         video_file, voiceover, deadline_at, *, bgm=False,
-        bgm_volume=DEFAULT_VOICEOVER_BGM_VOLUME):
+        bgm_volume=DEFAULT_VOICEOVER_BGM_VOLUME, narration_duration=None):
     video = _owned_output_path(video_file)
     audio = pathlib.Path(voiceover["path"])
     duration = float(voiceover["duration"])
+    if narration_duration is not None:
+        if not duration <= float(narration_duration) <= duration + .64:
+            raise MatrixTemplateProviderFailed("双语配音与视频时长不一致")
+        duration = float(narration_duration)
     temporary = video.with_name(video.stem + ".voiceover.part.mp4")
     temporary.unlink(missing_ok=True)
-    source_streams, _ = _media_probe(video, timeout=_remaining_budget(deadline_at))
+    source_streams, source_duration = _media_probe(video, timeout=_remaining_budget(deadline_at))
+    if narration_duration is not None and abs(source_duration-duration) > .04:
+        raise MatrixTemplateProviderFailed("双语成片未按配音时间轴渲染，禁止循环或截短")
     source_video = next((s for s in source_streams if s.get("codec_type") == "video"), {})
     if not _valid_template_video_codec(source_video):
         raise MatrixTemplateProviderFailed("模板成片视频色彩格式无效")
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-stream_loop", "-1", "-i", str(video), "-i", str(audio),
+        *([] if narration_duration is not None else ["-stream_loop", "-1"]),
+        "-i", str(video), "-i", str(audio),
     ]
     if bgm:
         volume = _normalize_bgm_volume(bgm_volume)
@@ -1827,6 +1869,8 @@ def _mux_voiceover(
         ])
     else:
         command.extend(["-map", "0:v:0", "-map", "1:a:0"])
+        if narration_duration is not None:
+            command.extend(["-af", "apad"])
     command.extend([
         "-map_metadata", "-1", "-sn", "-dn", "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k", "-t", f"{duration:.6f}",
@@ -2192,6 +2236,31 @@ def _generate(payload):
         local_job, str(raw.get("_username") or ""), voiceover,
         payload.get("batch_id"), deadline_at,
     )
+    bilingual_plan = None
+    if payload["template_id"] == BILINGUAL_TEMPLATE_ID:
+        from . import matrix_bilingual
+        from . import matrix_template_account_media as account_media
+        if not voiceover_audio:
+            raise RuntimeError("双语模板配音缺失")
+        fingerprint = hashlib.sha256(voiceover_audio["path"].read_bytes()).hexdigest()
+        bilingual_plan = runtime.get("bilingual_plan")
+        bilingual_materials = runtime.get("bilingual_materials")
+        if bilingual_plan is not None and bilingual_plan.get("audio_fingerprint") != fingerprint:
+            raise RuntimeError("配音缓存已变化，禁止重复提交不同的字幕时间轴")
+        if bilingual_plan is None:
+            if remote_id or runtime.get("phase") in {"submitting", "submission_unknown"}:
+                raise RuntimeError("双语任务缺少冻结的字幕时间轴，不能重新生成")
+            bilingual_plan = matrix_bilingual.prepare(voiceover_audio,voiceover["text"],deadline_at)
+            candidates = payload.get("user_materials") or []
+            durations = stored_payload.get("_matrix_material_durations", payload.get("_matrix_material_durations"))
+            automatic = stored_payload.get("_matrix_auto_materials", payload.get("_matrix_auto_materials", False))
+            bilingual_materials = account_media.bilingual(candidates, durations, bilingual_plan["duration"], explicit=not automatic)
+            bilingual_plan = dict(bilingual_plan, visual_count=len(bilingual_materials))
+            if not _persist_runtime(local_job,phase="bilingual_ready",bilingual_plan=bilingual_plan,bilingual_materials=bilingual_materials):
+                raise RuntimeError("双语字幕时间轴保存失败")
+        if not bilingual_materials or len(bilingual_materials) != bilingual_plan.get("visual_count"):
+            raise RuntimeError("双语任务缺少冻结的素材，禁止重复选择后提交")
+        payload = dict(payload,narration_plan=bilingual_plan,duration=bilingual_plan["duration"],user_materials=bilingual_materials)
     if not remote_id:
         _remaining_budget(deadline_at)
         request_id = "matrix-template-" + re.sub(
@@ -2255,6 +2324,7 @@ def _generate(payload):
                     bgm_volume=payload.get(
                         "bgm_volume", DEFAULT_VOICEOVER_BGM_VOLUME,
                     ),
+                    **({"narration_duration":bilingual_plan["duration"]} if bilingual_plan else {}),
                 )
             response = {
                 "type": "matrix_template_video",

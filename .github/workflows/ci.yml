@@ -178,6 +178,8 @@ jobs:
             test_heygen_mcp_oauth.py
             test_jobs_store.py
             test_matrix_template_video.py
+            test_matrix_bilingual.py
+            test_matrix_template_account_media.py
             test_render_relay_gpu.py
             test_render_relay_manifest.py
             test_node_admission_retry.py
