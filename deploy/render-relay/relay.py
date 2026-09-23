@@ -937,6 +937,7 @@ class Handler(BaseHTTPRequestHandler):
                 path = _store_user_asset(self.rfile, headers["X-HQ-Asset-Sha256"],
                                          headers["Content-Type"], length=n)
                 headers["Content-Length"] = str(n)
+                # A local cache/marker cannot prove the upstream still has the file.
                 with path.open("rb") as source:
                     req = urllib.request.Request(UPSTREAM + "/v1/user-assets", data=source,
                                                  headers=headers, method="POST")
