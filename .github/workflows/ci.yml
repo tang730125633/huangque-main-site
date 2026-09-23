@@ -180,6 +180,10 @@ jobs:
             test_matrix_template_video.py
             test_matrix_bilingual.py
             test_matrix_text_controls.py
+            test_matrix_text_delivery.py
+            test_matrix_adaptation_delivery.py
+            test_matrix_jobs_api.py
+            test_matrix_account_assets.py
             test_matrix_template_account_media.py
             test_render_relay_gpu.py
             test_render_relay_manifest.py

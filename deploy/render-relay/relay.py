@@ -375,14 +375,27 @@ _NODE_RESULT_METADATA_FIELDS = {
 }
 
 
+def _requires_delivery_metadata(payload):
+    return bool(payload.get("text_overrides") or payload.get("material_adaptation"))
+
+
+def _validate_delivery_metadata(payload, incoming):
+    if payload.get("text_overrides") and (
+            not isinstance(incoming, dict)
+            or incoming.get("text_revision") != payload.get("text_revision")
+            or incoming.get("text_overrides") != payload["text_overrides"]):
+        raise ValueError("text_controls_mismatch")
+    expected = payload.get("material_adaptation")
+    actual = incoming.get("material_adaptation") if isinstance(incoming, dict) else None
+    if expected != actual or (expected is not None and expected != "auto-v1"):
+        raise ValueError("material_adaptation_mismatch")
+
+
 def _merge_completed_result(existing, incoming, *, payload=None):
     """Merge renderer evidence without replacing relay-owned delivery fields."""
     result = dict(existing or {})
     if payload is not None:
-        expected = payload.get("material_adaptation")
-        actual = incoming.get("material_adaptation") if isinstance(incoming, dict) else None
-        if expected != actual or (expected is not None and expected != "auto-v1"):
-            raise ValueError("material_adaptation_mismatch")
+        _validate_delivery_metadata(payload, incoming)
     if not isinstance(incoming, dict):
         return result
     for key in _NODE_RESULT_METADATA_FIELDS:
@@ -678,13 +691,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out = {"job_id": row["id"], "status": row["status"],
                    "created_at": row["created_at"], "updated_at": row["updated_at"]}
-            if row["status"] == "completed" and json.loads(row["payload"]).get("material_adaptation"):
-                # Binary upload is not complete delivery until its evidence is acknowledged.
+            payload = json.loads(row["payload"])
+            if row["status"] == "completed" and _requires_delivery_metadata(payload):
+                # Upload and report are separate requests; only expose their verified pair.
                 with _db() as conn:
                     lease = _delivery_claim(conn, jid)
-                result = json.loads(row["result"] or "{}")
-                if (not lease or not lease["metadata_done"]
-                        or result.get("material_adaptation") != json.loads(row["payload"])["material_adaptation"]):
+                ready = bool(lease and lease["metadata_done"])
+                try:
+                    _validate_delivery_metadata(payload, json.loads(row["result"] or "{}"))
+                except ValueError:
+                    ready = False
+                if not ready:
                     return self._send(200, {**out, "status": "running", "phase": "awaiting_metadata"})
             if row["result"]:
                 out["result"] = json.loads(row["result"])
@@ -1239,7 +1256,7 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT node,status,result,gpu_contract,payload FROM jobs WHERE id=?", (jid,)).fetchone()
                 if ok and _row:
                     try:
-                        _merge_completed_result({}, body.get("result"), payload=json.loads(_row["payload"]))
+                        _validate_delivery_metadata(json.loads(_row['payload']), body.get("result"))
                     except ValueError as exc:
                         return self._send(409, {"error": str(exc)})
                 if _row and _row["gpu_contract"]:

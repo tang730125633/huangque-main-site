@@ -15,6 +15,23 @@ from unittest import mock
 
 from tests import test_render_delivery_recovery as recovery
 from tests.test_render_relay_manifest import load
+from tests import test_matrix_text_delivery as text_delivery
+
+
+class CombinedMetadataDeliveryTests(text_delivery.TextMetadataDeliveryTests):
+    adaptation = "auto-v1"
+
+    def test_matching_text_does_not_ack_wrong_adaptation(self):
+        jid, claim, payload = self.job()
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)):
+            self.upload(jid, claim["claim_token"])
+        correct = self.metadata(payload)
+        for value in (None, "auto-v2"):
+            invalid = dict(correct, material_adaptation=value)
+            self.assertEqual(409, self.report(jid, claim, invalid)[0])
+            self.assertEqual("running", self.get_job(jid)["status"])
+        self.assertEqual(200, self.report(jid, claim, correct)[0])
+        self.assertEqual("completed", self.get_job(jid)["status"])
 
 
 class AdaptationDeliveryTests(unittest.TestCase):

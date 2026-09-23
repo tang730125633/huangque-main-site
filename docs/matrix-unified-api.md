@@ -61,6 +61,8 @@
 素材预处理沿用现有 HDR/SDR 色彩编码参数，不添加调色或遮罩。
 
 状态：accepted -> preparing -> rendering -> ready / failed。
+文字微调与素材适配共用中继元数据交付门禁：视频上传后，所有已请求的协议
+回显均校验通过才对主站返回 completed；缺失或错误报告可用原 claim 重试。
 准备、配音、渲染、混音、封面和 COS 上传均为后台任务；原持久化任务恢复机制继续生效。
 只有最终视频和封面均上传 COS 并核对长度后才 ready。失败沿用主站退款机制。
 结果含 duration_seconds、width、height、file_size、cos_key、cover_cos_key、有效链接及到期时间。
