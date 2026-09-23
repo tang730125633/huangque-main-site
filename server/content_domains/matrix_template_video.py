@@ -592,6 +592,28 @@ def _refresh_catalog(force=False):
             ):
                 if key in raw:
                     template[key] = raw[key]
+            # 画面位窗口（渲染侧每个画面位实际播放的源片长度范围，秒）。调用方
+            # （Agent 运行时 / 工作台）据此挑够长的本人镜头——4.608 秒的镜头配
+            # health-team-hook 的 4.867 秒画面位会被渲染端拒（2026-09-23 实锤），
+            # 窗口不暴露出去，调用方只能试错。非法值一概不放进公开目录。
+            clip_range = raw.get("clip_duration_range_seconds")
+            if isinstance(clip_range, (list, tuple)) and len(clip_range) == 2:
+                try:
+                    clip_low, clip_high = (
+                        float(clip_range[0]), float(clip_range[1]),
+                    )
+                except (TypeError, ValueError):
+                    clip_low = clip_high = None
+                if (
+                    clip_low is not None and clip_high is not None
+                    and not isinstance(clip_range[0], bool)
+                    and not isinstance(clip_range[1], bool)
+                    and math.isfinite(clip_low) and math.isfinite(clip_high)
+                    and 0 < clip_low <= clip_high <= 600
+                ):
+                    template["clip_duration_range_seconds"] = [
+                        clip_low, clip_high,
+                    ]
             duration_mode = template.get("duration_mode")
             required_visuals = template.get("required_visuals")
             required_visuals_max = template.get("required_visuals_max")
