@@ -38,6 +38,9 @@ class AssetsMaterialLibraryUiTests(unittest.TestCase):
         self.assertIn("已切成镜头", self.html)
         self.assertIn("正在切镜头…", self.html)
         self.assertIn("正在后台切镜头", self.html)
+        # 列表接口只回 source，不回 url_override：成片判定必须按 source=agent，
+        # 否则 Agent 成片会被误标成「排队等整理」（2026-09-23 实机发现）。
+        self.assertIn("if(item.source==='agent'||item.url_override) return {text:'Agent 成片'", self.html)
         self.assertIn("云空间 '+materialBytes(materialQuota.used)", self.html)
         self.assertIn("materialBytes(materialQuota.limit||2147483648)", self.html)
 

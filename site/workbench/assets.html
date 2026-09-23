@@ -2144,7 +2144,7 @@
     return map;
   }
   function materialStatusOf(item,index){
-    if(item.url_override) return {text:'Agent 成片',color:'#94a4bb'};
+    if(item.source==='agent'||item.url_override) return {text:'Agent 成片',color:'#94a4bb'};
     if(item.source==='derived') return {text:'已切成镜头',color:'#2dd4bf'};
     var status=(index[item.id]&&index[item.id].status)||'uploaded';
     if(status==='ready') return {text:'已整理好',color:'#2dd4bf'};
