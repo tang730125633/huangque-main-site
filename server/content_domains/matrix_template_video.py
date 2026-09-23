@@ -855,6 +855,10 @@ def _effective_overrides(echoed, sent):
     """Contract-fixed defaults filled in, renderer-declared values kept."""
     effective = dict(OVERRIDE_DEFAULTS)
     effective.update(echoed)
+    # Renderer emits [] for unchanged focus; omit this no-op in the strict
+    # persisted contract so worker revalidation accepts the same prepared job.
+    if effective.get("media_focus") == []:
+        effective.pop("media_focus")
     return {key: effective[key] for key in OVERRIDE_FIELDS if key in effective}
 
 
@@ -1854,10 +1858,15 @@ def _mux_voiceover(
         volume = _normalize_bgm_volume(bgm_volume)
         if not any(item.get("codec_type") == "audio" for item in source_streams):
             raise MatrixTemplateProviderFailed("模板成片背景音乐音轨缺失")
+        # Keep audio finite before looping its samples; amix can deadlock when
+        # sharing the endlessly looped video demuxer.
+        command.extend(["-i", str(video)])
+        samples = max(1, int(math.ceil(source_duration * 44100)))
         command.extend([
             "-filter_complex",
             (
-                f"[0:a:0]volume={volume:.6f},atrim=start=0:end={duration:.6f},"
+                f"[2:a:0]aresample=44100,aloop=loop=-1:size={samples},"
+                f"volume={volume:.6f},atrim=start=0:end={duration:.6f},"
                 "asetpts=PTS-STARTPTS[bgm];"
                 f"[1:a:0]atrim=start=0:end={duration:.6f},"
                 "asetpts=PTS-STARTPTS[voice];"

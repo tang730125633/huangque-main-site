@@ -4563,6 +4563,7 @@ class MatrixTemplateTuningTests(unittest.TestCase):
             payload["duration"] = 8.0
         if "overrides" in candidate:
             echoed = dict(self.module.OVERRIDE_DEFAULTS)
+            echoed["media_focus"] = []
             echoed.update(candidate["overrides"])
             payload["overrides"] = {
                 key: echoed[key] for key in self.module.OVERRIDE_FIELDS
@@ -4704,6 +4705,16 @@ class MatrixTemplateTuningTests(unittest.TestCase):
         }, result)
         self.assertNotIn("overrides", result)
         self.assertNotIn("template_revision", result)
+
+    def test_frozen_style_without_focus_survives_worker_revalidation(self):
+        self.load_catalog()
+        result = self.validate({
+            "top_text": "长沙必吃", "bottom_text": "评论区留下关键词",
+            "template_id": TUNABLE_ID, "template_revision": REVISION,
+            "overrides": {"title_scale": 1.1, "accent_color": "#C74A00"},
+        })
+        self.assertNotIn("media_focus", result["overrides"])
+        self.assertEqual(result, self.validate(result, trusted_frozen_execution=True))
 
     def test_generate_rejects_stale_and_missing_revision(self):
         self.load_catalog()
