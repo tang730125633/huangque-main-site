@@ -4208,6 +4208,44 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("3. 默认原生大字", result["selectedName"])
         self.assertEqual("native-bold", result["active"])
 
+    def test_categories_split_only_bilingual_without_renumbering_or_changing_copy(self):
+        result = self.runtime("categories")
+        self.assertEqual(25, len(result["initial"]["ids"]))
+        self.assertNotIn("bilingual-stagger-salon", result["initial"]["ids"])
+        self.assertEqual(["bilingual-stagger-salon"], result["voice"]["ids"])
+        self.assertTrue(result["voice"]["name"].startswith("26. "))
+        self.assertEqual("true", result["voice"]["voice"])
+        self.assertTrue(result["voice"]["narration"])
+        self.assertTrue(result["voice"]["locked"])
+        self.assertEqual("template-9", result["restored"]["active"])
+        self.assertFalse(result["restored"]["narration"])
+        self.assertFalse(result["restored"]["locked"])
+        self.assertEqual(["保留标题", "保留文案"], result["copy"])
+        self.assertTrue(result["keyboard"]["focused"])
+        self.assertEqual("true", result["keyboard"]["state"]["voice"])
+        self.assertEqual(["bilingual-stagger-salon"], result["reordered"]["ids"])
+        self.assertTrue(result["reordered"]["name"].startswith("7. "))
+        self.assertEqual(0, result["posts"])
+
+    def test_category_recovers_existing_narration_job_without_resubmitting(self):
+        result = self.runtime("categoryPending")
+        self.assertEqual("true", result["state"]["voice"])
+        self.assertEqual(["bilingual-stagger-salon"], result["state"]["ids"])
+        self.assertEqual(0, result["posts"])
+        self.assertGreater(result["polls"], 0)
+        self.assertEqual("/existing-bilingual.mp4", result["src"])
+        self.assertEqual("原口播文案", result["text"])
+        self.assertTrue(result["cleared"])
+
+    def test_missing_category_is_disabled_and_only_available_category_is_selected(self):
+        result = self.runtime("categoryMissing")
+        self.assertEqual(25, len(result["bgm"]["ids"]))
+        self.assertTrue(result["voiceDisabled"])
+        self.assertEqual("true", result["voice"]["voice"])
+        self.assertEqual(["bilingual-stagger-salon"], result["voice"]["ids"])
+        self.assertTrue(result["bgmDisabled"])
+        self.assertTrue(result["emptyDisabled"])
+
     def test_pending_hidden_template_still_recovers(self):
         result = self.runtime("hiddenTemplatePendingRecovery")
         self.assertEqual("full-overlay-bold", result["body"]["template_id"])
