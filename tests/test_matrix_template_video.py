@@ -3696,7 +3696,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("item.description", page)
         self.assertIn("node.scrollHeight>node.clientHeight", page)
         self.assertIn("fitLiveText(el('liveTop'),topSizes[activeTemplate]||34,12)", page)
-        self.assertIn("fitLiveText(el('liveBottom'),20,12)", page)
+        self.assertIn("fitLiveText(el('liveBottom'),activeTemplate==='bilingual-stagger-salon'?28:20,12)", page)
         self.assertNotIn("hiddenTemplateIds", page)
         self.assertIn("templates=(r.data.templates||[]).filter(Boolean)", page)
         self.assertIn(".mt-action:disabled{opacity:.55;cursor:not-allowed}", page)

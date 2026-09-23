@@ -14,7 +14,7 @@ class Element {
   load(){this.loadCount++}
   pause(){this.pauseCount++}
 }
-function response(status,data){return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
+function response(status,data){if(data&&data.templates&&response.extraTemplates)data=Object.assign({},data,{templates:data.templates.concat(response.extraTemplates)});return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
 async function flush(n=12){for(let i=0;i<n;i++)await new Promise(r=>setImmediate(r))}
 function pendingCleared(storage){return ![...storage.keys()].some(key=>key.startsWith('hq-matrix-template-pending-v1')||key.startsWith('hq-matrix-template-pending-v2'))}
 function actionState(runtime){const button=runtime.get('generateBtn');return {busy:button.getAttribute('aria-busy')==='true',enabled:!button.disabled,text:button.textContent,title:button.title||''}}
@@ -481,4 +481,17 @@ async function scenarioShellRecovery(){
 }
 
 async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,actionPrerequisites:scenarioActionPrerequisites,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,voiceoverSubmission:scenarioVoiceoverSubmission,nineGridVoiceoverSubmission:scenarioNineGridVoiceoverSubmission,fixedSkillTemplateSubmission:scenarioFixedSkillTemplateSubmission,voiceoverBgmSubmission:scenarioVoiceoverBgmSubmission,voiceoverValidation:scenarioVoiceoverValidation,voiceoverRestore:scenarioVoiceoverRestore,voiceoverBgmRestore:scenarioVoiceoverBgmRestore,automaticFont:scenarioAutomaticFont,lockedTemplateBatch:scenarioLockedTemplateBatch,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,busyActionCheck:scenarioBusyActionChecksWithoutDuplicate,delayedOuterCheckAuth:scenarioDelayedOuterCheckAuthCannotCreateNewJob,delayedPostAuth:scenarioDelayedCheckAuthCannotDuplicateAcceptedPost,delayedPollAuth:scenarioDelayedCheckAuthCannotReviveTerminalPoll,linkedJobDuringAuth:scenarioDelayedSubmitAuthHonorsLinkedJob,clearedPendingDuringAuth:scenarioDelayedPollAuthHonorsClearedPending,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,errorResponseWithJobId:scenarioErrorResponseWithJobIdPollsTerminal,staleUnavailablePause:scenarioStaleUnavailableSubmissionPauses,pausedResume:scenarioPausedSubmissionResumesOnClick,pausedUncharged:scenarioPausedSubmissionEndsUncharged,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers,shellRecovery:scenarioShellRecovery};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
-main().catch(e=>{console.error(e.stack||e);process.exitCode=1});
+async function scenarioMotionV3(){
+  response.extraTemplates=[['inset-flip-whip','inset-flip'],['fixed-opening-whip','fixed-opening'],['bilingual-stagger-salon','bilingual-stagger']].map(([id,variant])=>({id,name:id,variant,engine:'hyperframes',font_selectable:false}));
+  const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:42})),poll:()=>Promise.resolve(response(200,{status:'completed',result:{video_url:'/test.mp4'}}))},new Map());
+  await flush(40);
+  const grid=runtime.get('templateGrid');grid.children[grid.children.length-1].onclick();
+  runtime.get('topText').value='广州圈子';runtime.get('bottomText').value='共同成长';runtime.get('voiceoverText').value='我在广州';
+  runtime.get('voiceoverText').listeners.input[0]();
+  const selected={top:runtime.get('topTextLabel').textContent,bottom:runtime.get('bottomTextLabel').textContent,voice:runtime.get('voiceoverEnabled').checked,voiceLocked:runtime.get('voiceoverEnabled').disabled,bgmLocked:runtime.get('voiceoverBgmEnabled').disabled};
+  runtime.get('generateBtn').onclick();await flush(30);
+  const body=runtime.requests.post.length?JSON.parse(runtime.requests.post[0].options.body):null;
+  grid.children[grid.children.length-2].onclick();
+  return {selected,body,restoredLabel:runtime.get('bottomTextLabel').textContent,voiceUnlocked:!runtime.get('voiceoverEnabled').disabled};
+}
+(process.argv[2]==='motionV3'?scenarioMotionV3().then(value=>process.stdout.write(JSON.stringify(value))):main()).catch(e=>{console.error(e.stack||e);process.exitCode=1});
