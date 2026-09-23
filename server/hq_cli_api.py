@@ -767,6 +767,7 @@ _MEDIA_SCHEMAS = {
     },
     "matrix-template-generate": {
         "required": ["top_text", "bottom_text", "template_id"], "properties": {
+            "retry_of_job_id": {"type": "integer", "minimum": 1, "description": "仅在用户要求重试且原模板任务已明确失败并退款时填写原任务编号；同一次重试仍幂等。"},
             "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
@@ -4004,6 +4005,10 @@ def action_plan(action, value):
             quote_result_fields=("scene_count", "cost_breakdown"),
         )
     if action == "matrix-template-generate":
+        value = dict(value)
+        retry_job = value.pop("retry_of_job_id", None)
+        if retry_job is not None:
+            retry_job = _integer(retry_job, "retry_of_job_id", 1, 2**63 - 1)
         payload = _matrix_template_payload(value)
         # 2026-09-22 老板定调「不要报价，直接生成」：直出计划。auth 侧 generation
         # 分支见到 direct=True 即跳过报价段，直接用确定性幂等键 POST 提交端点
@@ -4013,6 +4018,7 @@ def action_plan(action, value):
             generation_kind="matrix_template_video",
             endpoint="/api/gen/matrix-template", payload=payload,
             direct=True,
+            retry_of_job_id=retry_job,
         )
     if action == "video-timeline-compose":
         payload = _timeline_payload(value)

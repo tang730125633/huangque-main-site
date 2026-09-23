@@ -2300,6 +2300,34 @@ class HQCLIAPITests(unittest.TestCase):
         self.assertEqual((200, 193, 1), (status, result["job_id"], len(submitted)))
         self.assertNotIn("X-HQ-Expected-Cost", submitted[0]["headers"])
 
+    def test_matrix_retry_requires_owned_refunded_failure_and_keeps_retry_idempotent(self):
+        token = self._token(["generation:quote", "generation:submit"])
+        request = {"action": "matrix-template-generate", "input": {
+            "top_text": "原来的标题", "bottom_text": "原来的行动文案",
+            "template_id": "ref-05-changsha-white-red", "retry_of_job_id": 193,
+        }}
+        keys = []
+        def proxy(plan, _username):
+            if plan["method"] == "GET":
+                self.assertEqual("/api/gen/job/193", plan["path"])
+                return 200, {"id": 193, "kind": "matrix_template_video", "status": "error", "refunded": True}
+            self.assertNotIn("retry_of_job_id", plan["body"])
+            keys.append(plan["headers"]["Idempotency-Key"])
+            return 200, {"job_id": 194}
+        with mock.patch.object(self.auth.H, "_cli_proxy", side_effect=proxy):
+            for _ in range(2):
+                status, result = self._request("/api/auth/cli/action", request, token=token)
+                self.assertEqual((200, 194), (status, result.get("job_id")))
+        self.assertEqual(keys[0], keys[1])
+        for response in [(403, {"detail": "not yours"}),
+                         (200, {"kind": "matrix_template_video", "status": "running", "refunded": True}),
+                         (200, {"kind": "matrix_template_video", "status": "error", "refunded": False}),
+                         (200, {"kind": "image", "status": "error", "refunded": True})]:
+            with mock.patch.object(self.auth.H, "_cli_proxy", return_value=response) as call:
+                status, _ = self._request("/api/auth/cli/action", request, token=token)
+            self.assertIn(status, (403, 409))
+            self.assertEqual(1, call.call_count)
+
     def test_matrix_template_batch_quotes_once_and_replays_stable_children(self):
         from content_domains import matrix_template_video
 

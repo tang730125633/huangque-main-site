@@ -5436,6 +5436,25 @@ class H(BaseHTTPRequestHandler):
                         idempotency_key
                         or hq_cli_api.direct_submission_key(
                             row["username"], generation_kind, payload))
+                    retry_job = plan.get("retry_of_job_id")
+                    if retry_job is not None:
+                        status, previous = self._cli_proxy({
+                            "base": hq_cli_api.CONTENT_BASE,
+                            "path": "/api/gen/job/%d" % retry_job,
+                            "method": "GET",
+                        }, row["username"])
+                        if status != 200:
+                            return self._cli_send(status, previous)
+                        if (previous.get("kind") != generation_kind
+                                or previous.get("status") not in {"error", "failed"}
+                                or previous.get("refunded") not in (True, 1)):
+                            raise hq_cli_api.CLIAPIError(
+                                409, "只能重试已明确失败并完成退款的本人模板任务",
+                                "retry_not_terminal")
+                        submit_headers["Idempotency-Key"] = (
+                            hq_cli_api.direct_submission_key(
+                                row["username"], generation_kind,
+                                dict(payload, retry_of_job_id=retry_job)))
                     submit_plan = {
                         "base": plan.get("submit_base", hq_cli_api.CONTENT_BASE),
                         "path": plan["endpoint"], "method": "POST",
