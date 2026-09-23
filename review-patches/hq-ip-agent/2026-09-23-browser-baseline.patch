@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LU-003 <LU-003@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 10:36:26 +0800
+Subject: [PATCH 1/2] test(ui): repair shared browser auth fixtures
+
+---
+ tests/browser-auth-fixture.mjs | 33 ++++++++++++++++++++++++++++-----
+ tests/hq-p0-reset-xss-test.mjs |  7 +++++--
+ tests/run_all.sh               | 17 +++++++++++------
+ 3 files changed, 44 insertions(+), 13 deletions(-)
+
+diff --git a/tests/browser-auth-fixture.mjs b/tests/browser-auth-fixture.mjs
+index bbaa12c..a255887 100644
+--- a/tests/browser-auth-fixture.mjs
++++ b/tests/browser-auth-fixture.mjs
+@@ -1,2 +1,2 @@
+-// Legacy UI suites mock business APIs but predate the account login probe.
+-// Imported only by run_all for suites without their own authentication fixture.
++// Legacy UI suites mock business APIs but predate newer authenticated bootstrap reads.
++// run_all enables each exact fixture only when the suite does not provide its own route.
+@@ -4,0 +5,19 @@ const launch=chromium.launch.bind(chromium);
++const mockAuth=process.env.HQ_BROWSER_MOCK_AUTH==='1';
++const mockAssets=process.env.HQ_BROWSER_MOCK_ASSETS==='1';
++const mockSessions=process.env.HQ_BROWSER_MOCK_SESSIONS==='1';
++const mockTasks=process.env.HQ_BROWSER_MOCK_TASKS==='1';
++const mockReport=process.env.HQ_BROWSER_MOCK_REPORT==='1';
++function fixtureResponse(route){
++  const request=route.request(), url=new URL(request.url()), method=request.method();
++  if(mockAuth&&method==='GET'&&url.pathname==='/api/auth/me')
++    return route.fulfill({json:{user:{username:'ui-fixture',role:'member'}}});
++  if(mockAssets&&method==='GET'&&url.pathname.endsWith('/api/v4/assets'))
++    return route.fulfill({json:{ok:true,assets:[],total:0,quota:{used:0,limit:2147483648}}});
++  if(mockSessions&&method==='GET'&&url.pathname.endsWith('/api/v4/sessions'))
++    return route.fulfill({json:{ok:true,sessions:[]}});
++  if(mockTasks&&method==='GET'&&url.pathname.includes('/api/v4/tasks/'))
++    return route.fulfill({json:{ok:true,tasks:[]}});
++  if(mockReport&&method==='GET'&&url.pathname.includes('/api/report/'))
++    return route.fulfill({json:{}});
++  return null;
++}
+@@ -9 +28,5 @@ function pageFixture(page){
+-  route('**/api/auth/me',request=>request.fulfill({json:{user:{username:'ui-fixture',role:'member'}}}));
++  if(mockAuth)route('**/api/auth/me',request=>fixtureResponse(request));
++  if(mockAssets)route('**/api/v4/assets*',request=>fixtureResponse(request)||request.fallback());
++  if(mockSessions)route('**/api/v4/sessions*',request=>fixtureResponse(request)||request.fallback());
++  if(mockTasks)route('**/api/v4/tasks/*',request=>fixtureResponse(request)||request.fallback());
++  if(mockReport)route('**/api/report/*',request=>fixtureResponse(request)||request.fallback());
+@@ -11,2 +34,2 @@ function pageFixture(page){
+-    if(new URL(request.request().url()).pathname==='/api/auth/me')
+-      return request.fulfill({json:{user:{username:'ui-fixture',role:'member'}}});
++    const fixture=fixtureResponse(request);
++    if(fixture)return fixture;
+diff --git a/tests/hq-p0-reset-xss-test.mjs b/tests/hq-p0-reset-xss-test.mjs
+index 8e9197e..f94afc5 100644
+--- a/tests/hq-p0-reset-xss-test.mjs
++++ b/tests/hq-p0-reset-xss-test.mjs
+@@ -10,0 +11 @@ let startCount = 0;
++const injectedPdf = '"><img src=x onerror="window.__xss=1">.pdf';
+@@ -29 +29,0 @@ await page.route('**/*', async (route) => {
+-    const pdf = '"><img src=x onerror="window.__xss=1">.pdf';
+@@ -33 +33 @@ await page.route('**/*', async (route) => {
+-      widgets: [], delegations: {}, report: { status: 'final', files: { pdf: pdf }, m5: {}, m6: {} }, film: false,
++      widgets: [], delegations: {}, report: { status: 'final', files: { pdf: injectedPdf }, m5: {}, m6: {} }, film: false,
+@@ -36,0 +37,3 @@ await page.route('**/*', async (route) => {
++  if (url.includes('/api/report/')) return route.fulfill({ json: {
++    status: 'final', files: { pdf: injectedPdf }, m5: {}, m6: {},
++  } });
+diff --git a/tests/run_all.sh b/tests/run_all.sh
+index b919f1e..e03fbef 100755
+--- a/tests/run_all.sh
++++ b/tests/run_all.sh
+@@ -2 +2 @@
+-# 一键本地回归：跑全部 10 个 Playwright 套件，汇总 PASS/FAIL。
++# 一键本地回归：跑全部 Playwright 套件，汇总 PASS/FAIL。
+@@ -16,5 +16,10 @@ for t in "${SUITES[@]}"; do
+-  imports=("$t.mjs")
+-  if ! grep -q '/api/auth/me' "$t.mjs"; then
+-    imports=(--import "$(pwd)/browser-auth-fixture.mjs" "$t.mjs")
+-  fi
+-  if out=$("$NODE_BIN" "${imports[@]}" 2>&1); then
++  mock_auth=0; mock_assets=0; mock_sessions=0; mock_tasks=0; mock_report=0
++  grep -q '/api/auth/me' "$t.mjs" || mock_auth=1
++  grep -q '/api/v4/assets' "$t.mjs" || mock_assets=1
++  grep -q '/api/v4/sessions' "$t.mjs" || mock_sessions=1
++  grep -q '/api/v4/tasks/' "$t.mjs" || mock_tasks=1
++  grep -q '/api/report/' "$t.mjs" || mock_report=1
++  if out=$(HQ_BROWSER_MOCK_AUTH="$mock_auth" HQ_BROWSER_MOCK_ASSETS="$mock_assets" \
++    HQ_BROWSER_MOCK_SESSIONS="$mock_sessions" HQ_BROWSER_MOCK_TASKS="$mock_tasks" \
++    HQ_BROWSER_MOCK_REPORT="$mock_report" \
++    "$NODE_BIN" --import "$(pwd)/browser-auth-fixture.mjs" "$t.mjs" 2>&1); then
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LU-003 <LU-003@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 10:47:54 +0800
+Subject: [PATCH 2/2] test(ui): keep report during responsive layout check
+
+---
+ tests/hq-layout-test.mjs | 25 ++++++++++++++++++++-----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/tests/hq-layout-test.mjs b/tests/hq-layout-test.mjs
+index 1e9a015..05ba28f 100644
+--- a/tests/hq-layout-test.mjs
++++ b/tests/hq-layout-test.mjs
+@@ -7,0 +8 @@ let chatSeq = 0;
++let reportActive = false;
+@@ -40 +41,4 @@ await page.route('**/*', async (route) => {
+-    if (turnQueue.length) return route.fulfill({ json: turnPayload(turnQueue.shift()) });
++    if (turnQueue.length) {
++      reportActive = true;
++      return route.fulfill({ json: turnPayload(turnQueue.shift()) });
++    }
+@@ -43,2 +47,5 @@ await page.route('**/*', async (route) => {
+-  if (url.includes('/api/v4/reset')) return route.fulfill({ json: { ok: true } });
+-  if (url.includes('/api/v4/status')) return route.fulfill({ json: { turns: [], jobs: [], delegations: {}, tool: null, report: null } });
++  if (url.includes('/api/v4/reset')) {
++    reportActive = false;
++    return route.fulfill({ json: { ok: true } });
++  }
++  if (url.includes('/api/v4/status')) return route.fulfill({ json: { turns: [], jobs: [], delegations: {}, tool: null, report: reportActive ? reportPayload() : null } });
+@@ -105 +112,8 @@ const narrow = await page.evaluate(() => {
+-  return { dir: getComputedStyle(document.querySelector('.shell')).flexDirection, pos: getComputedStyle(p).position, paneLeft: p.getBoundingClientRect().left, mainLeft: m.getBoundingClientRect().left };
++  const shell = document.querySelector('.shell');
++  const shellStyle = getComputedStyle(shell);
++  const railStyle = getComputedStyle(p);
++  return { dir: shellStyle.flexDirection, pos: railStyle.position,
++    paneLeft: p.getBoundingClientRect().left, paneWidth: p.getBoundingClientRect().width,
++    mainLeft: m.getBoundingClientRect().left, shellLeft: shell.getBoundingClientRect().left,
++    shellWidth: shell.getBoundingClientRect().width, shellPaddingLeft: shellStyle.paddingLeft,
++    railWidth: railStyle.width, railAlign: railStyle.alignSelf };
+@@ -109 +123,2 @@ assert(narrow.pos === 'static', '窄屏报告栏不再粘顶');
+-assert(Math.abs(narrow.paneLeft - narrow.mainLeft) < 8, '窄屏报告与聊天同列对齐（左对齐）');
++assert(Math.abs(narrow.paneLeft - narrow.mainLeft) < 8,
++  '窄屏报告与聊天同列对齐（' + JSON.stringify(narrow) + '）');
