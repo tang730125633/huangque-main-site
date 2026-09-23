@@ -2468,6 +2468,10 @@ class H(BaseHTTPRequestHandler):
 
     def _do_POST(self):
         p = self.path.split("?")[0]
+        if p.startswith("/internal/matrix-template/"):
+            from . import matrix_jobs_api
+            if matrix_jobs_api.handle(self, p, "POST", sys.modules[__name__]):
+                return
         if p == '/api/gen/admin/tasks/terminate':
             from . import task_termination
             user=verify(self.headers.get('Authorization','').replace('Bearer ','',1))
@@ -4960,6 +4964,10 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p.startswith("/internal/matrix-template/"):
+            from . import matrix_jobs_api
+            if matrix_jobs_api.handle(self, p, "GET", sys.modules[__name__]):
+                return
         if p == '/api/gen/channel-parameters':
             from .channel_parameters import public_catalog
             hostname=str(self.headers.get('Host') or '').strip().lower().split(':',1)[0]

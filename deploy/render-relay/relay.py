@@ -126,6 +126,8 @@ def _clean_render_contract(value):
             or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", t) for t in templates)):
         return None
     result = {**evidence, "ready": True, "templates": sorted(set(templates))}
+    if value.get("material_adaptation_contract") == "auto-v1":
+        result["material_adaptation_contract"] = "auto-v1"
     text = value.get("text_style_contract")
     if (value.get("text_style_delivery_protocol") == 2 and isinstance(text, dict)
             and type(text.get("version")) is int and text["version"] == 1
@@ -928,14 +930,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "invalid_template"})
             if (REQUIRE_GPU or text_revision) and not _gpu_available(body.get("template_id"), now, text_revision):
                 return self._send(503, {"error": "gpu_unavailable", "detail": "GPU 渲染节点暂不可用"})
+            if body.get("material_adaptation"):
+                if body["material_adaptation"] != "auto-v1":
+                    return self._send(400, {"error": "invalid_material_adaptation"})
+                if not any(_gpu_capable(n, body.get("template_id"), now, text_revision)
+                        and c[1].get("material_adaptation_contract") == "auto-v1"
+                        for n, c in list(_NODE_RENDER.items())):
+                    return self._send(503, {"error": "material_adaptation_unavailable", "detail": "暂无兼容素材适配协议的节点"})
             with _db() as conn:
-                if REQUIRE_GPU or text_revision:
+                if REQUIRE_GPU or text_revision or body.get("material_adaptation"):
                     conn.execute("BEGIN IMMEDIATE")
                     if conn.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0] >= MAX_GPU_PENDING:
                         return self._send(429, {"error": "gpu_queue_full", "detail": "GPU 渲染队列已满，请稍后重试"})
                 conn.execute(
                     "INSERT INTO jobs(id,payload,status,created_at,updated_at,gpu_contract) VALUES(?,?,?,?,?,?)",
-                    (jid, json.dumps(body, ensure_ascii=False), "pending", now, now, "required" if REQUIRE_GPU or text_revision else ""))
+                    (jid, json.dumps(body, ensure_ascii=False), "pending", now, now, "required" if REQUIRE_GPU or text_revision or body.get("material_adaptation") else ""))
                 conn.commit()
             return self._send(202, {"job_id": jid, "status": "pending",
                                     "created_at": now, "updated_at": now})
@@ -1067,6 +1076,12 @@ class Handler(BaseHTTPRequestHandler):
                     " ORDER BY created_at LIMIT ?", (MAX_GPU_PENDING,)).fetchall()
                 def can_claim(row):
                     payload = json.loads(row["payload"])
+                    if payload.get("material_adaptation"):
+                        capability = (_NODE_RENDER.get(node) or (None, {}))[1]
+                        if (payload["material_adaptation"] != "auto-v1"
+                                or capability.get("material_adaptation_contract") != "auto-v1"
+                                or body.get("delivery_protocol") != 2):
+                            return False
                     revision = payload.get("text_revision") if payload.get("text_overrides") else None
                     if payload.get("text_overrides") and (not revision or body.get("delivery_protocol") != 2):
                         return False
@@ -1080,9 +1095,9 @@ class Handler(BaseHTTPRequestHandler):
                 text_revision = selected_payload.get("text_revision") if selected_payload.get("text_overrides") else None
                 needs_gpu = REQUIRE_GPU or bool(row["gpu_contract"])
                 # Honor the selected job's contract even after admission enforcement is disabled.
-                if node not in PRIORITY_NODES and _priority_has_room(now, template, needs_gpu, text_revision):
+                if not selected_payload.get("material_adaptation") and node not in PRIORITY_NODES and _priority_has_room(now, template, needs_gpu, text_revision):
                     return self._send(200, {"job": None, "deferred": "priority"})
-                if _should_yield_to_idler(node, now, template, needs_gpu, text_revision):
+                if not selected_payload.get("material_adaptation") and _should_yield_to_idler(node, now, template, needs_gpu, text_revision):
                     return self._send(200, {"job": None, "deferred": "load"})
                 contract = json.dumps(_NODE_RENDER[node][1]) if needs_gpu else ""
                 cur = conn.execute(

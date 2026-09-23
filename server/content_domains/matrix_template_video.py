@@ -1261,6 +1261,7 @@ def validate_payload(
         return timeline_compose.validate_payload(raw, username)
     require_available()
     body = dict(raw or {})
+    adaptive = body.get("material_adaptation") == "auto-v1"
     top = " ".join(str(body.get("top_text") or "").split())
     bottom = " ".join(str(body.get("bottom_text") or "").split())
     if not 2 <= len(top) <= 60:
@@ -1354,7 +1355,7 @@ def validate_payload(
         duration = fixed_duration
     material_durations = None
     auto_materials = False
-    if template_id in (*MOTION_V3_TEMPLATE_IDS, BILINGUAL_TEMPLATE_ID) and not trusted_frozen_execution:
+    if template_id in (*MOTION_V3_TEMPLATE_IDS, BILINGUAL_TEMPLATE_ID) and not trusted_frozen_execution and not adaptive:
         from . import matrix_template_account_media as account_media
         if not body.get("user_materials"):
             body["user_materials"], material_durations = account_media.initial(template_id, username)
@@ -1374,7 +1375,7 @@ def validate_payload(
         ])
     maximum_visuals = template.get("required_visuals_max")
     if (
-        1 <= user_material_count <= 20
+        not adaptive and 1 <= user_material_count <= 20
         and not isinstance(maximum_visuals, bool)
         and isinstance(maximum_visuals, int)
         and user_material_count > maximum_visuals
@@ -1384,7 +1385,7 @@ def validate_payload(
             "请减少素材或改用更多画面位的模板"
         )
     if (
-        user_material_count
+        not adaptive and user_material_count
         and (
             template.get("duration_mode") in {
                 "random_integer_7_15", "random_integer_8_15",
@@ -1405,7 +1406,7 @@ def validate_payload(
     user_materials = _resolve_user_materials(
         body.get("user_materials"), username,
         trusted_frozen=trusted_frozen_execution,
-        video_only=video_only,
+        video_only=video_only and not adaptive,
     )
     if preview_record is not None:
         frozen_materials = [
@@ -1448,6 +1449,8 @@ def validate_payload(
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
     candidate.update(text_style)
+    if adaptive:
+        candidate["material_adaptation"] = "auto-v1"
     if overrides:
         candidate["overrides"] = overrides
     if template_revision:
@@ -2229,6 +2232,9 @@ def generate(payload):
         return _generate(payload)
     from .core import jdb
     with task_termination.scope(int(job_id),jdb):
+        if raw.get("_matrix_unified_contract") == 1:
+            from . import matrix_jobs_api
+            return matrix_jobs_api.execute(raw)
         return _generate(payload)
 
 
@@ -2313,7 +2319,13 @@ def _generate(payload):
             candidates = payload.get("user_materials") or []
             durations = stored_payload.get("_matrix_material_durations", payload.get("_matrix_material_durations"))
             automatic = stored_payload.get("_matrix_auto_materials", payload.get("_matrix_auto_materials", False))
-            bilingual_materials = account_media.bilingual(candidates, durations, bilingual_plan["duration"], explicit=not automatic)
+            if payload.get("material_adaptation") == "auto-v1":
+                count = min(20, max(3, math.ceil(bilingual_plan["duration"] / 2.8)))
+                if not candidates:
+                    raise MatrixTemplateProviderFailed("没有可用本人素材")
+                bilingual_materials = [dict(candidates[i % len(candidates)]) for i in range(count)]
+            else:
+                bilingual_materials = account_media.bilingual(candidates, durations, bilingual_plan["duration"], explicit=not automatic)
             bilingual_plan = dict(bilingual_plan, visual_count=len(bilingual_materials))
             if not _persist_runtime(local_job,phase="bilingual_ready",bilingual_plan=bilingual_plan,bilingual_materials=bilingual_materials):
                 raise RuntimeError("双语字幕时间轴保存失败")
@@ -2368,6 +2380,8 @@ def _generate(payload):
             if payload.get("text_overrides") and (result.get("text_revision") != payload.get("text_revision")
                     or result.get("text_overrides") != payload["text_overrides"]):
                 raise MatrixTemplateProviderFailed("生成结果没有匹配的文字微调参数，已阻止交付默认样式视频")
+            if payload.get("material_adaptation") and result.get("material_adaptation") != "auto-v1":
+                raise MatrixTemplateProviderFailed("生成节点未按素材适配协议执行")
             _persist_runtime(local_job, phase="delivering", provider_status=status)
             remaining = deadline_at - time.time()
             if remaining <= 0:
@@ -2395,7 +2409,7 @@ def _generate(payload):
                 "provider_task_id": remote_id,
                 "status": "done",
                 "video_file": video_file,
-                "video_url": public_url(video_file, "video/mp4", private=True),
+                "video_url": ("" if raw.get("_matrix_unified_contract") else public_url(video_file, "video/mp4", private=True)),
                 "duration": final_duration,
                 "phase": "done",
                 "resolution": "1080p",

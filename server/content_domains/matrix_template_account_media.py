@@ -15,13 +15,13 @@ IDS = (INSET, OPENING, BILINGUAL)
 WINDOWS = {INSET: [5.] * 7, OPENING: [153/30, 85/30, 153/30, 78/30]}
 
 
-def available(username):
+def available(username, *, adaptive=False):
     if not username:
         raise ValueError("请先登录并上传本人视频素材")
     owner = hashlib.sha256(str(username).encode("utf-8")).hexdigest()
     records, seen = [], set()
     root = cli_uploads.UPLOAD_ROOT.resolve()
-    for index, path in enumerate(root.glob("vid_*.json")):
+    for index, path in enumerate(root.glob("*.json" if adaptive else "vid_*.json")):
         if index >= 10000:
             raise ValueError("账号素材索引繁忙，请显式选择本人素材")
         try:
@@ -32,19 +32,26 @@ def available(username):
                 continue
             duration = meta.get("duration")
             sha = str(meta.get("sha256") or "")
-            extension = {"video/mp4": ".mp4", "video/quicktime": ".mov"}.get(meta.get("mime"))
+            extensions = {"video/mp4": ".mp4", "video/quicktime": ".mov"}
+            if adaptive:
+                extensions.update({"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"})
+            extension = extensions.get(meta.get("mime"))
+            image = str(meta.get("mime", "")).startswith("image/")
+            if image:
+                duration = 0.
+            identity_re = cli_uploads.UPLOAD_ID_RE if image else cli_uploads.VIDEO_UPLOAD_ID_RE
             if (meta.get("version") != 1 or not extension
-                    or not cli_uploads.VIDEO_UPLOAD_ID_RE.fullmatch(path.stem)
+                    or not identity_re.fullmatch(path.stem)
                     or not re.fullmatch(r"[0-9a-f]{64}", sha)
                     or sha in seen or float(meta.get("expires_at") or 0) <= time.time()
                     or type(duration) not in (int, float) or not math.isfinite(duration)
-                    or duration < 2.1):
+                    or (not image and duration < (0.001 if adaptive else 2.1))):
                 continue
             data = root / (path.stem + extension)
             if data.is_symlink() or not data.is_file():
                 continue
             seen.add(sha)
-            records.append({"upload_id": path.stem, "media_type": "video", "duration": float(duration)})
+            records.append({"upload_id": path.stem, "media_type": "image" if image else "video", "duration": float(duration)})
         except (OSError, ValueError, TypeError):
             continue
     random.SystemRandom().shuffle(records)
