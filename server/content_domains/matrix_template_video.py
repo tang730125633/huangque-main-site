@@ -1444,6 +1444,10 @@ def validate_payload(
     if font_family and font_selectable:
         candidate["font_family"] = font_family
     semantic_contract = template.get("semantic_layout")
+    semantic_contract = matrix_text_controls.semantic_contract(
+        semantic_contract, text_style.get("text_overrides"),
+        _CACHE.get("text_controls", {}).get(template_id),
+    )
     if (
         template.get("engine") == "hyperframes"
         and semantic_contract is None

@@ -21,6 +21,13 @@ def controls():
 
 
 class TextControlBridgeTests(unittest.TestCase):
+    def test_semantic_planner_receives_requested_sizes_without_mutating_defaults(self):
+        base={'layers':{'top1':{'font_size_px':80,'max_width_px':900}}}
+        definition=controls();definition['layers']['top1']['semantic_layers']=['top1']
+        effective=styles.semantic_contract(base,{'top1':{'font_size_px':120,'offset_x_px':20}},definition)
+        self.assertEqual({'font_size_px':120,'max_width_px':860},effective['layers']['top1'])
+        self.assertEqual(80,base['layers']['top1']['font_size_px'])
+
     def body(self):
         return {'template_id':'ref-01-fixture','top_text':'测试标题','bottom_text':'测试结尾','bgm':True,
                 'text_revision':'a'*64,'text_overrides':{'top1':{'font_size_px':90,'color':'#abcdef'}}}

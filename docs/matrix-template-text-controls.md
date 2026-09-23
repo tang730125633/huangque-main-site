@@ -6,6 +6,10 @@
 
 ## 1. 查询
 
+用户鉴权 HTTP 入口：`GET /api/gen/matrix-template/controls?template_id=...`。
+生成仍使用原入口 `POST /api/gen/matrix-template`，沿用原鉴权、计费和幂等规则。
+使用 HQ CLI / Agent 工具时沿用报价和确认流程，不把内部生成节点的令牌交给 Agent。
+
 调用现有 `matrix-template-controls`，输入 `template_id`。返回新增字段：
 
 ```json

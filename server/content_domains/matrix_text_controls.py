@@ -79,3 +79,22 @@ def normalize_request(raw, controls):
     if raw.get("text_revision") != controls["text_revision"]:
         raise ValueError("文字样式版本不匹配，请重新读取模板可调参数 text_revision")
     return {"text_revision": controls["text_revision"], "text_overrides": values}
+
+
+def semantic_contract(base, changes, controls):
+    if not isinstance(base, dict) or not changes or not controls:
+        return base
+    result = copy.deepcopy(base)
+    roles = {}
+    for layer, info in controls["layers"].items():
+        for role in info.get("semantic_layers", []):
+            roles.setdefault(role, []).append(layer)
+    for role, layers in roles.items():
+        target = result.get("layers", {}).get(role)
+        if not isinstance(target, dict) or not any(layer in changes for layer in layers):
+            continue
+        size = target["font_size_px"]
+        width = target["max_width_px"]
+        target["font_size_px"] = max(changes.get(layer, {}).get("font_size_px", size) for layer in layers)
+        target["max_width_px"] = min(width-2*abs(changes.get(layer, {}).get("offset_x_px", 0)) for layer in layers)
+    return result
