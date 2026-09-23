@@ -113,6 +113,7 @@
     </select>
   </div>
   <div id="catRow" style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
+    <span class="chip" data-cat="material" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">素材库</span>
     <span class="chip" data-cat="image" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">图片资产</span>
     <span class="chip" data-cat="audio" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">音频资产</span>
     <span class="chip" data-cat="video" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">视频资产</span>
@@ -122,7 +123,25 @@
     <span class="chip" data-cat="leads" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">客户名单</span>
   </div>
 
-  <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
+  <!-- 素材库（2026-09-23 素材库统一）：可出片的原料=本人上传的图片/音频/视频，与「资产」（生成品）分开管理 -->
+  <div id="materialPane" style="display:none; margin-bottom:26px;">
+    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+      <button id="materialUploadBtn" class="asset-action gold" type="button" style="height:36px; padding:0 14px;">上传素材</button>
+      <input id="materialFile" type="file" accept="video/*,image/*,audio/*" multiple hidden>
+      <span id="materialQuota" style="font-size:12.5px; color:#94a4bb;">云空间 — / 2G</span>
+      <span style="flex:1"></span>
+      <button id="materialReload" class="asset-action" type="button" style="height:36px; padding:0 14px;">刷新</button>
+    </div>
+    <div id="materialHint" style="margin-bottom:12px; font-size:12px; color:#5c6b82; line-height:1.7;">素材是出片原料：上传的视频会在后台自动切成镜头（约每 10 秒一段），模板成片直接选用「已整理好」的镜头，不用再传别处。</div>
+    <div id="materialProgress" style="display:none; margin-bottom:12px; padding:10px 12px; border:1px solid rgba(231,178,76,.22); border-radius:10px; background:rgba(231,178,76,.05); font-size:12.5px; color:#e7b24c;"></div>
+    <div id="materialGrid" class="gAsset" style="display:none; gap:16px;"></div>
+    <div id="materialEmpty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:36px 24px; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);">
+      <div style="font-size:15px; font-weight:700; color:#eaf1fa; margin-bottom:8px;">素材库还是空的</div>
+      <p style="margin:0 0 16px; font-size:13px; color:#94a4bb; max-width:440px; line-height:1.7;">上传本人视频（图片、音频也可以），视频会在后台自动切成镜头；模板成片、剪辑等出片能力会直接取用这里的素材。</p>
+      <button id="materialEmptyUpload" class="btn-gold" type="button" style="display:inline-flex; align-items:center; gap:7px; padding:11px 22px; font-size:14px; font-weight:600; border-radius:11px;">上传本人素材</button>
+    </div>
+  </div>
+
   <div id="assetGrid" class="gAsset" style="display:none; gap:16px; margin-bottom:26px;"></div>
   <div id="bulkBar" style="display:none; position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:20; align-items:center; gap:12px; padding:10px 12px; border:1px solid rgba(231,178,76,.28); border-radius:14px; background:rgba(7,11,19,.86); box-shadow:0 12px 34px rgba(0,0,0,.32); backdrop-filter:blur(14px);">
     <span id="bulkCount" style="min-width:74px; font-size:12.5px; color:#eaf1fa; font-weight:700;">已选 0 个</span>
@@ -1745,6 +1764,17 @@
     resetVideoFrameObserver();
     visibleItems=[];
     updateBulk();
+    var materialPane=document.getElementById('materialPane');
+    if(materialPane) materialPane.style.display=cat==='material'?'block':'none';
+    if(cat==='material'){
+      if(grid) grid.style.display='none';
+      if(empty) empty.style.display='none';
+      if(skelH) skelH.style.display='none';
+      if(skelG) skelG.style.display='none';
+      ensureMaterialLibrary();
+      renderMaterialLibrary();
+      return;
+    }
     if(cat==='audio'){ renderAudioAssets(); return; }
     if(cat==='avatar'){ renderAvatarAssets(); return; }
     if(DOC_KINDS.indexOf(cat)>=0){ renderDocAssets(cat); return; }
@@ -2092,6 +2122,204 @@
     });
     ALL.unshift(item);
   }
+  // ---- 素材库（2026-09-23 素材库统一）：账号级素材接口（不带会话号），与对话里是同一份素材 ----
+  var MATERIAL_API='/workbench/ip12/api/v4';
+  var materialItems=[], materialQuota={used:0,limit:0}, materialStatus={}, materialUploading=false, materialLoading=false, materialLoaded=false;
+  function materialBytes(bytes){
+    bytes=Number(bytes)||0;
+    if(bytes>=1024*1024*1024) return (bytes/1024/1024/1024).toFixed(2)+'G';
+    if(bytes>=1024*1024) return (bytes/1024/1024).toFixed(1)+'M';
+    if(bytes>=1024) return Math.round(bytes/1024)+'K';
+    return bytes+'B';
+  }
+  function materialKindText(kind){ return kind==='video'?'视频':(kind==='audio'?'音频':'图片'); }
+  function materialDate(ts){
+    var d=ts?new Date(Number(ts)*1000):null;
+    if(!d || isNaN(d.getTime())) return '';
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  function materialStatusIndex(){
+    var map={};
+    (materialStatus.assets||[]).forEach(function(item){ if(item&&item.asset_id) map[item.asset_id]=item; });
+    return map;
+  }
+  function materialStatusOf(item,index){
+    if(item.url_override) return {text:'Agent 成片',color:'#94a4bb'};
+    if(item.source==='derived') return {text:'已切成镜头',color:'#2dd4bf'};
+    var status=(index[item.id]&&index[item.id].status)||'uploaded';
+    if(status==='ready') return {text:'已整理好',color:'#2dd4bf'};
+    if(status==='processing'||status==='pending') return {text:'正在切镜头…',color:'#e7b24c'};
+    if(status==='failed') return {text:'整理失败，可重传',color:'#f4708a'};
+    if((item.kind||'')==='video') return {text:'排队等整理',color:'#5c6b82'};
+    return {text:'未整理',color:'#5c6b82'};
+  }
+  function materialCard(item,index){
+    var state=materialStatusOf(item,index), kind=item.kind||'image', url=String(item.url||'');
+    var card=document.createElement('div');
+    card.className='asset-library-card';
+    card.setAttribute('data-asset-id',item.id);
+    card.style.cssText='position:relative; display:flex; flex-direction:column; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
+    var media=document.createElement('div');
+    media.style.cssText='position:relative; aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; background:#0b111d; overflow:hidden;';
+    if(kind==='video'){
+      var video=document.createElement('video');
+      video.src=url; video.preload='metadata'; video.muted=true; video.playsInline=true;
+      if(item.thumb) video.poster=item.thumb;
+      video.style.cssText='width:100%; height:100%; object-fit:cover; background:#05070b;';
+      media.style.cursor='pointer';
+      media.onclick=function(){ openAssetVideoModal(url, item.name||'素材预览', item.thumb||''); };
+      media.appendChild(video);
+    } else if(kind==='audio'){
+      var audio=document.createElement('audio');
+      audio.src=url; audio.controls=true; audio.preload='none';
+      audio.style.cssText='width:92%;';
+      media.appendChild(audio);
+    } else {
+      var img=document.createElement('img');
+      img.src=item.thumb||url; img.alt=''; img.loading='lazy';
+      img.style.cssText='width:100%; height:100%; object-fit:cover; background:#0b111d;';
+      media.style.cursor='pointer';
+      media.onclick=function(){ openAssetImageModal([{url:url}],0); };
+      media.appendChild(img);
+    }
+    var badge=document.createElement('span');
+    badge.textContent=state.text;
+    badge.style.cssText='position:absolute; top:9px; left:9px; z-index:2; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600; background:rgba(7,11,19,.74); border:1px solid '+state.color+'66; color:'+state.color+';';
+    var body=document.createElement('div');
+    body.style.cssText='display:flex; flex-direction:column; gap:8px; padding:11px 12px;';
+    var name=document.createElement('div');
+    name.textContent=item.name||'素材';
+    name.title=item.name||'';
+    name.style.cssText='font-size:13px; font-weight:700; color:#eaf1fa; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    var meta=document.createElement('div');
+    meta.textContent=materialKindText(kind)+' · '+materialBytes(item.size)+(item.created_at?(' · '+materialDate(item.created_at)):'');
+    meta.style.cssText='font-size:11px; color:#5c6b82;';
+    var actions=document.createElement('div');
+    actions.style.cssText='display:flex; align-items:center; gap:8px;';
+    var del=document.createElement('button');
+    del.type='button'; del.className='asset-action danger'; del.textContent='删除';
+    del.onclick=function(){ deleteMaterialItem(item,del); };
+    actions.appendChild(del);
+    body.appendChild(name); body.appendChild(meta); body.appendChild(actions);
+    card.appendChild(media); card.appendChild(badge); card.appendChild(body);
+    return card;
+  }
+  function renderMaterialLibrary(){
+    var gridNode=document.getElementById('materialGrid'), emptyNode=document.getElementById('materialEmpty'),
+        quota=document.getElementById('materialQuota'), hint=document.getElementById('materialHint');
+    if(!gridNode) return;
+    if(quota) quota.textContent='云空间 '+materialBytes(materialQuota.used)+' / '+materialBytes(materialQuota.limit||2147483648);
+    var processing=Number(materialStatus.processing_count||0), ready=Number(materialStatus.ready_count||0);
+    if(hint) hint.textContent=processing
+      ? ('素材是出片原料：'+ready+' 段镜头已整理好，另有 '+processing+' 段视频正在后台切镜头，整理好就能直接用于模板成片。')
+      : '素材是出片原料：上传的视频会在后台自动切成镜头（约每 10 秒一段），模板成片直接选用「已整理好」的镜头，不用再传别处。';
+    var term=String(searchTerm||'').trim().toLowerCase();
+    var list=materialItems.filter(function(item){ return !term || String(item.name||'').toLowerCase().indexOf(term)>=0; });
+    gridNode.textContent='';
+    if(!list.length){
+      gridNode.style.display='none';
+      if(emptyNode){
+        emptyNode.style.display='flex';
+        var title=emptyNode.querySelector('div'), text=emptyNode.querySelector('p');
+        if(title) title.textContent=!materialLoaded?'正在读取素材库…':(materialItems.length?'没有匹配的素材':'素材库还是空的');
+        if(text){
+          text.style.display=materialLoaded?'block':'none';
+          if(materialLoaded&&materialItems.length) text.textContent='换个关键词试试。';
+        }
+      }
+      return;
+    }
+    gridNode.style.display='grid';
+    if(emptyNode) emptyNode.style.display='none';
+    var index=materialStatusIndex();
+    list.forEach(function(item){ gridNode.appendChild(materialCard(item,index)); });
+  }
+  function loadMaterialLibrary(){
+    if(materialLoading) return Promise.resolve();
+    materialLoading=true;
+    return Promise.all([
+      fetch(MATERIAL_API+'/assets?limit=200',{cache:'no-store',credentials:'same-origin'}).then(function(r){ if(r.status===401){ HQ.login(); throw new Error('登录已过期'); } return r.json(); }),
+      fetch(MATERIAL_API+'/assets/preprocess',{cache:'no-store',credentials:'same-origin'}).then(function(r){ if(r.status===401){ HQ.login(); throw new Error('登录已过期'); } return r.json(); })
+    ]).then(function(result){
+      var listed=result[0]||{}, status=result[1]||{};
+      if(!listed.ok) throw new Error(listed.error||'素材库加载失败');
+      materialItems=(listed.assets||[]).filter(function(item){ return item&&item.id; });
+      materialQuota=listed.quota||{used:0,limit:0};
+      materialStatus=status||{};
+      materialLoaded=true;
+      renderMaterialLibrary();
+    }).catch(function(error){
+      materialLoaded=true;
+      renderMaterialLibrary();
+      toast((error&&error.message)||'素材库加载失败',false);
+    }).then(function(){ materialLoading=false; });
+  }
+  function ensureMaterialLibrary(){
+    if(materialLoaded) return Promise.resolve();
+    return loadMaterialLibrary();
+  }
+  function materialProgress(message){
+    var node=document.getElementById('materialProgress');
+    if(!node) return;
+    if(!message){ node.style.display='none'; node.textContent=''; return; }
+    node.style.display='block';
+    node.textContent=message;
+  }
+  function uploadOneMaterial(file,onProgress){
+    return new Promise(function(resolve,reject){
+      var xhr=new XMLHttpRequest();
+      xhr.open('POST',MATERIAL_API+'/upload',true);
+      xhr.withCredentials=true;
+      xhr.upload.onprogress=function(event){ if(onProgress&&event.lengthComputable) onProgress(event.loaded/Math.max(1,event.total)); };
+      xhr.onload=function(){
+        var data={}; try{ data=JSON.parse(xhr.responseText||'{}'); }catch(e){}
+        if(xhr.status===200&&data.ok){ resolve(data); return; }
+        if(xhr.status===401){ HQ.login(); reject(new Error('登录已过期')); return; }
+        reject(new Error(data.error||('上传失败（'+xhr.status+'）')));
+      };
+      xhr.onerror=function(){ reject(new Error('网络中断，上传未完成')); };
+      var form=new FormData();
+      form.append('file',file);
+      xhr.send(form);
+    });
+  }
+  function uploadMaterialFiles(files){
+    files=[].slice.call(files||[]).filter(Boolean);
+    if(!files.length||materialUploading) return;
+    materialUploading=true;
+    var failed=0, position=0;
+    function next(){
+      if(position>=files.length){
+        materialUploading=false;
+        materialProgress('');
+        loadMaterialLibrary();
+        toast(failed?('上传完成，'+failed+' 个失败'):('已上传 '+files.length+' 个素材'), failed===0);
+        return;
+      }
+      var file=files[position]; position+=1;
+      materialProgress('正在上传 '+file.name+'（'+position+'/'+files.length+'）…');
+      uploadOneMaterial(file,function(ratio){ materialProgress('正在上传 '+file.name+'（'+Math.round(ratio*100)+'%）'); })
+        .then(function(){ materialProgress(file.name+' 上传完成，正在入库…'); })
+        .catch(function(error){ failed+=1; materialProgress(file.name+' 上传失败：'+((error&&error.message)||'未知原因')); })
+        .then(next);
+    }
+    next();
+  }
+  function deleteMaterialItem(item,button){
+    var name=(item&&item.name)||'这条素材';
+    if(!confirm('删除「'+name+'」？删了就找不回来了，已经用它的成片不受影响。')) return;
+    if(button){ button.disabled=true; button.textContent='删除中…'; }
+    fetch(MATERIAL_API+'/assets/'+encodeURIComponent(item.id),{method:'DELETE',credentials:'same-origin'})
+      .then(function(response){ return response.json().catch(function(){ return {}; }).then(function(data){ return {status:response.status,data:data}; }); })
+      .then(function(result){
+        if(result.status===401){ HQ.login(); return; }
+        if(result.status>=400){ toast(result.data.error||'删除失败',false); return; }
+        toast('已删除「'+name+'」',true);
+        return loadMaterialLibrary();
+      })
+      .catch(function(){ toast('删除失败，请稍后重试',false); })
+      .then(function(){ if(button){ button.disabled=false; button.textContent='删除'; } });
+  }
   function load(kind){
     currentLoadKind=kind;
     var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=10':(kind==='avatar'?'/api/gen/video/avatars?limit=120':
@@ -2141,8 +2369,18 @@
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
     setCat(ch.getAttribute('data-cat'));
     selected={}; updateBulk();
+    if(cat==='material'){ render(); return; }
     load(loadKindOf(cat));
   };});
+  (function bindMaterialTools(){
+    var uploadBtn=document.getElementById('materialUploadBtn'), emptyBtn=document.getElementById('materialEmptyUpload'),
+        fileInput=document.getElementById('materialFile'), reload=document.getElementById('materialReload');
+    function pick(){ if(fileInput) fileInput.click(); }
+    if(uploadBtn) uploadBtn.onclick=pick;
+    if(emptyBtn) emptyBtn.onclick=pick;
+    if(fileInput) fileInput.onchange=function(){ uploadMaterialFiles(fileInput.files); fileInput.value=''; };
+    if(reload) reload.onclick=function(){ loadMaterialLibrary(); };
+  })();
   function setCat(next){
     cat=next||'all';
     document.querySelectorAll('#catRow .chip').forEach(function(c){
@@ -2168,7 +2406,7 @@
   if(bulkDelete){ bulkDelete.onclick=deleteSelected; }
   if(favOnly){ favOnly.onclick=function(){ onlyFav=!onlyFav; selected={}; refreshMarkFilters(); render(); }; }
   if(tagFilter){ tagFilter.onchange=function(){ activeTag=tagFilter.value||''; selected={}; render(); }; }
-  load(loadKindOf(cat));
+  if(cat==='material'){ render(); } else { load(loadKindOf(cat)); }
 })();
 </script>
 </body>

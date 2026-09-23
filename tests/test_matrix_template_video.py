@@ -3701,10 +3701,20 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertIn("templates=(r.data.templates||[]).filter(Boolean)", page)
         self.assertIn(".mt-action:disabled{opacity:.55;cursor:not-allowed}", page)
         self.assertNotIn(".mt-action:disabled{opacity:.55;cursor:wait}", page)
-        self.assertIn("button.disabled=!busy&&!activeTemplate", page)
-        self.assertIn("在 Agent 里面上传", page)
-        self.assertIn("在“我的资产”里面上传", page)
-        self.assertIn("继续使用公网素材成片", page)
+        self.assertIn(
+            "button.disabled=materialBusy||(!busy&&!hasPending&&(!activeTemplate||!!materialGate()))",
+            page,
+        )
+        self.assertIn('id="materialPane"', page)
+        self.assertIn('id="materialRefresh"', page)
+        self.assertIn('id="materialNeed"', page)
+        self.assertIn("assets.html?cat=material", page)
+        self.assertIn("MATERIAL_API='/workbench/ip12/api/v4'", page)
+        self.assertIn("MATERIAL_API+'/account/render-inputs'", page)
+        self.assertIn("body.user_materials=materials", page)
+        self.assertIn("required_visuals_max", page)
+        self.assertNotIn("继续使用公网素材成片", page)
+        self.assertNotIn("在 Agent 里面上传", page)
         self.assertIn("if(!checking&&warnCopy())return", page)
         self.assertIn("busy||hasPending?'重新确认结果'", page)
         self.assertIn("if(!pending){busy=false;sync();return}", page)
@@ -4135,6 +4145,33 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertTrue(result["complete"]["enabled"])
         self.assertEqual("生成视频 · 5 点", result["complete"]["text"])
         self.assertEqual("", result["complete"]["title"])
+
+    def test_material_submission_bridges_ready_clips_into_user_materials(self):
+        result = self.runtime("materialSubmission")
+        self.assertEqual("3 / 需要 3 段", result["need"])
+        self.assertEqual(4, result["cards"])
+        self.assertEqual(1, len(result["inputs"]))
+        self.assertEqual(
+            [clip["asset_id"] for clip in result["clips"][:3]],
+            result["inputs"][0]["body"]["asset_ids"],
+        )
+        self.assertEqual(3, len(result["body"]["user_materials"]))
+        self.assertTrue(all(
+            item["media_type"] == "video" and item["upload_id"].startswith("upload-")
+            for item in result["body"]["user_materials"]
+        ))
+        self.assertEqual("/material-video", result["src"])
+        self.assertTrue(result["cleared"])
+
+    def test_page_blocks_submission_without_ready_materials(self):
+        result = self.runtime("materialRequired")
+        self.assertFalse(result["enabled"])
+        self.assertEqual("0 / 需要 3 段", result["need"])
+        self.assertEqual(0, result["posts"])
+        self.assertEqual(0, result["confirm"])
+        self.assertEqual(0, result["inputs"])
+        self.assertIn("素材库", result["status"])
+        self.assertEqual(result["status"], result["toast"])
 
     def test_provider_templates_are_rendered_without_main_site_id_filtering(self):
         result = self.runtime("templateVisibility")

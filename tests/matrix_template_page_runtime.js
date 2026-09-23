@@ -15,6 +15,7 @@ class Element {
   pause(){this.pauseCount++}
 }
 function response(status,data){if(data&&data.templates&&response.extraTemplates)data=Object.assign({},data,{templates:data.templates.concat(response.extraTemplates)});return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
+function defaultMaterialClips(){return ['11','22','33','44','55','66','77','88','99'].map((seed,index)=>({asset_id:seed.repeat(16),duration:10+index,kind:'video',source_asset_id:seed.repeat(16)}))}
 async function flush(n=12){for(let i=0;i<n;i++)await new Promise(r=>setImmediate(r))}
 function pendingCleared(storage){return ![...storage.keys()].some(key=>key.startsWith('hq-matrix-template-pending-v1')||key.startsWith('hq-matrix-template-pending-v2'))}
 function actionState(runtime){const button=runtime.get('generateBtn');return {busy:button.getAttribute('aria-busy')==='true',enabled:!button.disabled,text:button.textContent,title:button.title||''}}
@@ -27,7 +28,7 @@ function createRuntime(plan, storage){
   const get=id=>elements.get(id)||(elements.set(id,new Element('div',id)),elements.get(id));
   const shellSource=page.match(/<script[^>]*id="hqCloudShell"[^>]*src="([^"]+)"/);
   if(shellSource)get('hqCloudShell').src=shellSource[1];
-  const timers=[];const requests={auth:[],voices:[],post:[],poll:[],confirm:[]};let uuidCount=0,timerId=0,authUsername=plan.username||'alice';
+  const timers=[];const requests={auth:[],voices:[],post:[],poll:[],confirm:[],preprocess:[],library:[],inputs:[]};let uuidCount=0,timerId=0,authUsername=plan.username||'alice';
   const sessionStorage={getItem:k=>storage.has(k)?storage.get(k):null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
   const fetch=(url,options={})=>{
     if(url==='/api/auth/me'){const index=requests.auth.length;requests.auth.push({username:authUsername});return plan.auth?plan.auth(index,authUsername):Promise.resolve(response(200,{user:{username:authUsername}}))}
@@ -39,6 +40,9 @@ function createRuntime(plan, storage){
     if(url.startsWith('/api/gen/job/')){
       const index=requests.poll.length;requests.poll.push({url,options,account:authUsername});return plan.poll(index,options);
     }
+    if(url.indexOf('/workbench/ip12/api/v4/assets/preprocess')===0){const index=requests.preprocess.length;requests.preprocess.push({account:authUsername});return plan.preprocess?plan.preprocess(index):Promise.resolve(response(200,{ready_count:3,processing_count:0,failed_count:0,clips:defaultMaterialClips(),assets:[]}))}
+    if(url.indexOf('/workbench/ip12/api/v4/assets')===0){const index=requests.library.length;requests.library.push({account:authUsername});return plan.library?plan.library(index):Promise.resolve(response(200,{ok:true,total:3,assets:defaultMaterialClips().map((clip,index)=>({id:clip.asset_id,name:'素材 '+(index+1)+'.mp4',ext:'.mp4',has_thumb:false,source:'upload'})),quota:{used:1024,limit:2147483648}}))}
+    if(url.indexOf('/workbench/ip12/api/v4/account/render-inputs')===0){const index=requests.inputs.length;const body=JSON.parse((options&&options.body)||'{}');requests.inputs.push({account:authUsername,body});return plan.inputs?plan.inputs(index,body):Promise.resolve(response(200,{ok:true,uploads:(body.asset_ids||[]).map((id,position)=>({upload_id:'upload-'+id.slice(-4)+'-'+position,media_type:'video'}))}))}
     return Promise.resolve(response(200,{}));
   };
   const documentListeners={};const windowListeners={};const head=new Element('head','head');
@@ -146,6 +150,28 @@ async function scenarioActionPrerequisites(){
   runtime.get('generateBtn').onclick();await flush();const bottomOnlyReminder={status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,auth:runtime.requests.auth.length-bottomOnlyBefore.auth,post:runtime.requests.post.length-bottomOnlyBefore.post,poll:runtime.requests.poll.length-bottomOnlyBefore.poll,confirm:runtime.requests.confirm.length-bottomOnlyBefore.confirm};
   runtime.get('topText').value='有效标题';runtime.get('topText').listeners.input[0]();const complete=actionState(runtime);
   return {empty,emptyReminder,topOnly,topOnlyReminder,bottomOnly,bottomOnlyReminder,complete};
+}
+async function scenarioMaterialSubmission(){
+  const storage=new Map();
+  const clips=['aa','bb','cc','dd'].map((seed,index)=>({asset_id:seed.repeat(16),duration:10+index,kind:'video'}));
+  const runtime=createRuntime({
+    preprocess:()=>Promise.resolve(response(200,{ready_count:clips.length,processing_count:0,failed_count:0,clips,assets:[]})),
+    library:()=>Promise.resolve(response(200,{ok:true,total:clips.length,assets:clips.map((clip,index)=>({id:clip.asset_id,name:'片段 '+(index+1)+'.mp4',ext:'.mp4',has_thumb:false,source:'upload'})),quota:{used:0,limit:2147483648}})),
+    post:()=>Promise.resolve(response(200,{job_id:21})),
+    poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/material-video',duration:9}})),
+  },storage);
+  await fillAndSubmit(runtime);await flush(30);
+  return {body:JSON.parse(runtime.requests.post[0].options.body),inputs:runtime.requests.inputs,clips,need:runtime.get('materialNeed').textContent,cards:runtime.get('materialPane').children.length,src:runtime.get('video').src,cleared:pendingCleared(storage)};
+}
+async function scenarioMaterialRequired(){
+  const storage=new Map();
+  const runtime=createRuntime({
+    preprocess:()=>Promise.resolve(response(200,{ready_count:0,processing_count:2,failed_count:0,clips:[],assets:[]})),
+    post:()=>Promise.reject(new Error('unused')),
+    poll:()=>Promise.reject(new Error('unused')),
+  },storage);
+  await fillAndSubmit(runtime);await flush();
+  return {enabled:!runtime.get('generateBtn').disabled,status:runtime.get('status').textContent,toast:runtime.get('toast').textContent,posts:runtime.requests.post.length,confirm:runtime.requests.confirm.length,inputs:runtime.requests.inputs.length,need:runtime.get('materialNeed').textContent};
 }
 async function scenarioTemplateVisibility(){
   const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
@@ -480,7 +506,7 @@ async function scenarioShellRecovery(){
   return {retries,healthyRetries:healthy.head.children.length};
 }
 
-async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,actionPrerequisites:scenarioActionPrerequisites,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,voiceoverSubmission:scenarioVoiceoverSubmission,nineGridVoiceoverSubmission:scenarioNineGridVoiceoverSubmission,fixedSkillTemplateSubmission:scenarioFixedSkillTemplateSubmission,voiceoverBgmSubmission:scenarioVoiceoverBgmSubmission,voiceoverValidation:scenarioVoiceoverValidation,voiceoverRestore:scenarioVoiceoverRestore,voiceoverBgmRestore:scenarioVoiceoverBgmRestore,automaticFont:scenarioAutomaticFont,lockedTemplateBatch:scenarioLockedTemplateBatch,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,busyActionCheck:scenarioBusyActionChecksWithoutDuplicate,delayedOuterCheckAuth:scenarioDelayedOuterCheckAuthCannotCreateNewJob,delayedPostAuth:scenarioDelayedCheckAuthCannotDuplicateAcceptedPost,delayedPollAuth:scenarioDelayedCheckAuthCannotReviveTerminalPoll,linkedJobDuringAuth:scenarioDelayedSubmitAuthHonorsLinkedJob,clearedPendingDuringAuth:scenarioDelayedPollAuthHonorsClearedPending,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,errorResponseWithJobId:scenarioErrorResponseWithJobIdPollsTerminal,staleUnavailablePause:scenarioStaleUnavailableSubmissionPauses,pausedResume:scenarioPausedSubmissionResumesOnClick,pausedUncharged:scenarioPausedSubmissionEndsUncharged,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers,shellRecovery:scenarioShellRecovery};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
+async function main(){const name=process.argv[2];const handlers={postLoss:scenarioPostLoss,inProgress:scenarioInProgress,refresh:scenarioRefresh,pollFailure:scenarioPollFailure,pollHttpFailure:scenarioPollHttpFailure,pollRecoveryBeyondFive:scenarioPollRecoveryBeyondFive,instantResult:scenarioInstantResult,delayedResultUrl:scenarioDelayedResultUrl,longDelayedResultUrl:scenarioLongDelayedResultUrl,foregroundResume:scenarioForegroundResume,mediaRetry:scenarioMediaRetry,livePreview:scenarioLivePreview,actionPrerequisites:scenarioActionPrerequisites,materialSubmission:scenarioMaterialSubmission,materialRequired:scenarioMaterialRequired,templateVisibility:scenarioTemplateVisibility,hiddenTemplatePendingRecovery:scenarioHiddenTemplatePendingRecovery,voiceoverSubmission:scenarioVoiceoverSubmission,nineGridVoiceoverSubmission:scenarioNineGridVoiceoverSubmission,fixedSkillTemplateSubmission:scenarioFixedSkillTemplateSubmission,voiceoverBgmSubmission:scenarioVoiceoverBgmSubmission,voiceoverValidation:scenarioVoiceoverValidation,voiceoverRestore:scenarioVoiceoverRestore,voiceoverBgmRestore:scenarioVoiceoverBgmRestore,automaticFont:scenarioAutomaticFont,lockedTemplateBatch:scenarioLockedTemplateBatch,batchFive:scenarioBatchFive,legacyPending:scenarioLegacyPending,mixedFailureReload:scenarioMixedFailureReload,jobFailureRefund:scenarioJobFailureRefund,refundPendingThenConfirmed:scenarioRefundPendingThenConfirmed,busyActionCheck:scenarioBusyActionChecksWithoutDuplicate,delayedOuterCheckAuth:scenarioDelayedOuterCheckAuthCannotCreateNewJob,delayedPostAuth:scenarioDelayedCheckAuthCannotDuplicateAcceptedPost,delayedPollAuth:scenarioDelayedCheckAuthCannotReviveTerminalPoll,linkedJobDuringAuth:scenarioDelayedSubmitAuthHonorsLinkedJob,clearedPendingDuringAuth:scenarioDelayedPollAuthHonorsClearedPending,uncertainAutoRecovery:scenarioUncertainRecoversAutomatically,staleSubmittingAutoRecovery:scenarioStaleSubmittingRecoversAutomatically,errorResponseWithJobId:scenarioErrorResponseWithJobIdPollsTerminal,staleUnavailablePause:scenarioStaleUnavailableSubmissionPauses,pausedResume:scenarioPausedSubmissionResumesOnClick,pausedUncharged:scenarioPausedSubmissionEndsUncharged,crossAccountPending:scenarioCrossAccountPendingIsolation,dynamicAccountSwitch:scenarioDynamicAccountSwitchFailsClosed,retryAuthFailure:scenarioRetryAuthFailureFailsClosed,concurrentStaleAuth:scenarioConcurrentStaleAuthRestoresNewOwnerOnce,foregroundSingleFlight:scenarioForegroundDoesNotDuplicateInflightRequests,hungSubmissionTimeout:scenarioHungSubmissionTimesOutAndRecovers,hungPollTimeout:scenarioHungPollTimesOutAndRecovers,shellRecovery:scenarioShellRecovery};if(!handlers[name])throw new Error('unknown scenario');process.stdout.write(JSON.stringify(await handlers[name]()))}
 async function scenarioMotionV3(){
   response.extraTemplates=[['inset-flip-whip','inset-flip'],['fixed-opening-whip','fixed-opening'],['bilingual-stagger-salon','bilingual-stagger']].map(([id,variant])=>({id,name:id,variant,engine:'hyperframes',font_selectable:false}));
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:42})),poll:()=>Promise.resolve(response(200,{status:'completed',result:{video_url:'/test.mp4'}}))},new Map());
