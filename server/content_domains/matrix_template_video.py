@@ -1804,7 +1804,7 @@ def _mux_voiceover(
     duration = float(voiceover["duration"])
     temporary = video.with_name(video.stem + ".voiceover.part.mp4")
     temporary.unlink(missing_ok=True)
-    source_streams, _ = _media_probe(video, timeout=_remaining_budget(deadline_at))
+    source_streams, source_duration = _media_probe(video, timeout=_remaining_budget(deadline_at))
     source_video = next((s for s in source_streams if s.get("codec_type") == "video"), {})
     if not _valid_template_video_codec(source_video):
         raise MatrixTemplateProviderFailed("模板成片视频色彩格式无效")
@@ -1816,10 +1816,15 @@ def _mux_voiceover(
         volume = _normalize_bgm_volume(bgm_volume)
         if not any(item.get("codec_type") == "audio" for item in source_streams):
             raise MatrixTemplateProviderFailed("模板成片背景音乐音轨缺失")
+        # Keep audio finite before looping its samples; amix can deadlock when
+        # sharing the endlessly looped video demuxer.
+        command.extend(["-i", str(video)])
+        samples = max(1, int(math.ceil(source_duration * 44100)))
         command.extend([
             "-filter_complex",
             (
-                f"[0:a:0]volume={volume:.6f},atrim=start=0:end={duration:.6f},"
+                f"[2:a:0]aresample=44100,aloop=loop=-1:size={samples},"
+                f"volume={volume:.6f},atrim=start=0:end={duration:.6f},"
                 "asetpts=PTS-STARTPTS[bgm];"
                 f"[1:a:0]atrim=start=0:end={duration:.6f},"
                 "asetpts=PTS-STARTPTS[voice];"
