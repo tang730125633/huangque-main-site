@@ -3687,7 +3687,8 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertNotIn('id="bgm"', page)
         self.assertNotIn('id="fontFamily"', page)
         self.assertNotIn('id="fontSource"', page)
-        self.assertIn('id="voiceoverEnabled"', page)
+        self.assertNotIn('id="voiceoverEnabled"', page)
+        self.assertNotIn('启用配音', page)
         self.assertIn('id="voiceoverText"', page)
         self.assertIn('id="voiceoverText" class="mt-input" maxlength="120"', page)
         self.assertIn('id="voiceoverVoice"', page)
@@ -4255,9 +4256,10 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("full-overlay-bold", result["active"])
         self.assertTrue(result["cleared"])
 
-    def test_legacy_programmatic_voiceover_payload_keeps_panel_hidden_in_bgm_mode(self):
+    def test_narration_category_submits_personal_voice_without_toggle(self):
         result = self.runtime("voiceoverSubmission")
-        self.assertTrue(result["panelHidden"])
+        self.assertFalse(result["panelHidden"])
+        self.assertEqual("bilingual-stagger-salon", result["body"]["template_id"])
         self.assertEqual("我的音色", result["scope"])
         self.assertIn("S_d21F8OR62", result["publicOptions"])
         self.assertIn("vip_alice", result["options"])
@@ -4274,16 +4276,16 @@ class MatrixTemplatePageTests(unittest.TestCase):
             "volume": 0, "delivery": "natural",
         }, result["body"]["voiceover"])
 
-    def test_nine_grid_voiceover_submits_optional_bgm_off(self):
+    def test_nine_grid_submits_bgm_without_voiceover(self):
         result = self.runtime("nineGridVoiceoverSubmission")
         self.assertEqual("6. 九宫格开场·全屏展示", result["selected"])
         self.assertEqual(
             "nine-grid-reveal",
             result["body"]["template_id"],
         )
-        self.assertFalse(result["body"]["bgm"])
+        self.assertTrue(result["body"]["bgm"])
         self.assertNotIn("duration", result["body"])
-        self.assertIn("voiceover", result["body"])
+        self.assertNotIn("voiceover", result["body"])
 
     def test_fixed_skill_templates_use_the_same_two_copy_inputs(self):
         result = self.runtime("fixedSkillTemplateSubmission")
@@ -4309,14 +4311,14 @@ class MatrixTemplatePageTests(unittest.TestCase):
             self.assertEqual("评论区扣888", item["body"]["bottom_text"])
             self.assertNotIn("duration", item["body"])
 
-    def test_legacy_programmatic_voiceover_keeps_payload_but_bgm_controls_stay_hidden(self):
+    def test_stale_voice_inputs_do_not_add_voiceover_to_bgm_submission(self):
         result = self.runtime("voiceoverBgmSubmission")
         self.assertTrue(result["body"]["bgm"])
-        self.assertEqual(0.35, result["body"]["bgm_volume"])
-        self.assertEqual("S_d21F8OR62", result["body"]["voiceover"]["voice"])
+        self.assertNotIn("bgm_volume", result["body"])
+        self.assertNotIn("voiceover", result["body"])
         self.assertTrue(result["rowHidden"])
-        self.assertEqual("35", result["volume"])
-        self.assertEqual("35%", result["volumeLabel"])
+        self.assertEqual("20", result["volume"])
+        self.assertEqual("20%", result["volumeLabel"])
 
     def test_voiceover_requires_copy_before_auth_or_submission(self):
         result = self.runtime("voiceoverValidation")
