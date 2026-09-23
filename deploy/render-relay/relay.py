@@ -126,8 +126,11 @@ def _clean_render_contract(value):
             or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", t) for t in templates)):
         return None
     result = {**evidence, "ready": True, "templates": sorted(set(templates))}
-    if value.get("material_adaptation_contract") == "auto-v1":
+    if (value.get("material_adaptation_contract") == "auto-v1"
+            and type(value.get("material_adaptation_delivery_protocol")) is int
+            and value["material_adaptation_delivery_protocol"] == 2):
         result["material_adaptation_contract"] = "auto-v1"
+        result["material_adaptation_delivery_protocol"] = 2
     text = value.get("text_style_contract")
     if (value.get("text_style_delivery_protocol") == 2 and isinstance(text, dict)
             and type(text.get("version")) is int and text["version"] == 1
@@ -368,13 +371,18 @@ _NODE_RESULT_METADATA_FIELDS = {
     "material_selection_contract_version", "material_clip_contract_version",
     "material_manifest", "editing_plan", "bgm_mode", "nine_grid_visuals",
     "fixed_duration_seconds", "fixed_skill_template", "color_profile", "gpu_render",
-    "text_revision", "text_overrides",
+    "text_revision", "text_overrides", "material_adaptation",
 }
 
 
-def _merge_completed_result(existing, incoming):
+def _merge_completed_result(existing, incoming, *, payload=None):
     """Merge renderer evidence without replacing relay-owned delivery fields."""
     result = dict(existing or {})
+    if payload is not None:
+        expected = payload.get("material_adaptation")
+        actual = incoming.get("material_adaptation") if isinstance(incoming, dict) else None
+        if expected != actual or (expected is not None and expected != "auto-v1"):
+            raise ValueError("material_adaptation_mismatch")
     if not isinstance(incoming, dict):
         return result
     for key in _NODE_RESULT_METADATA_FIELDS:
@@ -670,6 +678,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out = {"job_id": row["id"], "status": row["status"],
                    "created_at": row["created_at"], "updated_at": row["updated_at"]}
+            if row["status"] == "completed" and json.loads(row["payload"]).get("material_adaptation"):
+                # Binary upload is not complete delivery until its evidence is acknowledged.
+                with _db() as conn:
+                    lease = _delivery_claim(conn, jid)
+                result = json.loads(row["result"] or "{}")
+                if (not lease or not lease["metadata_done"]
+                        or result.get("material_adaptation") != json.loads(row["payload"])["material_adaptation"]):
+                    return self._send(200, {**out, "status": "running", "phase": "awaiting_metadata"})
             if row["result"]:
                 out["result"] = json.loads(row["result"])
             if row["error"]:
@@ -1202,12 +1218,16 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(409,{'error':'delivery_output_not_received'})
                         existing = json.loads(row['result'] or '{}')
                         incoming = body.get('result') or {}
+                        try:
+                            merged = _merge_completed_result(existing, incoming, payload=json.loads(row['payload']))
+                        except ValueError as exc:
+                            return self._send(409, {'error': str(exc)})
                         if row['gpu_contract']:
                             evidence = _clean_render_evidence(incoming.get('gpu_render') or existing.get('gpu_render'))
                             if not evidence or evidence['runtime_sha256'] != json.loads(row['gpu_contract'])['runtime_sha256']:
                                 return self._send(409,{'error':'gpu_output_not_verified'})
                         conn.execute('UPDATE jobs SET result=? WHERE id=?',
-                                     (json.dumps(_merge_completed_result(existing,incoming)),jid))
+                                     (json.dumps(merged),jid))
                         conn.execute('UPDATE delivery_claims SET metadata_done=1 WHERE job_id=?',(jid,))
                     elif row['status'] == 'running':
                         conn.execute("UPDATE jobs SET status='failed',error=?,updated_at=? WHERE id=?",
@@ -1216,7 +1236,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200,{'ok':True})
             with _db() as conn:
                 _row = conn.execute(
-                    "SELECT node,status,result,gpu_contract FROM jobs WHERE id=?", (jid,)).fetchone()
+                    "SELECT node,status,result,gpu_contract,payload FROM jobs WHERE id=?", (jid,)).fetchone()
+                if ok and _row:
+                    try:
+                        _merge_completed_result({}, body.get("result"), payload=json.loads(_row["payload"]))
+                    except ValueError as exc:
+                        return self._send(409, {"error": str(exc)})
                 if _row and _row["gpu_contract"]:
                     if body.get("node") != _row["node"]:
                         return self._send(409, {"error": "node_mismatch"})

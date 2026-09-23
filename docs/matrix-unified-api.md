@@ -86,7 +86,10 @@
 ## 开放前
 
 1. 升级生成端 API、matrix_material_adaptation.py、GPU/poller、relay；保护在跑任务。
+   poller 必须为 auto-v1 原样传输图片字节、MIME和SHA，并声明
+   `material_adaptation_delivery_protocol=2`。只有新生成端而仍使用旧poller的节点不能接此类任务。
 2. 验证各节点声明 auto-v1，旧节点不能领取新任务；结果必须回显同一协议。
+   中继按任务冻结的要求校验并保存回显；视频上传但元数据尚未确认时，对主站仍显示运行中。
 3. 配置只读素材索引与现有COS凭据，确认账号ID、桶及前缀一致。
 4. 部署主站模块；按业务确认是否启用 `MATRIX_UNIFIED_API_ENABLED=1`。
 5. 从调用方环境使用同一个幂等键实测提交、查询、下载和重试，核对计费与退款。

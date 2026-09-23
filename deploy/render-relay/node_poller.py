@@ -78,7 +78,12 @@ def _renderer_capability():
         health = _call(LOCAL + "/health", LOCAL_TOKEN, timeout=5)
         value = health.get("gpu_render") if isinstance(health, dict) and health.get("ok") is True else None
         if isinstance(value, dict) and value.get("ready") is True:
-            return dict(value, text_style_delivery_protocol=2) if value.get("text_style_contract") else value
+            capability = dict(value)
+            if value.get("text_style_contract"):
+                capability["text_style_delivery_protocol"] = 2
+            if value.get("material_adaptation_contract") == "auto-v1":
+                capability["material_adaptation_delivery_protocol"] = 2
+            return capability
         return None
     except Exception:
         return None
@@ -315,6 +320,17 @@ def _image_to_video(data, content_type, duration):
 
 def sync_user_assets(payload, job_id):
     """把本任务引用的用户素材从中转器拉到当前渲染节点。"""
+    adaptive = payload.get("material_adaptation")
+    if adaptive:
+        if adaptive != "auto-v1":
+            raise RuntimeError("material_adaptation_unavailable")
+        capability = _renderer_capability()
+        if capability is None:
+            # A failed health read is uncertain, not proof that this job cannot render.
+            raise ConnectionError("material_adaptation_health_unknown")
+        if (capability.get("material_adaptation_contract") != "auto-v1"
+                or capability.get("material_adaptation_delivery_protocol") != 2):
+            raise RuntimeError("material_adaptation_unavailable")
     for item in payload.get("user_materials") or []:
         sha = str(item.get("sha256") or "").strip().lower()
         if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
@@ -337,7 +353,7 @@ def sync_user_assets(payload, job_id):
                 raise RuntimeError("用户素材传输校验失败")
             source.seek(0)
             data = source
-            if item.get("media_type") == "image":
+            if item.get("media_type") == "image" and not adaptive:
                 data = _image_to_video(source, content_type, payload.get("duration"))
                 sha = hashlib.sha256(data).hexdigest()
                 total = len(data)

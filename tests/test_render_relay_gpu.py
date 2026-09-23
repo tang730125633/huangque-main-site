@@ -74,7 +74,8 @@ class RenderRelayGpuTests(unittest.TestCase):
 
     def test_adaptive_material_jobs_require_upgraded_node_and_delivery(self):
         self.heartbeat("old")
-        contract = {**self.contract(), "material_adaptation_contract": "auto-v1"}
+        contract = {**self.contract(), "material_adaptation_contract": "auto-v1",
+                    "material_adaptation_delivery_protocol": 2}
         self.heartbeat("new", contract)
         code, job = self.call("/v1/jobs", {"template_id": "nine-grid-reveal", "material_adaptation": "auto-v1"})
         self.assertEqual(code, 202)
