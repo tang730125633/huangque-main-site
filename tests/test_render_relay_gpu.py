@@ -72,6 +72,18 @@ class RenderRelayGpuTests(unittest.TestCase):
         with self.relay._db() as db:
             self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
+    def test_adaptive_material_jobs_require_upgraded_node_and_delivery(self):
+        self.heartbeat("old")
+        contract = {**self.contract(), "material_adaptation_contract": "auto-v1",
+                    "material_adaptation_delivery_protocol": 2}
+        self.heartbeat("new", contract)
+        code, job = self.call("/v1/jobs", {"template_id": "nine-grid-reveal", "material_adaptation": "auto-v1"})
+        self.assertEqual(code, 202)
+        self.assertIsNone(self.call("/v1/claim", {"node": "old", "gpu_render": self.contract(), "delivery_protocol": 2}, node=True)[1]["job"])
+        self.assertIsNone(self.call("/v1/claim", {"node": "new", "gpu_render": contract}, node=True)[1]["job"])
+        claimed = self.call("/v1/claim", {"node": "new", "gpu_render": contract, "delivery_protocol": 2}, node=True)[1]
+        self.assertEqual(claimed["job"]["job_id"], job["job_id"])
+
     def text_contract(self, revision="b"*64):
         return {**self.contract(), "text_style_delivery_protocol":2,
                 "text_style_contract":{"version":1,"templates":{"nine-grid-reveal":revision}}}
