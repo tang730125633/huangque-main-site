@@ -4063,6 +4063,7 @@ def action_plan(action, value):
         return _plan(
             "generation:quote", "proxy", base=CONTENT_BASE, method="POST",
             path="/api/gen/matrix-template/preview", body=payload,
+            timeout=3600,  # Same owned-material forwarding path as formal generation.
         )
     if action in {
             "text-video-capability", "text-video-templates",

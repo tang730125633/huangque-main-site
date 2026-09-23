@@ -2177,6 +2177,7 @@ class HQCLIAPITests(unittest.TestCase):
             (preview["scope"], preview["kind"], preview["method"], preview["path"]),
         )
         self.assertEqual("b" * 64, preview["body"]["template_revision"])
+        self.assertEqual(3600, preview["timeout"])
         self.assertEqual({"title_scale": 0.9}, preview["body"]["overrides"])
         quiet = self.auth.hq_cli_api.action_plan(
             "matrix-template-generate", dict(value, bgm=False))
