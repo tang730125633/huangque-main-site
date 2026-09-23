@@ -199,6 +199,31 @@ class CLIMediaUploadTests(unittest.TestCase):
                     hashlib.sha256(MP4).hexdigest(), now=100,
                 )
 
+    def test_duplicate_image_and_video_uploads_reuse_active_ids(self):
+        with mock.patch.object(cli_uploads, "MAX_USER_FILES", 2), \
+                mock.patch.object(cli_uploads, "_probe_video_duration", return_value=5.5):
+            image = cli_uploads.store_image(
+                io.BytesIO(PNG), len(PNG), "alice", "image/png",
+                hashlib.sha256(PNG).hexdigest(), now=100,
+            )
+            video = cli_uploads.store_video(
+                io.BytesIO(MP4), len(MP4), "alice", "video/mp4",
+                hashlib.sha256(MP4).hexdigest(), now=100,
+            )
+            repeated_image = cli_uploads.store_image(
+                io.BytesIO(PNG), len(PNG), "alice", "image/png",
+                hashlib.sha256(PNG).hexdigest(), now=101,
+            )
+            repeated_video = cli_uploads.store_video(
+                io.BytesIO(MP4), len(MP4), "alice", "video/mp4",
+                hashlib.sha256(MP4).hexdigest(), now=101,
+            )
+
+        self.assertEqual(image["upload_id"], repeated_image["upload_id"])
+        self.assertEqual(video["upload_id"], repeated_video["upload_id"])
+        self.assertEqual(2, len(list(Path(self.temp.name).glob("*.json"))))
+        self.assertEqual(101 + cli_uploads.TTL, repeated_video["expires_at"])
+
     def test_generic_video_over_legacy_cap_streams_and_shared_quota_still_applies(self):
         length = 32 * 1024 * 1024 + 1
         digest = repeated_digest(MP4, length)
