@@ -3668,6 +3668,17 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
 
 class MatrixTemplatePageTests(unittest.TestCase):
+    def test_rapid_clicks_during_material_preparation_submit_only_once(self):
+        result = self.runtime("rapidDirectGeneration")
+        self.assertEqual({"inputs": 1, "posts": 1, "confirms": 0}, result)
+
+    def test_generation_submits_without_charge_confirmation_and_does_not_duplicate(self):
+        for result in self.runtime("directGeneration"):
+            with self.subTest(count=result["count"]):
+                self.assertEqual(0, result["confirms"])
+                self.assertEqual(result["count"], result["posts"])
+                self.assertEqual(result["count"], len(set(result["keys"])))
+
     def runtime(self, scenario):
         result = subprocess.run(
             ["node", str(ROOT / "tests/matrix_template_page_runtime.js"), scenario],
@@ -4454,7 +4465,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
 
     def test_delayed_outer_check_auth_cannot_create_a_new_job(self):
         result = self.runtime("delayedOuterCheckAuth")
-        self.assertEqual((1, 1, 1), (
+        self.assertEqual((1, 1, 0), (
             result["beforeTerminal"]["posts"],
             result["beforeTerminal"]["polls"],
             result["beforeTerminal"]["confirms"],
@@ -4463,7 +4474,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("/first-video", result["terminal"]["src"])
         self.assertTrue(result["terminal"]["cleared"])
         self.assertFalse(result["terminal"]["action"]["busy"])
-        self.assertEqual((1, 1, 1), (
+        self.assertEqual((1, 1, 0), (
             result["posts"], result["polls"], result["confirms"],
         ))
         self.assertEqual(["matrix-template-uuid-1"], result["keys"])

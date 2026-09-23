@@ -49,6 +49,7 @@ function createRuntime(plan, storage){
   const documentListeners={};const windowListeners={};const head=new Element('head','head');
   const document={getElementById:id=>elements.get(id)||null,createElement:t=>new Element(t),head,documentElement:{scrollWidth:390},hidden:false,addEventListener:(k,fn)=>{(documentListeners[k]||=[]).push(fn)}};
   const context={document,window:null,fetch,sessionStorage,location:{href:''},confirm:message=>{requests.confirm.push(message);return true},crypto:{randomUUID:()=>`uuid-${++uuidCount}`},Date,Math,JSON,Promise,Object,Array,String,Error,console,clearTimeout:id=>{const timer=timers.find(item=>item.id===id);if(timer)timer.active=false},setTimeout:(fn,delay=0)=>{const timer={id:++timerId,fn,delay,active:true};timers.push(timer);return timer.id},addEventListener:(k,fn)=>{(windowListeners[k]||=[]).push(fn)}};
+  if(plan.billing)context.HQ={isPointsBillingEnabled:()=>true};
   context.window=context;vm.createContext(context);vm.runInContext(source,context);
   return {get,has:id=>elements.has(id),head,requests,timers,storage,switchUsername:name=>{authUsername=name},runTimer:async()=>{while(timers.length){const timer=timers.shift();if(timer.active){timer.active=false;timer.fn();await flush();return}}},triggerWindow:async name=>{for(const fn of windowListeners[name]||[])fn();await flush()},triggerDocument:async name=>{for(const fn of documentListeners[name]||[])fn();await flush()},flush};
 }
@@ -561,5 +562,27 @@ async function scenarioCategoryMissing(){
   const empty=createRuntime({post(){},poll(){}},new Map());await flush(30);
   return {bgm:categoryState(bgm),voiceDisabled:bgm.get('voiceTemplateTab').disabled,voice:categoryState(voice),bgmDisabled:voice.get('bgmTemplateTab').disabled,emptyDisabled:empty.get('generateBtn').disabled};
 }
-const categoryScenarios={motionV3:scenarioMotionV3,categories:scenarioTemplateCategories,categoryPending:scenarioCategoryPending,categoryMissing:scenarioCategoryMissing};
+async function scenarioDirectGeneration(){
+  const results=[];
+  for(const count of [1,5]){
+    const runtime=createRuntime({billing:true,post:i=>Promise.resolve(response(200,{job_id:900+i})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());
+    await flush();runtime.get('batchCount').value=String(count);
+    await fillAndSubmit(runtime);await flush(30);
+    runtime.get('generateBtn').onclick();await flush(30);
+    results.push({count,confirms:runtime.requests.confirm.length,posts:runtime.requests.post.length,keys:runtime.requests.post.map(x=>x.options.headers['Idempotency-Key'])});
+  }
+  return results;
+}
+async function scenarioRapidDirectGeneration(){
+  let release;
+  const pending=new Promise(resolve=>{release=resolve});
+  const runtime=createRuntime({billing:true,inputs:()=>pending,post:()=>Promise.resolve(response(200,{job_id:999})),poll:()=>Promise.resolve(response(200,{status:'pending'}))},new Map());
+  await flush();runtime.get('topText').value='测试标题';runtime.get('bottomText').value='验证提交';
+  runtime.get('topText').listeners.input[0]();runtime.get('bottomText').listeners.input[0]();
+  runtime.get('generateBtn').onclick();runtime.get('generateBtn').onclick();await flush(20);
+  const inputs=runtime.requests.inputs.length;
+  release(response(200,{uploads:runtime.requests.inputs[0].body.asset_ids.map((_,i)=>({upload_id:'upload-'+i,media_type:'video'}))}));await flush(30);
+  return {inputs,posts:runtime.requests.post.length,confirms:runtime.requests.confirm.length};
+}
+const categoryScenarios={rapidDirectGeneration:scenarioRapidDirectGeneration,directGeneration:scenarioDirectGeneration,motionV3:scenarioMotionV3,categories:scenarioTemplateCategories,categoryPending:scenarioCategoryPending,categoryMissing:scenarioCategoryMissing};
 (categoryScenarios[process.argv[2]]?categoryScenarios[process.argv[2]]().then(value=>process.stdout.write(JSON.stringify(value))):main()).catch(e=>{console.error(e.stack||e);process.exitCode=1});
