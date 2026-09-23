@@ -72,6 +72,49 @@ class RenderRelayGpuTests(unittest.TestCase):
         with self.relay._db() as db:
             self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
+    def text_contract(self, revision="b"*64):
+        return {**self.contract(), "text_style_delivery_protocol":2,
+                "text_style_contract":{"version":1,"templates":{"nine-grid-reveal":revision}}}
+
+    def test_text_styles_require_matching_api_fonts_and_durable_poller(self):
+        payload={"template_id":"nine-grid-reveal","text_revision":"b"*64,
+                 "text_overrides":{"top_text":{"font_size_px":72}}}
+        self.heartbeat("old")
+        self.assertEqual(503,self.call("/v1/jobs",payload)[0])
+        no_poller=self.text_contract();no_poller.pop("text_style_delivery_protocol")
+        self.heartbeat("old-poller",no_poller)
+        self.assertEqual(503,self.call("/v1/jobs",payload)[0])
+        self.heartbeat("wrong-fonts",self.text_contract("c"*64))
+        self.assertEqual(503,self.call("/v1/jobs",payload)[0])
+        self.heartbeat("new",self.text_contract())
+        code,job=self.call("/v1/jobs",payload)
+        self.assertEqual(202,code)
+        self.assertIsNone(self.call("/v1/claim",{"node":"old","gpu_render":self.contract(),"delivery_protocol":2},node=True)[1]["job"])
+        self.assertIsNone(self.call("/v1/claim",{"node":"new","gpu_render":self.text_contract()},node=True)[1]["job"])
+        self.relay.PRIORITY_NODES={"old"}
+        claimed=self.call("/v1/claim",{"node":"new","gpu_render":self.text_contract(),"delivery_protocol":2},node=True)[1]
+        self.assertEqual(job["job_id"],claimed["job"]["job_id"])
+        self.assertEqual(payload,claimed["job"]["payload"])
+
+    def test_text_guard_survives_admission_switch_and_metadata_delivery(self):
+        self.relay.REQUIRE_GPU=False
+        payload={"template_id":"nine-grid-reveal","text_revision":"b"*64,
+                 "text_overrides":{"top_text":{"color":"#ABCDEF"}}}
+        self.heartbeat("old")
+        self.assertEqual(503,self.call("/v1/jobs",payload)[0])
+        self.heartbeat("new",self.text_contract())
+        self.assertEqual(202,self.call("/v1/jobs",payload)[0])
+        self.assertIsNone(self.call("/v1/claim",{"node":"old","gpu_render":self.contract()},node=True)[1]["job"])
+        merged=self.relay._merge_completed_result({"file_url":"/original"},dict(payload,file_url="/untrusted"))
+        self.assertEqual("/original",merged["file_url"])
+        self.assertEqual(payload["text_overrides"],merged["text_overrides"])
+
+    def test_preflight_rejects_old_upstream_that_discards_text_style(self):
+        self.heartbeat("new",self.text_contract())
+        payload={"template_id":"nine-grid-reveal","text_revision":"b"*64,"text_overrides":{"top_text":{"color":"#ABCDEF"}}}
+        with mock.patch.object(self.relay,"_upstream",return_value=(200,json.dumps({"payload":{"template_id":"nine-grid-reveal"}}).encode())):
+            self.assertEqual(409,self.call("/v1/preflight",payload)[0])
+
     def test_exact_template_support_and_frozen_claim(self):
         self.heartbeat()
         self.assertEqual(503, self.call("/v1/jobs", {"template_id": "ref-01-other"})[0])

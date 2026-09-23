@@ -18,7 +18,7 @@ import uuid
 from contextlib import closing
 
 from .core import OUT_DIR, public_url
-from . import feature_flags, matrix_template_semantics, pricing
+from . import feature_flags, matrix_template_semantics, matrix_text_controls, pricing
 
 
 FEATURE_KEY = "matrix_template_video"
@@ -542,6 +542,7 @@ def _refresh_catalog(force=False):
         templates = []
         seen_template_ids = set()
         tunable_controls = {}
+        text_controls = {}
         for raw in raw_templates:
             if not isinstance(raw, dict):
                 continue
@@ -680,6 +681,11 @@ def _refresh_catalog(force=False):
             # 只放在按需读取的 controls 里，避免每次目录响应都塞 22 份大 schema。
             controls = _tunable_controls(raw) if raw.get("tunable") is True else None
             template["tunable"] = controls is not None
+            text_definition = matrix_text_controls.parse_controls(raw.get("text_controls"))
+            if text_definition is not None:
+                text_controls[template_id] = text_definition
+                template["text_tunable"] = True
+                template["text_revision"] = text_definition["text_revision"]
             if controls is not None:
                 template["template_revision"] = controls["template_revision"]
                 tunable_controls[template_id] = controls
@@ -711,6 +717,7 @@ def _refresh_catalog(force=False):
             "templates": templates,
             "fonts": fonts,
             "controls": tunable_controls,
+            "text_controls": text_controls,
             "max_batch_size": max_batch_size,
             "engine_concurrency": engine_concurrency,
         })
@@ -755,9 +762,14 @@ def public_template_controls(template_id, force=False):
         "tunable": bool(template.get("tunable")),
     }
     controls = _CACHE["controls"].get(cleaned) if result["tunable"] else None
+    text_definition = _CACHE.get("text_controls", {}).get(cleaned)
+    if text_definition:
+        result["text_tunable"] = True
+        result["text_controls"] = json.loads(json.dumps(text_definition, ensure_ascii=False))
     if not controls:
         result["tunable"] = False
-        result["note"] = "该模板暂不支持参数微调，文案、素材与字体按模板默认执行。"
+        result["note"] = ("支持 text_overrides 逐层文字微调；未传字段保留模板默认值。" if text_definition
+                          else "该模板暂不支持参数微调，文案、素材与字体按模板默认执行。")
         return result
     schema = controls["overrides_schema"]
     result["template_revision"] = controls["template_revision"]
@@ -1270,6 +1282,9 @@ def validate_payload(
     overrides, template_revision, preview_record = _resolve_template_tuning(
         body, template, username, preview_lookup,
     )
+    text_style = matrix_text_controls.normalize_request(body, _CACHE.get("text_controls", {}).get(template_id))
+    if for_preview and text_style:
+        raise ValueError("逐层文字微调目前用于正式生成，不支持旧版双版本预览")
     font_family = str(body.get("font_family") or "").strip()
     font_selectable = template.get("font_selectable") is not False
     if (
@@ -1432,6 +1447,7 @@ def validate_payload(
         "top_text": top, "bottom_text": bottom,
         "template_id": template_id, "bgm": bgm, "duration": duration,
     }
+    candidate.update(text_style)
     if overrides:
         candidate["overrides"] = overrides
     if template_revision:
@@ -1450,6 +1466,10 @@ def validate_payload(
     if font_family and font_selectable:
         candidate["font_family"] = font_family
     semantic_contract = template.get("semantic_layout")
+    semantic_contract = matrix_text_controls.semantic_contract(
+        semantic_contract, text_style.get("text_overrides"),
+        _CACHE.get("text_controls", {}).get(template_id),
+    )
     if (
         template.get("engine") == "hyperframes"
         and semantic_contract is None
@@ -2243,7 +2263,11 @@ def _generate(payload):
             phase in {"submitting", "submission_unknown"}
             and "semantic_layout" not in stored_payload
         )
-        if legacy_exact_replay:
+        text_style_exact_replay = (
+            trusted_frozen_execution and stored_payload.get("text_overrides")
+            and phase in {"submitting", "submission_unknown"}
+        )
+        if legacy_exact_replay or text_style_exact_replay:
             payload = {
                 key: value for key, value in stored_payload.items()
                 if not str(key).startswith("_")
@@ -2341,6 +2365,9 @@ def _generate(payload):
             last_status = status
         if status == "completed":
             result = current.get("result") or {}
+            if payload.get("text_overrides") and (result.get("text_revision") != payload.get("text_revision")
+                    or result.get("text_overrides") != payload["text_overrides"]):
+                raise MatrixTemplateProviderFailed("生成结果没有匹配的文字微调参数，已阻止交付默认样式视频")
             _persist_runtime(local_job, phase="delivering", provider_status=status)
             remaining = deadline_at - time.time()
             if remaining <= 0:
@@ -2383,6 +2410,9 @@ def _generate(payload):
             }
             if isinstance(result.get("color_profile"), dict):
                 response["color_profile"] = dict(result["color_profile"])
+            if payload.get("text_overrides"):
+                response["text_revision"] = result["text_revision"]
+                response["text_overrides"] = result["text_overrides"]
             if voiceover:
                 response["voiceover"] = {
                     "enabled": True,

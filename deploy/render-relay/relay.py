@@ -125,7 +125,15 @@ def _clean_render_contract(value):
     if (evidence is None or not isinstance(templates, list) or not 1 <= len(templates) <= 64
             or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", t) for t in templates)):
         return None
-    return {**evidence, "ready": True, "templates": sorted(set(templates))}
+    result = {**evidence, "ready": True, "templates": sorted(set(templates))}
+    text = value.get("text_style_contract")
+    if (value.get("text_style_delivery_protocol") == 2 and isinstance(text, dict)
+            and type(text.get("version")) is int and text["version"] == 1
+            and isinstance(text.get("templates"), dict) and 1 <= len(text["templates"]) <= 64
+            and all(t in templates and isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{64}", revision)
+                    for t, revision in text["templates"].items())):
+        result["text_style_contract"] = {"version": 1, "templates": dict(text["templates"])}
+    return result
 
 
 def _clean_render_evidence(value):
@@ -152,18 +160,19 @@ def _record_render_contract(node, value, now):
         _NODE_RENDER[node] = (now, contract)
 
 
-def _gpu_capable(node, template, now):
+def _gpu_capable(node, template, now, text_revision=None):
     recorded = _NODE_RENDER.get(node)
     return bool(recorded and 0 <= now - recorded[0] <= NODE_ONLINE_SECONDS
                 and not _node_blocked(node, now)
-                and (template is None or template in recorded[1]["templates"]))
+                and (template is None or template in recorded[1]["templates"])
+                and (text_revision is None or (recorded[1].get("text_style_contract") or {}).get("templates", {}).get(template) == text_revision))
 
 
-def _gpu_available(template, now):
-    return any(_gpu_capable(node, template, now) for node in list(_NODE_RENDER))
+def _gpu_available(template, now, text_revision=None):
+    return any(_gpu_capable(node, template, now, text_revision) for node in list(_NODE_RENDER))
 
 
-def _should_yield_to_idler(node, now, template=None, gpu_only=False):
+def _should_yield_to_idler(node, now, template=None, gpu_only=False, text_revision=None):
     """负载均衡：本节点在跑的活比别的**在线**节点多，就让给更空的那台。
 
     「谁空谁先拿」—— 最少的那台永远不让（否则会互相让到没人干活）。
@@ -181,7 +190,7 @@ def _should_yield_to_idler(node, now, template=None, gpu_only=False):
         online = [
             name for name, ts in list(_LAST_CLAIM.items())
             if now - ts <= NODE_ONLINE_SECONDS and not _node_blocked(name, now)
-            and (not (REQUIRE_GPU or gpu_only) or _gpu_capable(name, template, now))
+            and (not (REQUIRE_GPU or gpu_only or text_revision) or _gpu_capable(name, template, now, text_revision))
             # A primary must balance against its own tier, not wait for an idle
             # standby which the priority gate intentionally prevents from claiming.
             and (node not in PRIORITY_NODES or name in PRIORITY_NODES)
@@ -193,14 +202,14 @@ def _should_yield_to_idler(node, now, template=None, gpu_only=False):
         return False
 
 
-def _priority_has_room(now, template=None, gpu_only=False):
+def _priority_has_room(now, template=None, gpu_only=False, text_revision=None):
     """高优先级线路是否还有空位（最近 PRIORITY_WINDOW 秒内来过）。"""
     if not PRIORITY_NODES:
         return False
     return any(
         now - ts <= PRIORITY_WINDOW and not _node_blocked(name, now)
         for name, ts in list(_LAST_CLAIM.items())
-        if name in PRIORITY_NODES and (not (REQUIRE_GPU or gpu_only) or _gpu_capable(name, template, now))
+        if name in PRIORITY_NODES and (not (REQUIRE_GPU or gpu_only or text_revision) or _gpu_capable(name, template, now, text_revision))
     )
 MAX_BODY = 256 * 1024 * 1024
 USER_ASSET_BUDGET = 2 * 1024 * 1024 * 1024  # Matches upstream account aggregate space.
@@ -357,12 +366,27 @@ _NODE_RESULT_METADATA_FIELDS = {
     "material_selection_contract_version", "material_clip_contract_version",
     "material_manifest", "editing_plan", "bgm_mode", "nine_grid_visuals",
     "fixed_duration_seconds", "fixed_skill_template", "color_profile", "gpu_render",
+    "text_revision", "text_overrides",
 }
 
 
-def _merge_completed_result(existing, incoming):
+def _requires_delivery_metadata(payload):
+    return bool(payload.get("text_overrides"))
+
+
+def _validate_delivery_metadata(payload, incoming):
+    if payload.get("text_overrides") and (
+            not isinstance(incoming, dict)
+            or incoming.get("text_revision") != payload.get("text_revision")
+            or incoming.get("text_overrides") != payload["text_overrides"]):
+        raise ValueError("text_controls_mismatch")
+
+
+def _merge_completed_result(existing, incoming, *, payload=None):
     """Merge renderer evidence without replacing relay-owned delivery fields."""
     result = dict(existing or {})
+    if payload is not None:
+        _validate_delivery_metadata(payload, incoming)
     if not isinstance(incoming, dict):
         return result
     for key in _NODE_RESULT_METADATA_FIELDS:
@@ -658,6 +682,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out = {"job_id": row["id"], "status": row["status"],
                    "created_at": row["created_at"], "updated_at": row["updated_at"]}
+            payload = json.loads(row["payload"])
+            if row["status"] == "completed" and _requires_delivery_metadata(payload):
+                # Upload and report are separate requests; only expose their verified pair.
+                with _db() as conn:
+                    lease = _delivery_claim(conn, jid)
+                ready = bool(lease and lease["metadata_done"])
+                try:
+                    _validate_delivery_metadata(payload, json.loads(row["result"] or "{}"))
+                except ValueError:
+                    ready = False
+                if not ready:
+                    return self._send(200, {**out, "status": "running", "phase": "awaiting_metadata"})
             if row["result"]:
                 out["result"] = json.loads(row["result"])
             if row["error"]:
@@ -829,10 +865,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 body = self._body()
                 code, raw = _upstream("POST", "/v1/preflight", body, timeout=20)
-                if REQUIRE_GPU and 200 <= code < 300:
+                if (REQUIRE_GPU or body.get("text_overrides")) and 200 <= code < 300:
                     checked = json.loads(raw)
                     template = (checked.get("payload") or {}).get("template_id")
-                    if not template or not _gpu_available(template, _now()):
+                    revision = body.get("text_revision") if body.get("text_overrides") else None
+                    if body.get("text_overrides") and (not revision or (checked.get("payload") or {}).get("text_revision") != revision):
+                        return self._send(409, {"error": "text_controls_unavailable", "detail": "上游尚未支持逐层文字微调"})
+                    if not template or not _gpu_available(template, _now(), revision):
                         return self._send(503, {"error": "gpu_unavailable", "detail": "该模板暂时没有可用的 GPU 渲染节点"})
                     with _db() as conn:
                         if conn.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0] >= MAX_GPU_PENDING:
@@ -908,18 +947,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             jid = uuid.uuid4().hex
             now = _now()
+            text_revision = body.get("text_revision") if body.get("text_overrides") else None
+            if body.get("text_overrides") and (not isinstance(text_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", text_revision)):
+                return self._send(400, {"error": "invalid_text_revision"})
             if REQUIRE_GPU and not isinstance(body.get("template_id"), str):
                 return self._send(400, {"error": "invalid_template"})
-            if REQUIRE_GPU and not _gpu_available(body.get("template_id"), now):
+            if (REQUIRE_GPU or text_revision) and not _gpu_available(body.get("template_id"), now, text_revision):
                 return self._send(503, {"error": "gpu_unavailable", "detail": "GPU 渲染节点暂不可用"})
             with _db() as conn:
-                if REQUIRE_GPU:
+                if REQUIRE_GPU or text_revision:
                     conn.execute("BEGIN IMMEDIATE")
                     if conn.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0] >= MAX_GPU_PENDING:
                         return self._send(429, {"error": "gpu_queue_full", "detail": "GPU 渲染队列已满，请稍后重试"})
                 conn.execute(
                     "INSERT INTO jobs(id,payload,status,created_at,updated_at,gpu_contract) VALUES(?,?,?,?,?,?)",
-                    (jid, json.dumps(body, ensure_ascii=False), "pending", now, now, "required" if REQUIRE_GPU else ""))
+                    (jid, json.dumps(body, ensure_ascii=False), "pending", now, now, "required" if REQUIRE_GPU or text_revision else ""))
                 conn.commit()
             return self._send(202, {"job_id": jid, "status": "pending",
                                     "created_at": now, "updated_at": now})
@@ -1049,17 +1091,24 @@ class Handler(BaseHTTPRequestHandler):
                 rows = conn.execute(
                     "SELECT id,payload,gpu_contract FROM jobs WHERE status='pending'"
                     " ORDER BY created_at LIMIT ?", (MAX_GPU_PENDING,)).fetchall()
-                row = next((r for r in rows if not (REQUIRE_GPU or r["gpu_contract"])
-                            or _gpu_capable(node, json.loads(r["payload"]).get("template_id"), now)), None)
+                def can_claim(row):
+                    payload = json.loads(row["payload"])
+                    revision = payload.get("text_revision") if payload.get("text_overrides") else None
+                    if payload.get("text_overrides") and (not revision or body.get("delivery_protocol") != 2):
+                        return False
+                    return not (REQUIRE_GPU or row["gpu_contract"] or revision) or _gpu_capable(node, payload.get("template_id"), now, revision)
+                row = next((r for r in rows if can_claim(r)), None)
                 if not row:
                     conn.commit()
                     return self._send(200, {"job": None})
                 template = json.loads(row["payload"]).get("template_id")
+                selected_payload = json.loads(row["payload"])
+                text_revision = selected_payload.get("text_revision") if selected_payload.get("text_overrides") else None
                 needs_gpu = REQUIRE_GPU or bool(row["gpu_contract"])
                 # Honor the selected job's contract even after admission enforcement is disabled.
-                if node not in PRIORITY_NODES and _priority_has_room(now, template, needs_gpu):
+                if node not in PRIORITY_NODES and _priority_has_room(now, template, needs_gpu, text_revision):
                     return self._send(200, {"job": None, "deferred": "priority"})
-                if _should_yield_to_idler(node, now, template, needs_gpu):
+                if _should_yield_to_idler(node, now, template, needs_gpu, text_revision):
                     return self._send(200, {"job": None, "deferred": "load"})
                 contract = json.dumps(_NODE_RENDER[node][1]) if needs_gpu else ""
                 cur = conn.execute(
@@ -1164,12 +1213,16 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(409,{'error':'delivery_output_not_received'})
                         existing = json.loads(row['result'] or '{}')
                         incoming = body.get('result') or {}
+                        try:
+                            merged = _merge_completed_result(existing, incoming, payload=json.loads(row['payload']))
+                        except ValueError as exc:
+                            return self._send(409, {'error': str(exc)})
                         if row['gpu_contract']:
                             evidence = _clean_render_evidence(incoming.get('gpu_render') or existing.get('gpu_render'))
                             if not evidence or evidence['runtime_sha256'] != json.loads(row['gpu_contract'])['runtime_sha256']:
                                 return self._send(409,{'error':'gpu_output_not_verified'})
                         conn.execute('UPDATE jobs SET result=? WHERE id=?',
-                                     (json.dumps(_merge_completed_result(existing,incoming)),jid))
+                                     (json.dumps(merged),jid))
                         conn.execute('UPDATE delivery_claims SET metadata_done=1 WHERE job_id=?',(jid,))
                     elif row['status'] == 'running':
                         conn.execute("UPDATE jobs SET status='failed',error=?,updated_at=? WHERE id=?",
@@ -1178,7 +1231,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200,{'ok':True})
             with _db() as conn:
                 _row = conn.execute(
-                    "SELECT node,status,result,gpu_contract FROM jobs WHERE id=?", (jid,)).fetchone()
+                    "SELECT node,status,result,gpu_contract,payload FROM jobs WHERE id=?", (jid,)).fetchone()
+                if ok and _row:
+                    try:
+                        _validate_delivery_metadata(json.loads(_row['payload']), body.get("result"))
+                    except ValueError as exc:
+                        return self._send(409, {"error": str(exc)})
                 if _row and _row["gpu_contract"]:
                     if body.get("node") != _row["node"]:
                         return self._send(409, {"error": "node_mismatch"})

@@ -8,6 +8,7 @@ import json
 import math
 import os
 from content_domains import editorial_contract
+from content_domains import matrix_text_controls
 import re
 import secrets
 import threading
@@ -200,10 +201,11 @@ _ACTION_INPUTS = {
     "matrix-template-generate": (
         "top_text", "bottom_text", "template_id", "font_family", "voiceover",
         "user_materials", "bgm", "template_revision", "overrides", "preview_id",
+        "text_revision", "text_overrides",
     ),
     "matrix-template-batch-generate": (
         "top_text", "bottom_text", "template_id", "font_family", "voiceover",
-        "count",
+        "count", "text_revision", "text_overrides",
     ),
     "video-timeline-compose": (
         "segments", "ratio", "preserve_source_audio", "bgm",
@@ -620,6 +622,10 @@ _MATRIX_TEMPLATE_VOICEOVER_SCHEMA = {
 }
 
 
+_MATRIX_TEXT_FIELDS = {
+    "text_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "text_overrides": matrix_text_controls.SCHEMA,
+}
 _MATRIX_TEMPLATE_OVERRIDES_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "description": "模板参数微调（合同 v1）；只有 tunable=true 的模板可用，字段名/范围与"
@@ -651,7 +657,7 @@ _MEDIA_SCHEMAS = {
         },
         "constraints": [
             "template_id must come from matrix-template-templates",
-            "tunable=false means this template cannot be adjusted; do not invent parameters",
+            "tunable describes legacy overrides; text_tunable and text_controls describe per-layer text_overrides",
             "overrides_schema/defaults/slots are owned by the renderer and echoed verbatim",
         ],
     },
@@ -767,6 +773,7 @@ _MEDIA_SCHEMAS = {
     },
     "matrix-template-generate": {
         "required": ["top_text", "bottom_text", "template_id"], "properties": {
+            **_MATRIX_TEXT_FIELDS,
             "retry_of_job_id": {"type": "integer", "minimum": 1, "description": "仅在用户要求重试且原模板任务已明确失败并退款时填写原任务编号；同一次重试仍幂等。"},
             "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
@@ -794,6 +801,7 @@ _MEDIA_SCHEMAS = {
     },
     "matrix-template-batch-generate": {
         "required": ["top_text", "bottom_text", "template_id", "count"], "properties": {
+            **_MATRIX_TEXT_FIELDS,
             "top_text": {"type": "string", "minLength": 2, "maxLength": 60},
             "bottom_text": {"type": "string", "minLength": 2, "maxLength": 80},
             "template_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"},
@@ -804,7 +812,7 @@ _MEDIA_SCHEMAS = {
         "constraints": [
             "template_id and optional font_family must come from matrix-template-templates",
             "count creates 2-5 independent jobs under one total quote and one confirmation",
-            "HyperFrames and other font-locked templates are single-only; use matrix-template-generate",
+            "text_overrides supports single or batch generation when text_tunable=true; legacy overrides/template_revision/preview_id are single-only",
             "voiceover is optional; when present, voice must come from ready items returned by voices",
             "voiceover.bgm defaults to false; when true, bgm_volume defaults to 0.2 and must be between 0 and 1",
             "with voiceover, final duration always follows the generated narration",
@@ -2998,7 +3006,7 @@ def _matrix_template_user_materials(value):
 
 
 _MATRIX_TEMPLATE_TUNING_FIELDS = frozenset(
-    {"template_revision", "overrides", "preview_id"}
+    {"template_revision", "overrides", "preview_id", "text_revision", "text_overrides"}
 )
 
 
@@ -3047,6 +3055,17 @@ def _matrix_template_overrides(value):
 def _matrix_template_tuning(value):
     """template_revision / overrides / preview_id from one CLI input."""
     result = {}
+    try:
+        text_values = matrix_text_controls.normalize_values(value.get("text_overrides"))
+    except ValueError as exc:
+        raise CLIAPIError(400, str(exc)) from exc
+    if text_values:
+        revision = value.get("text_revision")
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision):
+            raise CLIAPIError(400, "text_overrides 需要 text_revision，请先读取模板可调参数")
+        if value.get("overrides") or value.get("preview_id"):
+            raise CLIAPIError(400, "text_overrides 不能与旧版 overrides 或 preview_id 混用")
+        result.update(text_revision=revision, text_overrides=text_values)
     if "template_revision" in value:
         revision = _string(value["template_revision"], "template_revision", 64, 64).lower()
         if not re.fullmatch(r"[0-9a-f]{64}", revision):
@@ -3121,7 +3140,7 @@ def _matrix_template_preview_payload(value):
 
 def _matrix_template_batch_payload(value):
     if isinstance(value, dict):
-        tuning = sorted(set(value) & _MATRIX_TEMPLATE_TUNING_FIELDS)
+        tuning = sorted(set(value) & (_MATRIX_TEMPLATE_TUNING_FIELDS - {"text_revision", "text_overrides"}))
         if tuning:
             raise CLIAPIError(
                 400,
@@ -3131,7 +3150,7 @@ def _matrix_template_batch_payload(value):
     _strict_object(
         value, {
             "top_text", "bottom_text", "template_id", "font_family",
-            "voiceover", "user_materials", "count",
+            "voiceover", "user_materials", "count", "text_revision", "text_overrides",
         },
         ("top_text", "bottom_text", "template_id", "count"),
     )
