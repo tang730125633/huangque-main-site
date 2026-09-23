@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 23 Sep 2026 05:21:48 -0400
+Subject: [PATCH] fix(visual): keep sub-10s uploads intact
+
+---
+ agent/visual_preprocess.py         | 10 ++++++++--
+ tests/hq-visual-preprocess-test.py | 16 ++++++++++++----
+ 2 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/agent/visual_preprocess.py b/agent/visual_preprocess.py
+index c2366d5..82b0101 100644
+--- a/agent/visual_preprocess.py
++++ b/agent/visual_preprocess.py
+@@ -19,0 +20 @@ MAX_DURATION = 9.0
++SPLIT_TRIGGER_DURATION = 10.0
+@@ -91,0 +93,5 @@ def _clip_cmd(source, target, start, duration):
++def _clip_count(duration):
++    """Keep videos under ten seconds intact; split longer videos into <=9s clips."""
++    return 1 if duration < SPLIT_TRIGGER_DURATION else max(2, math.ceil(duration / MAX_DURATION))
++
++
+@@ -121 +127 @@ def _run_job(account_id, source_id):
+-        count = max(1, math.ceil(duration / MAX_DURATION))
++        count = _clip_count(duration)
+@@ -328 +334 @@ def status(account_id):
+-                    0 < float(job.get('duration') or 0) <= MAX_DURATION and \
++                    0 < float(job.get('duration') or 0) < SPLIT_TRIGGER_DURATION and \
+diff --git a/tests/hq-visual-preprocess-test.py b/tests/hq-visual-preprocess-test.py
+index a5ada7f..f0efa69 100644
+--- a/tests/hq-visual-preprocess-test.py
++++ b/tests/hq-visual-preprocess-test.py
+@@ -68 +68,2 @@ def main():
+-        for duration, expected in ((10, 2), (11, 2), (60, 7), (8, 1)):
++        boundary_cases = ((8.9, 1), (9, 1), (9.9, 1), (10, 2), (10.1, 2), (11, 2), (60, 7))
++        for sequence, (duration, expected) in enumerate(boundary_cases, start=1):
+@@ -72 +73 @@ def main():
+-            extra_id = ("%032x" % duration)
++            extra_id = ("%032x" % sequence)
+@@ -81 +82,8 @@ def main():
+-            assert sum(clip["source_asset_id"] == extra_id for clip in extra_status["clips"]) == expected
++            clips = [clip for clip in extra_status["clips"] if clip["source_asset_id"] == extra_id]
++            assert len(clips) == expected, (duration, clips)
++            if duration < vp.SPLIT_TRIGGER_DURATION:
++                assert clips[0]["asset_id"] == extra_id, (duration, clips)
++                assert not any(item.get("source_asset_id") == extra_id for item in json.loads(index_path.read_text())["items"])
++            else:
++                assert all(clip["asset_id"] != extra_id for clip in clips), (duration, clips)
++                assert all(clip["duration"] <= vp.MAX_DURATION for clip in clips), (duration, clips)
+@@ -91 +99 @@ def main():
+-        assert vp.status(account)["ready_count"] == 15
++        assert vp.status(account)["ready_count"] == 19
