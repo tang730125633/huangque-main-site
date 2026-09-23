@@ -8,7 +8,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +24,44 @@ def load(name, relative):
 
 
 class RenderRelayManifestTests(unittest.TestCase):
+    def test_cached_forward_marker_does_not_skip_missing_upstream_asset(self):
+        relay = load("relay_stale_forward_marker", "deploy/render-relay/relay.py")
+        received = []
+        data = b"account-owned-video"
+        digest = hashlib.sha256(data).hexdigest()
+        class Upstream(BaseHTTPRequestHandler):
+            def do_POST(self):
+                received.append(self.rfile.read(int(self.headers["Content-Length"])))
+                body = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *args):
+                pass
+        with tempfile.TemporaryDirectory() as root:
+            relay.USER_ASSET_DIR = Path(root)
+            relay.RELAY_TOKEN = "relay-test-token"
+            relay.UPSTREAM_TOKEN = "upstream-test-token"
+            (Path(root) / (digest + ".mp4.sent")).touch()
+            upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), relay.Handler)
+            relay.UPSTREAM = "http://127.0.0.1:%d" % upstream.server_port
+            for item in (upstream, server):
+                threading.Thread(target=item.serve_forever, daemon=True).start()
+            try:
+                for _ in range(2):
+                    request = urllib.request.Request("http://127.0.0.1:%d/v1/user-assets" % server.server_port,
+                        data=data, headers={"Authorization":"Bearer relay-test-token", "Content-Type":"video/mp4",
+                                            "X-HQ-Asset-Sha256":digest}, method="POST")
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        self.assertEqual(200, response.status)
+                self.assertEqual([data, data], received)
+            finally:
+                for item in (server, upstream):
+                    item.shutdown()
+                    item.server_close()
+
     def test_large_user_asset_is_cached_in_bounded_chunks(self):
         relay = load("render_relay_large_asset", "deploy/render-relay/relay.py")
         length = 257 * 1024 * 1024
