@@ -251,6 +251,36 @@ class MatrixTemplateVideoTests(unittest.TestCase):
             "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
         }, self.module.public_batch_capability())
 
+    def test_public_catalog_exposes_slot_window_seconds_and_drops_bad_values(self):
+        dynamic = self.reference_templates(include_legacy=False)[0]
+        dynamic.update({
+            "id": "window-template", "duration_mode": "fixed",
+            "fixed_duration_seconds": 9.7,
+            "required_visuals": 2, "required_visuals_max": 2,
+            "bgm_mode": "bound", "bgm_optional": True,
+            "clip_duration_range_seconds": [4.833333333333333, 4.866666666666666],
+        })
+        malformed = dict(dynamic, id="bad-window", clip_duration_range_seconds=["x", 5])
+        reversed_range = dict(dynamic, id="reversed-window", clip_duration_range_seconds=[6, 5])
+        negative = dict(dynamic, id="negative-window", clip_duration_range_seconds=[-1, 4])
+        response = {
+            "templates": [*self.templates(), dynamic, malformed, reversed_range, negative],
+            "max_batch_size": 5,
+            "engine_concurrency": {"ffmpeg": 5, "hyperframes": 2},
+        }
+        with mock.patch.object(self.module, "_request", return_value=response):
+            values = self.module.public_templates(force=True)
+        by_id = {item["id"]: item for item in values}
+        # 2026-09-23：画面位窗口随公开目录透出（Agent 运行时据此挑够长的本人镜头，
+        # 4.608 秒镜头配 4.867 秒画面位会被渲染端拒）。非法值只丢字段，不牵连模板。
+        self.assertEqual(
+            [4.833333333333333, 4.866666666666666],
+            by_id["window-template"]["clip_duration_range_seconds"],
+        )
+        self.assertNotIn("clip_duration_range_seconds", by_id["bad-window"])
+        self.assertNotIn("clip_duration_range_seconds", by_id["reversed-window"])
+        self.assertNotIn("clip_duration_range_seconds", by_id["negative-window"])
+
     def test_provider_dynamic_duration_mode_is_accepted(self):
         template = self.reference_templates(include_legacy=False)[0]
         template.update({
@@ -3668,6 +3698,17 @@ class MatrixTemplateVideoTests(unittest.TestCase):
 
 
 class MatrixTemplatePageTests(unittest.TestCase):
+    def test_rapid_clicks_during_material_preparation_submit_only_once(self):
+        result = self.runtime("rapidDirectGeneration")
+        self.assertEqual({"inputs": 1, "posts": 1, "confirms": 0}, result)
+
+    def test_generation_submits_without_charge_confirmation_and_does_not_duplicate(self):
+        for result in self.runtime("directGeneration"):
+            with self.subTest(count=result["count"]):
+                self.assertEqual(0, result["confirms"])
+                self.assertEqual(result["count"], result["posts"])
+                self.assertEqual(result["count"], len(set(result["keys"])))
+
     def runtime(self, scenario):
         result = subprocess.run(
             ["node", str(ROOT / "tests/matrix_template_page_runtime.js"), scenario],
@@ -4454,7 +4495,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
 
     def test_delayed_outer_check_auth_cannot_create_a_new_job(self):
         result = self.runtime("delayedOuterCheckAuth")
-        self.assertEqual((1, 1, 1), (
+        self.assertEqual((1, 1, 0), (
             result["beforeTerminal"]["posts"],
             result["beforeTerminal"]["polls"],
             result["beforeTerminal"]["confirms"],
@@ -4463,7 +4504,7 @@ class MatrixTemplatePageTests(unittest.TestCase):
         self.assertEqual("/first-video", result["terminal"]["src"])
         self.assertTrue(result["terminal"]["cleared"])
         self.assertFalse(result["terminal"]["action"]["busy"])
-        self.assertEqual((1, 1, 1), (
+        self.assertEqual((1, 1, 0), (
             result["posts"], result["polls"], result["confirms"],
         ))
         self.assertEqual(["matrix-template-uuid-1"], result["keys"])
