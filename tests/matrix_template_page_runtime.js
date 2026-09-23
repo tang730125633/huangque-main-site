@@ -13,8 +13,9 @@ class Element {
   addEventListener(k,fn){(this.listeners[k]||=[]).push(fn)}
   load(){this.loadCount++}
   pause(){this.pauseCount++}
+  focus(){this.focused=true}
 }
-function response(status,data){if(data&&data.templates&&response.extraTemplates)data=Object.assign({},data,{templates:data.templates.concat(response.extraTemplates)});return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
+function response(status,data){if(data&&data.templates&&response.templateCatalog)data=Object.assign({},data,{templates:response.templateCatalog});else if(data&&data.templates&&response.extraTemplates)data=Object.assign({},data,{templates:data.templates.concat(response.extraTemplates)});return {status,text:()=>Promise.resolve(JSON.stringify(data||{}))}}
 function defaultMaterialClips(){return ['11','22','33','44','55','66','77','88','99'].map((seed,index)=>({asset_id:seed.repeat(16),duration:10+index,kind:'video',source_asset_id:seed.repeat(16)}))}
 async function flush(n=12){for(let i=0;i<n;i++)await new Promise(r=>setImmediate(r))}
 function pendingCleared(storage){return ![...storage.keys()].some(key=>key.startsWith('hq-matrix-template-pending-v1')||key.startsWith('hq-matrix-template-pending-v2'))}
@@ -511,13 +512,49 @@ async function scenarioMotionV3(){
   response.extraTemplates=[['inset-flip-whip','inset-flip'],['fixed-opening-whip','fixed-opening'],['bilingual-stagger-salon','bilingual-stagger']].map(([id,variant])=>({id,name:id,variant,engine:'hyperframes',font_selectable:false}));
   const runtime=createRuntime({post:()=>Promise.resolve(response(200,{job_id:42})),poll:()=>Promise.resolve(response(200,{status:'completed',result:{video_url:'/test.mp4'}}))},new Map());
   await flush(40);
-  const grid=runtime.get('templateGrid');grid.children[grid.children.length-1].onclick();
+  const grid=runtime.get('templateGrid');runtime.get('voiceTemplateTab').onclick();
   runtime.get('topText').value='广州圈子';runtime.get('bottomText').value='共同成长';runtime.get('voiceoverText').value='我在广州';
   runtime.get('voiceoverText').listeners.input[0]();
   const selected={top:runtime.get('topTextLabel').textContent,bottom:runtime.get('bottomTextLabel').textContent,voice:runtime.get('voiceoverEnabled').checked,voiceLocked:runtime.get('voiceoverEnabled').disabled,bgmLocked:runtime.get('voiceoverBgmEnabled').disabled};
   runtime.get('generateBtn').onclick();await flush(30);
   const body=runtime.requests.post.length?JSON.parse(runtime.requests.post[0].options.body):null;
-  grid.children[grid.children.length-2].onclick();
+  runtime.get('bgmTemplateTab').onclick();
   return {selected,body,restoredLabel:runtime.get('bottomTextLabel').textContent,voiceUnlocked:!runtime.get('voiceoverEnabled').disabled};
 }
-(process.argv[2]==='motionV3'?scenarioMotionV3().then(value=>process.stdout.write(JSON.stringify(value))):main()).catch(e=>{console.error(e.stack||e);process.exitCode=1});
+function categoryCatalog(){return Array.from({length:25},(_,i)=>({id:'template-'+(i+1),name:'模板'+(i+1)})).concat([{id:'bilingual-stagger-salon',name:'双语错位字幕·配音成片',variant:'bilingual-stagger',engine:'hyperframes',font_selectable:false}])}
+function categoryState(runtime){return {ids:runtime.get('templateGrid').children.map(card=>card.getAttribute('data-template-id')),names:runtime.get('templateGrid').children.map(card=>card.innerHTML),bgm:runtime.get('bgmTemplateTab').getAttribute('aria-selected'),voice:runtime.get('voiceTemplateTab').getAttribute('aria-selected'),name:runtime.get('templateName').textContent,active:runtime.get('livePreview').getAttribute('data-template'),narration:runtime.get('voiceoverEnabled').checked,locked:runtime.get('voiceoverEnabled').disabled}}
+async function scenarioTemplateCategories(){
+  response.templateCatalog=categoryCatalog();
+  const runtime=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
+  await flush(30);const initial=categoryState(runtime);
+  runtime.get('templateGrid').children[8].onclick();
+  runtime.get('topText').value='保留标题';runtime.get('bottomText').value='保留文案';
+  runtime.get('voiceTemplateTab').onclick();const voice=categoryState(runtime);
+  runtime.get('bgmTemplateTab').onclick();const restored=categoryState(runtime);
+  runtime.get('bgmTemplateTab').listeners.keydown[0]({key:'ArrowRight',preventDefault(){}});
+  const keyboard={state:categoryState(runtime),focused:runtime.get('voiceTemplateTab').focused};
+  const copy=[runtime.get('topText').value,runtime.get('bottomText').value];
+  response.templateCatalog.splice(6,0,response.templateCatalog.pop());
+  const reordered=createRuntime({post:()=>Promise.reject(new Error('unused')),poll:()=>Promise.reject(new Error('unused'))},new Map());
+  await flush(30);reordered.get('voiceTemplateTab').onclick();
+  return {initial,voice,restored,keyboard,copy,reordered:categoryState(reordered),posts:runtime.requests.post.length};
+}
+async function scenarioCategoryPending(){
+  response.templateCatalog=categoryCatalog();
+  const body={template_id:'bilingual-stagger-salon',top_text:'原主标题',bottom_text:'原副标题',bgm:false,voiceover:{text:'原口播文案',voice:'S_d21F8OR62',voice_scope:'public',speed:1.2}};
+  const storage=new Map([['hq-matrix-template-pending-v2:alice',JSON.stringify({owner:'alice',started_at:Date.now(),items:[{key:'keep-key',body,job_id:'42',status:'pending',result:null,error:'',refund_status:''}]})]]);
+  const runtime=createRuntime({post:()=>Promise.reject(new Error('duplicate submit')),poll:()=>Promise.resolve(response(200,{status:'done',result:{video_url:'/existing-bilingual.mp4',duration:8}}))},storage);
+  await flush(40);
+  return {state:categoryState(runtime),posts:runtime.requests.post.length,polls:runtime.requests.poll.length,src:runtime.get('video').src,cleared:pendingCleared(storage),text:runtime.get('voiceoverText').value};
+}
+async function scenarioCategoryMissing(){
+  response.templateCatalog=categoryCatalog().slice(0,25);
+  const bgm=createRuntime({post(){},poll(){}},new Map());await flush(30);bgm.get('voiceTemplateTab').onclick();
+  response.templateCatalog=categoryCatalog().slice(-1);
+  const voice=createRuntime({post(){},poll(){}},new Map());await flush(30);
+  response.templateCatalog=[];
+  const empty=createRuntime({post(){},poll(){}},new Map());await flush(30);
+  return {bgm:categoryState(bgm),voiceDisabled:bgm.get('voiceTemplateTab').disabled,voice:categoryState(voice),bgmDisabled:voice.get('bgmTemplateTab').disabled,emptyDisabled:empty.get('generateBtn').disabled};
+}
+const categoryScenarios={motionV3:scenarioMotionV3,categories:scenarioTemplateCategories,categoryPending:scenarioCategoryPending,categoryMissing:scenarioCategoryMissing};
+(categoryScenarios[process.argv[2]]?categoryScenarios[process.argv[2]]().then(value=>process.stdout.write(JSON.stringify(value))):main()).catch(e=>{console.error(e.stack||e);process.exitCode=1});
