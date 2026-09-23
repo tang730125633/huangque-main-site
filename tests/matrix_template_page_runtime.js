@@ -519,7 +519,7 @@ async function scenarioMotionV3(){
   runtime.get('generateBtn').onclick();await flush(30);
   const body=runtime.requests.post.length?JSON.parse(runtime.requests.post[0].options.body):null;
   runtime.get('bgmTemplateTab').onclick();
-  return {selected,body,restoredLabel:runtime.get('bottomTextLabel').textContent,voiceUnlocked:!runtime.get('voiceoverEnabled').disabled};
+  return {selected,body,restoredLabel:runtime.get('bottomTextLabel').textContent,bgmVoiceOff:!runtime.get('voiceoverEnabled').checked,bgmVoiceLocked:runtime.get('voiceoverEnabled').disabled};
 }
 function categoryCatalog(){return Array.from({length:25},(_,i)=>({id:'template-'+(i+1),name:'模板'+(i+1)})).concat([{id:'bilingual-stagger-salon',name:'双语错位字幕·配音成片',variant:'bilingual-stagger',engine:'hyperframes',font_selectable:false}])}
 function categoryState(runtime){return {ids:runtime.get('templateGrid').children.map(card=>card.getAttribute('data-template-id')),names:runtime.get('templateGrid').children.map(card=>card.innerHTML),bgm:runtime.get('bgmTemplateTab').getAttribute('aria-selected'),voice:runtime.get('voiceTemplateTab').getAttribute('aria-selected'),name:runtime.get('templateName').textContent,active:runtime.get('livePreview').getAttribute('data-template'),narration:runtime.get('voiceoverEnabled').checked,locked:runtime.get('voiceoverEnabled').disabled}}
