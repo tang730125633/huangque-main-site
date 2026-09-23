@@ -85,7 +85,10 @@ class BilingualAlignmentTests(unittest.TestCase):
         self.assertFalse(value['body']['bgm'])
         self.assertEqual('我在广州',value['body']['voiceover']['text'])
         self.assertEqual('底部行动文案',value['restoredLabel'])
-        self.assertTrue(value['voiceUnlocked'])
+        self.assertTrue(value['bgmVoiceOff'])
+        self.assertTrue(value['toggleAbsent'])
+        self.assertTrue(value['bgmBody']['bgm'])
+        self.assertNotIn('voiceover', value['bgmBody'])
     def words(self):
         return [{'text':'我在','start_ms':500,'end_ms':1000,'timing_source':'provider_word'},
                 {'text':'广州','start_ms':2500,'end_ms':3500,'timing_source':'provider_word'}]
