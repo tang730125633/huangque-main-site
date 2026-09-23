@@ -370,9 +370,23 @@ _NODE_RESULT_METADATA_FIELDS = {
 }
 
 
-def _merge_completed_result(existing, incoming):
+def _requires_delivery_metadata(payload):
+    return bool(payload.get("text_overrides"))
+
+
+def _validate_delivery_metadata(payload, incoming):
+    if payload.get("text_overrides") and (
+            not isinstance(incoming, dict)
+            or incoming.get("text_revision") != payload.get("text_revision")
+            or incoming.get("text_overrides") != payload["text_overrides"]):
+        raise ValueError("text_controls_mismatch")
+
+
+def _merge_completed_result(existing, incoming, *, payload=None):
     """Merge renderer evidence without replacing relay-owned delivery fields."""
     result = dict(existing or {})
+    if payload is not None:
+        _validate_delivery_metadata(payload, incoming)
     if not isinstance(incoming, dict):
         return result
     for key in _NODE_RESULT_METADATA_FIELDS:
@@ -668,6 +682,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             out = {"job_id": row["id"], "status": row["status"],
                    "created_at": row["created_at"], "updated_at": row["updated_at"]}
+            payload = json.loads(row["payload"])
+            if row["status"] == "completed" and _requires_delivery_metadata(payload):
+                # Upload and report are separate requests; only expose their verified pair.
+                with _db() as conn:
+                    lease = _delivery_claim(conn, jid)
+                ready = bool(lease and lease["metadata_done"])
+                try:
+                    _validate_delivery_metadata(payload, json.loads(row["result"] or "{}"))
+                except ValueError:
+                    ready = False
+                if not ready:
+                    return self._send(200, {**out, "status": "running", "phase": "awaiting_metadata"})
             if row["result"]:
                 out["result"] = json.loads(row["result"])
             if row["error"]:
@@ -1187,12 +1213,16 @@ class Handler(BaseHTTPRequestHandler):
                             return self._send(409,{'error':'delivery_output_not_received'})
                         existing = json.loads(row['result'] or '{}')
                         incoming = body.get('result') or {}
+                        try:
+                            merged = _merge_completed_result(existing, incoming, payload=json.loads(row['payload']))
+                        except ValueError as exc:
+                            return self._send(409, {'error': str(exc)})
                         if row['gpu_contract']:
                             evidence = _clean_render_evidence(incoming.get('gpu_render') or existing.get('gpu_render'))
                             if not evidence or evidence['runtime_sha256'] != json.loads(row['gpu_contract'])['runtime_sha256']:
                                 return self._send(409,{'error':'gpu_output_not_verified'})
                         conn.execute('UPDATE jobs SET result=? WHERE id=?',
-                                     (json.dumps(_merge_completed_result(existing,incoming)),jid))
+                                     (json.dumps(merged),jid))
                         conn.execute('UPDATE delivery_claims SET metadata_done=1 WHERE job_id=?',(jid,))
                     elif row['status'] == 'running':
                         conn.execute("UPDATE jobs SET status='failed',error=?,updated_at=? WHERE id=?",
@@ -1201,7 +1231,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200,{'ok':True})
             with _db() as conn:
                 _row = conn.execute(
-                    "SELECT node,status,result,gpu_contract FROM jobs WHERE id=?", (jid,)).fetchone()
+                    "SELECT node,status,result,gpu_contract,payload FROM jobs WHERE id=?", (jid,)).fetchone()
+                if ok and _row:
+                    try:
+                        _validate_delivery_metadata(json.loads(_row['payload']), body.get("result"))
+                    except ValueError as exc:
+                        return self._send(409, {"error": str(exc)})
                 if _row and _row["gpu_contract"]:
                     if body.get("node") != _row["node"]:
                         return self._send(409, {"error": "node_mismatch"})
